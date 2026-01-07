@@ -1,1 +1,48 @@
-/target
+# Rust build artifacts
+/target/
+**/*.rs.bk
+# Note: Cargo.lock is committed for binary crates per Rust best practices
+
+# Stray compiler output
+a.out
+*.o
+
+# Editor/IDE artifacts
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Distribution artifacts
+/dist/
+
+# AI coding tool artifacts
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache.v3/
+.claude/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# Temporary files
+temp_*.rs
+*.tmp
+
+# Local backup directories
+.local_backup_*/
+
+# Environment files
+.env
+.env.local
+
+# Coverage artifacts
+lcov.info
+coverage-summary.txt
+tarpaulin-report.html
+
+# Test artifacts
+test-artifacts/
+junit.xml

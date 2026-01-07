@@ -6,47 +6,73 @@
 //! Exit behavior:
 //!   - Exit 0 with JSON {"hookSpecificOutput": {"permissionDecision": "deny", ...}} = block
 //!   - Exit 0 with no output = allow
+//!
+//! # Performance
+//!
+//! This hook is invoked for every Bash command, so latency is critical:
+//! - Quick rejection filter skips regex for 99%+ of commands
+//! - Lazy-initialized static patterns compiled once
+//! - `Cow<str>` avoids allocation when no path normalization needed
+//! - `memchr` SIMD-accelerated substring search for quick rejection
+//! - Inlined hot paths for better codegen
 
+use colored::Colorize;
 use fancy_regex::Regex;
+use memchr::memmem;
 use serde::{Deserialize, Serialize};
-use std::io::{self, Read};
+use std::borrow::Cow;
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::LazyLock;
 
+// Build metadata from vergen (set by build.rs)
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILD_TIMESTAMP: Option<&str> = option_env!("VERGEN_BUILD_TIMESTAMP");
+const RUSTC_SEMVER: Option<&str> = option_env!("VERGEN_RUSTC_SEMVER");
+const CARGO_TARGET: Option<&str> = option_env!("VERGEN_CARGO_TARGET_TRIPLE");
+
+/// Input structure from Claude Code's `PreToolUse` hook.
 #[derive(Deserialize)]
 struct HookInput {
     tool_name: Option<String>,
     tool_input: Option<ToolInput>,
 }
 
+/// Tool-specific input containing the command to execute.
 #[derive(Deserialize)]
 struct ToolInput {
     command: Option<serde_json::Value>,
 }
 
+/// Output structure for denying a command.
 #[derive(Serialize)]
-struct HookOutput {
+struct HookOutput<'a> {
     #[serde(rename = "hookSpecificOutput")]
-    hook_specific_output: HookSpecificOutput,
+    hook_specific_output: HookSpecificOutput<'a>,
 }
 
+/// Hook-specific output with decision and reason.
 #[derive(Serialize)]
-struct HookSpecificOutput {
+struct HookSpecificOutput<'a> {
     #[serde(rename = "hookEventName")]
     hook_event_name: &'static str,
     #[serde(rename = "permissionDecision")]
     permission_decision: &'static str,
     #[serde(rename = "permissionDecisionReason")]
-    permission_decision_reason: String,
+    permission_decision_reason: Cow<'a, str>,
 }
 
+/// A safe pattern that, when matched, allows the command immediately.
 struct Pattern {
     regex: Regex,
+    /// Debug name for the pattern (used in error messages and tests).
     #[allow(dead_code)]
     name: &'static str,
 }
 
+/// A destructive pattern that, when matched, blocks the command.
 struct DestructivePattern {
     regex: Regex,
+    /// Human-readable explanation of why this command is blocked.
     reason: &'static str,
 }
 
@@ -82,8 +108,14 @@ static SAFE_PATTERNS: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
         ),
         pattern!("clean-dry-run-short", r"git\s+clean\s+-[a-z]*n[a-z]*"),
         pattern!("clean-dry-run-long", r"git\s+clean\s+--dry-run"),
-        pattern!("rm-rf-tmp-1", r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/tmp/"),
-        pattern!("rm-fr-tmp-1", r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/tmp/"),
+        pattern!(
+            "rm-rf-tmp-1",
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/tmp/"
+        ),
+        pattern!(
+            "rm-fr-tmp-1",
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/tmp/"
+        ),
         pattern!(
             "rm-rf-var-tmp-1",
             r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/var/tmp/"
@@ -228,44 +260,223 @@ static DESTRUCTIVE_PATTERNS: LazyLock<Vec<DestructivePattern>> = LazyLock::new(|
     ]
 });
 
+/// Regex to strip absolute paths from git/rm binaries.
+/// Matches patterns like `/usr/bin/git`, `/bin/rm`, `/usr/local/bin/git`.
 static PATH_NORMALIZER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/(?:\S*/)*s?bin/(rm|git)(?=\s|$)").unwrap());
 
-fn normalize_command(cmd: &str) -> String {
-    PATH_NORMALIZER.replace(cmd, "$1").into_owned()
+/// Pre-compiled finders for quick rejection (SIMD-accelerated).
+static GIT_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new("git"));
+static RM_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new("rm"));
+
+/// Normalize a command by stripping absolute paths from git/rm binaries.
+///
+/// Returns a `Cow::Borrowed` if no transformation is needed (zero allocation),
+/// or `Cow::Owned` if the command was modified.
+///
+/// # Examples
+///
+/// ```ignore
+/// assert_eq!(normalize_command("/usr/bin/git status"), Cow::Owned("git status".into()));
+/// assert_eq!(normalize_command("git status"), Cow::Borrowed("git status"));
+/// ```
+#[inline]
+fn normalize_command(cmd: &str) -> Cow<'_, str> {
+    // Fast path: if command doesn't start with '/', no normalization possible
+    if !cmd.starts_with('/') {
+        return Cow::Borrowed(cmd);
+    }
+    PATH_NORMALIZER.replace(cmd, "$1")
 }
 
+/// Quick rejection filter using SIMD-accelerated substring search.
+///
+/// Returns `true` if the command can be immediately allowed (no "git" or "rm").
+/// This skips expensive regex matching for 99%+ of commands.
+#[inline]
 fn quick_reject(cmd: &str) -> bool {
-    !(cmd.contains("git") || cmd.contains("rm"))
+    let bytes = cmd.as_bytes();
+    GIT_FINDER.find(bytes).is_none() && RM_FINDER.find(bytes).is_none()
 }
 
+/// Configure colored output based on TTY detection.
+///
+/// Disables colors if stderr is not a terminal (e.g., piped to a file).
+fn configure_colors() {
+    if !io::stderr().is_terminal() {
+        colored::control::set_override(false);
+    }
+}
+
+/// Format the denial message for the JSON output (plain text).
+fn format_denial_message(original_command: &str, reason: &str) -> String {
+    format!(
+        "BLOCKED by git_safety_guard\n\n\
+         Reason: {reason}\n\n\
+         Command: {original_command}\n\n\
+         If this operation is truly needed, ask the user for explicit \
+         permission and have them run the command manually."
+    )
+}
+
+/// Print a colorful warning to stderr for human visibility.
+///
+/// This provides immediate visual feedback when a command is blocked,
+/// separate from the JSON response sent to stdout for the hook protocol.
+fn print_colorful_warning(original_command: &str, reason: &str) {
+    let stderr = io::stderr();
+    let mut handle = stderr.lock();
+
+    // Top border
+    let border = "═".repeat(72);
+    let _ = writeln!(handle, "\n{}", border.red().bold());
+
+    // Header with shield emoji and title
+    let header = format!(
+        "{}  {}",
+        "BLOCKED".white().on_red().bold(),
+        "git_safety_guard".red().bold()
+    );
+    let _ = writeln!(handle, "{header}");
+
+    // Separator
+    let _ = writeln!(handle, "{}", "─".repeat(72).red());
+
+    // Reason section
+    let _ = writeln!(handle, "{}  {}", "Reason:".yellow().bold(), reason.white());
+
+    // Command section
+    let _ = writeln!(handle);
+    let _ = writeln!(
+        handle,
+        "{}  {}",
+        "Command:".cyan().bold(),
+        original_command.bright_white().italic()
+    );
+
+    // Help section
+    let _ = writeln!(handle);
+    let _ = writeln!(
+        handle,
+        "{} {}",
+        "Tip:".green().bold(),
+        "If you need to run this command, execute it manually in a terminal.".white()
+    );
+
+    // Suggestion based on the command
+    if original_command.contains("reset") || original_command.contains("checkout") {
+        let _ = writeln!(
+            handle,
+            "     {}",
+            "Consider using 'git stash' first to save your changes.".bright_black()
+        );
+    } else if original_command.contains("clean") {
+        let _ = writeln!(
+            handle,
+            "     {}",
+            "Use 'git clean -n' first to preview what would be deleted.".bright_black()
+        );
+    } else if original_command.contains("push") && original_command.contains("force") {
+        let _ = writeln!(
+            handle,
+            "     {}",
+            "Consider using '--force-with-lease' for safer force pushing.".bright_black()
+        );
+    } else if original_command.contains("rm -rf") {
+        let _ = writeln!(
+            handle,
+            "     {}",
+            "Verify the path carefully before running rm -rf manually.".bright_black()
+        );
+    }
+
+    // Bottom border
+    let _ = writeln!(handle, "{}\n", border.red().bold());
+}
+
+/// Output a denial response and flush stdout.
+///
+/// The response format matches Claude Code's `PreToolUse` hook protocol.
+/// Additionally prints a colorful warning to stderr for human visibility.
+#[cold]
+#[inline(never)]
 fn deny(original_command: &str, reason: &str) {
+    // Print colorful warning to stderr (visible to user)
+    print_colorful_warning(original_command, reason);
+
+    // Build JSON response for hook protocol (stdout)
+    let message = format_denial_message(original_command, reason);
+
     let output = HookOutput {
         hook_specific_output: HookSpecificOutput {
             hook_event_name: "PreToolUse",
             permission_decision: "deny",
-            permission_decision_reason: format!(
-                "BLOCKED by git_safety_guard\n\n\
-                 Reason: {reason}\n\n\
-                 Command: {original_command}\n\n\
-                 If this operation is truly needed, ask the user for explicit \
-                 permission and have them run the command manually."
-            ),
+            permission_decision_reason: Cow::Owned(message),
         },
     };
-    println!("{}", serde_json::to_string(&output).unwrap());
+
+    // Write JSON to stdout for the hook protocol
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    // Unwrap is safe here since stdout write failure is unrecoverable
+    serde_json::to_writer(&mut handle, &output).unwrap();
+    writeln!(handle).unwrap();
+}
+
+/// Print version information and exit.
+fn print_version() {
+    let version_line = format!(
+        "{} {}",
+        "git_safety_guard".green().bold(),
+        PKG_VERSION.cyan()
+    );
+    eprintln!("{version_line}");
+
+    if let Some(ts) = BUILD_TIMESTAMP {
+        eprintln!("  {} {}", "Built:".bright_black(), ts.white());
+    }
+    if let Some(rustc) = RUSTC_SEMVER {
+        eprintln!("  {} {}", "Rustc:".bright_black(), rustc.white());
+    }
+    if let Some(target) = CARGO_TARGET {
+        eprintln!("  {} {}", "Target:".bright_black(), target.white());
+    }
 }
 
 fn main() {
-    let mut input = String::new();
-    if io::stdin().read_to_string(&mut input).is_err() {
+    // Configure colors based on TTY detection
+    configure_colors();
+
+    // Check for --version flag (useful when run directly, not as hook)
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        print_version();
         return;
     }
 
+    // Check for --help flag
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        print_help();
+        return;
+    }
+
+    // Read stdin with a reasonable capacity hint for typical hook input.
+    // Hook input is typically ~100-200 bytes of JSON.
+    let mut input = String::with_capacity(256);
+    {
+        let stdin = io::stdin();
+        let mut handle = stdin.lock();
+        if handle.read_line(&mut input).is_err() {
+            return;
+        }
+    } // handle dropped here, releasing the lock early
+
+    // Fast path: parse JSON directly from the input buffer
     let Ok(hook_input) = serde_json::from_str::<HookInput>(&input) else {
         return;
     };
 
+    // Only process Bash tool invocations
     if hook_input.tool_name.as_deref() != Some("Bash") {
         return;
     }
@@ -286,24 +497,84 @@ fn main() {
         return;
     }
 
+    // Quick rejection: if command doesn't contain "git" or "rm", allow immediately.
+    // This is the hot path for 99%+ of commands.
     if quick_reject(&command) {
         return;
     }
 
+    // Normalize the command (strips /usr/bin/git -> git, etc.)
     let normalized = normalize_command(&command);
 
+    // Check safe patterns first (whitelist approach).
+    // If any safe pattern matches, allow immediately.
     for pattern in SAFE_PATTERNS.iter() {
         if pattern.regex.is_match(&normalized).unwrap_or(false) {
             return;
         }
     }
 
+    // Check destructive patterns (blacklist approach).
+    // If any destructive pattern matches, deny with reason.
     for pattern in DESTRUCTIVE_PATTERNS.iter() {
         if pattern.regex.is_match(&normalized).unwrap_or(false) {
             deny(&command, pattern.reason);
             return;
         }
     }
+
+    // No pattern matched: default allow
+}
+
+/// Print help information.
+fn print_help() {
+    eprintln!(
+        "{} {} - {}",
+        "git_safety_guard".green().bold(),
+        PKG_VERSION.cyan(),
+        "A Claude Code hook that blocks destructive commands".white()
+    );
+    eprintln!();
+    eprintln!("{}", "USAGE:".yellow().bold());
+    eprintln!(
+        "    This tool is designed to run as a Claude Code {} hook.",
+        "PreToolUse".cyan()
+    );
+    eprintln!("    It reads JSON from stdin and outputs JSON to stdout.");
+    eprintln!();
+    eprintln!("{}", "CONFIGURATION:".yellow().bold());
+    eprintln!("    Add to {}:", "~/.claude/settings.json".cyan());
+    eprintln!();
+    eprintln!(
+        "    {}",
+        r#"{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "git_safety_guard"}]}]}}"#
+            .bright_black()
+    );
+    eprintln!();
+    eprintln!("{}", "OPTIONS:".yellow().bold());
+    eprintln!(
+        "    {}    Print version information",
+        "--version, -V".green()
+    );
+    eprintln!("    {}       Print this help message", "--help, -h".green());
+    eprintln!();
+    eprintln!("{}", "BLOCKED COMMANDS:".yellow().bold());
+    eprintln!(
+        "    {} git reset --hard, git checkout --, git restore (without --staged)",
+        "Git:".red()
+    );
+    eprintln!("         git clean -f, git push --force, git branch -D, git stash drop/clear");
+    eprintln!(
+        "    {} rm -rf outside of /tmp, /var/tmp, or $TMPDIR",
+        "Filesystem:".red()
+    );
+    eprintln!();
+    eprintln!(
+        "For more information: {}",
+        "https://github.com/Dicklesworthstone/git_safety_guard"
+            .blue()
+            .underline()
+    );
 }
 
 #[cfg(test)]
@@ -338,7 +609,10 @@ mod tests {
 
         #[test]
         fn strips_bin_rm() {
-            assert_eq!(normalize_command("/bin/rm -rf /tmp/test"), "rm -rf /tmp/test");
+            assert_eq!(
+                normalize_command("/bin/rm -rf /tmp/test"),
+                "rm -rf /tmp/test"
+            );
         }
 
         #[test]
@@ -730,18 +1004,18 @@ mod tests {
     mod deny_output_tests {
         use super::*;
 
-        fn capture_deny_output(command: &str, reason: &str) -> HookOutput {
+        fn capture_deny_output(command: &str, reason: &str) -> HookOutput<'static> {
             HookOutput {
                 hook_specific_output: HookSpecificOutput {
                     hook_event_name: "PreToolUse",
                     permission_decision: "deny",
-                    permission_decision_reason: format!(
+                    permission_decision_reason: Cow::Owned(format!(
                         "BLOCKED by git_safety_guard\n\n\
                          Reason: {reason}\n\n\
                          Command: {command}\n\n\
                          If this operation is truly needed, ask the user for explicit \
                          permission and have them run the command manually."
-                    ),
+                    )),
                 },
             }
         }
@@ -752,22 +1026,20 @@ mod tests {
             let json = serde_json::to_string(&output).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
-            assert_eq!(
-                parsed["hookSpecificOutput"]["hookEventName"],
-                "PreToolUse"
+            assert_eq!(parsed["hookSpecificOutput"]["hookEventName"], "PreToolUse");
+            assert_eq!(parsed["hookSpecificOutput"]["permissionDecision"], "deny");
+            assert!(
+                parsed["hookSpecificOutput"]["permissionDecisionReason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("git reset --hard")
             );
-            assert_eq!(
-                parsed["hookSpecificOutput"]["permissionDecision"],
-                "deny"
+            assert!(
+                parsed["hookSpecificOutput"]["permissionDecisionReason"]
+                    .as_str()
+                    .unwrap()
+                    .contains("test reason")
             );
-            assert!(parsed["hookSpecificOutput"]["permissionDecisionReason"]
-                .as_str()
-                .unwrap()
-                .contains("git reset --hard"));
-            assert!(parsed["hookSpecificOutput"]["permissionDecisionReason"]
-                .as_str()
-                .unwrap()
-                .contains("test reason"));
         }
 
         #[test]
@@ -824,6 +1096,278 @@ mod tests {
             assert!(!would_block("/usr/bin/git checkout -b feature"));
             assert!(would_block("/bin/rm -rf /home/user"));
             assert!(!would_block("/bin/rm -rf /tmp/cache"));
+        }
+    }
+
+    mod optimization_tests {
+        use super::*;
+
+        #[test]
+        fn normalize_command_returns_borrowed_for_plain_commands() {
+            let cmd = "git status";
+            let result = normalize_command(cmd);
+            // Should be Cow::Borrowed (no allocation)
+            assert!(matches!(result, Cow::Borrowed(_)));
+            assert_eq!(result, "git status");
+        }
+
+        #[test]
+        fn normalize_command_returns_owned_for_path_commands() {
+            let result = normalize_command("/usr/bin/git status");
+            // Should be Cow::Owned (allocation required)
+            assert!(matches!(result, Cow::Owned(_)));
+            assert_eq!(result, "git status");
+        }
+
+        #[test]
+        fn normalize_command_fast_path_for_non_slash_commands() {
+            // Commands not starting with '/' should take the fast path
+            let result = normalize_command("git push origin main");
+            assert!(matches!(result, Cow::Borrowed(_)));
+        }
+
+        #[test]
+        fn quick_reject_uses_memchr_correctly() {
+            // These should be rejected (no git or rm)
+            assert!(quick_reject("ls -la /home/user"));
+            assert!(quick_reject("cat /etc/passwd"));
+            assert!(quick_reject("echo 'hello world'"));
+            assert!(quick_reject("curl https://example.com"));
+            assert!(quick_reject("python script.py"));
+            assert!(quick_reject("node app.js"));
+            assert!(quick_reject("docker ps"));
+            assert!(quick_reject("kubectl get pods"));
+
+            // These should NOT be rejected (contain git or rm)
+            assert!(!quick_reject("git --version"));
+            assert!(!quick_reject("rm --help"));
+            assert!(!quick_reject("cat .gitignore")); // contains "git"
+            assert!(!quick_reject("rm"));
+            assert!(!quick_reject("git"));
+        }
+
+        #[test]
+        fn quick_reject_handles_edge_cases() {
+            // Edge cases
+            assert!(quick_reject(""));
+            assert!(quick_reject(" "));
+            assert!(quick_reject("\t\n"));
+            assert!(!quick_reject("gitk")); // Contains "git"
+            assert!(!quick_reject("xrm")); // Contains "rm"
+        }
+
+        #[test]
+        fn pattern_lazy_initialization_works() {
+            // Access patterns to trigger lazy initialization
+            let safe_count = SAFE_PATTERNS.len();
+            let destructive_count = DESTRUCTIVE_PATTERNS.len();
+
+            // Verify patterns were compiled
+            assert!(safe_count > 0);
+            assert!(destructive_count > 0);
+
+            // Access again to verify caching works
+            assert_eq!(SAFE_PATTERNS.len(), safe_count);
+            assert_eq!(DESTRUCTIVE_PATTERNS.len(), destructive_count);
+        }
+
+        #[test]
+        fn memchr_finder_initialization_works() {
+            // Trigger lazy initialization
+            let bytes = b"git status";
+            let git_match = GIT_FINDER.find(bytes);
+            let rm_match = RM_FINDER.find(bytes);
+
+            assert!(git_match.is_some());
+            assert!(rm_match.is_none());
+        }
+    }
+
+    mod edge_case_tests {
+        use super::*;
+
+        fn would_block(cmd: &str) -> bool {
+            if quick_reject(cmd) {
+                return false;
+            }
+            let normalized = normalize_command(cmd);
+            for pattern in SAFE_PATTERNS.iter() {
+                if pattern.regex.is_match(&normalized).unwrap_or(false) {
+                    return false;
+                }
+            }
+            for pattern in DESTRUCTIVE_PATTERNS.iter() {
+                if pattern.regex.is_match(&normalized).unwrap_or(false) {
+                    return true;
+                }
+            }
+            false
+        }
+
+        #[test]
+        fn handles_multiline_commands() {
+            // Commands with newlines (shouldn't happen in practice, but test anyway)
+            assert!(!would_block("git status\necho done"));
+        }
+
+        #[test]
+        fn handles_unicode_in_commands() {
+            // Unicode characters in paths
+            assert!(!would_block("git add 日本語ファイル.txt"));
+            assert!(!would_block("git commit -m '添加中文'"));
+        }
+
+        #[test]
+        fn handles_very_long_commands() {
+            // Very long command (stress test)
+            let long_path = "/tmp/".to_string() + &"a".repeat(1000);
+            let cmd = format!("rm -rf {long_path}");
+            assert!(!would_block(&cmd)); // Should be allowed (in /tmp)
+        }
+
+        #[test]
+        fn handles_commands_with_special_characters() {
+            // Special shell characters
+            assert!(!would_block("git log --oneline | head -10"));
+            assert!(!would_block("git status && git diff"));
+            assert!(!would_block("git log $(date)"));
+            assert!(!would_block("git log `whoami`"));
+        }
+
+        #[test]
+        fn handles_quoted_arguments() {
+            // Various quoting styles
+            assert!(!would_block(r#"git commit -m "message with spaces""#));
+            assert!(!would_block("git commit -m 'single quotes'"));
+            assert!(!would_block("git commit -m $'escape sequences'"));
+        }
+
+        #[test]
+        fn handles_subshell_paths() {
+            // Subshell/command substitution in paths
+            assert!(would_block("rm -rf $(pwd)")); // Blocked (not in safe dir)
+            assert!(would_block("rm -rf `pwd`")); // Blocked (not in safe dir)
+        }
+
+        #[test]
+        fn git_reset_soft_is_allowed() {
+            // git reset --soft is safe (doesn't touch working tree)
+            assert!(!would_block("git reset --soft HEAD~1"));
+            assert!(!would_block("git reset --soft"));
+        }
+
+        #[test]
+        fn git_reset_mixed_is_allowed() {
+            // git reset (no flags) or --mixed is safe (only resets index)
+            assert!(!would_block("git reset HEAD"));
+            assert!(!would_block("git reset --mixed HEAD"));
+        }
+
+        #[test]
+        fn handles_git_with_env_vars() {
+            // Git with environment variables
+            assert!(!would_block("GIT_DIR=/custom git status"));
+            assert!(!would_block("GIT_WORK_TREE=/work git diff"));
+        }
+
+        #[test]
+        fn handles_sudo_prefix() {
+            // Sudo before git/rm
+            assert!(would_block("sudo rm -rf /"));
+            assert!(would_block("sudo git reset --hard"));
+        }
+
+        #[test]
+        fn rm_interactive_is_allowed() {
+            // rm -i (interactive) is safe
+            assert!(!would_block("rm -i file.txt"));
+            assert!(!would_block("rm -ri directory"));
+        }
+
+        #[test]
+        fn rm_without_recursive_force_is_allowed() {
+            // Plain rm without -rf is allowed
+            assert!(!would_block("rm file.txt"));
+            assert!(!would_block("rm -f file.txt")); // Force but not recursive
+            assert!(!would_block("rm -r directory")); // Recursive but not force
+        }
+    }
+
+    mod benchmark_simulation_tests {
+        use super::*;
+
+        #[test]
+        fn quick_reject_performance_common_commands() {
+            // Simulate common commands that should be quickly rejected
+            let common_commands = vec![
+                "ls -la",
+                "cd /home/user",
+                "cat file.txt",
+                "echo 'hello'",
+                "cargo build --release",
+                "npm install",
+                "python script.py",
+                "node app.js",
+                "docker ps",
+                "kubectl get pods",
+                "make all",
+                "gcc -o output main.c",
+                "curl https://example.com",
+                "wget https://example.com/file",
+                "tar -xzf archive.tar.gz",
+                "unzip file.zip",
+                "ssh user@host",
+                "scp file user@host:/path",
+                "rsync -av src/ dest/",
+                "find . -name '*.rs'",
+            ];
+
+            for cmd in common_commands {
+                // All these should be quickly rejected
+                assert!(
+                    quick_reject(cmd),
+                    "Command should be quickly rejected: {cmd}"
+                );
+            }
+        }
+
+        #[test]
+        fn full_pipeline_performance_git_commands() {
+            // Common safe git commands should pass through efficiently
+            let safe_git_commands = vec![
+                "git status",
+                "git log --oneline -10",
+                "git diff HEAD",
+                "git add .",
+                "git add -A",
+                "git commit -m 'message'",
+                "git push origin main",
+                "git pull origin main",
+                "git fetch --all",
+                "git branch -a",
+                "git branch -d merged-branch",
+                "git checkout main",
+                "git checkout -b new-feature",
+                "git merge feature-branch",
+                "git rebase main",
+                "git stash",
+                "git stash pop",
+                "git stash list",
+                "git tag v1.0.0",
+                "git remote -v",
+            ];
+
+            for cmd in safe_git_commands {
+                let normalized = normalize_command(cmd);
+                // None of these should match destructive patterns
+                let is_destructive = DESTRUCTIVE_PATTERNS
+                    .iter()
+                    .any(|p| p.regex.is_match(&normalized).unwrap_or(false));
+                assert!(
+                    !is_destructive,
+                    "Safe command incorrectly marked destructive: {cmd}"
+                );
+            }
         }
     }
 }

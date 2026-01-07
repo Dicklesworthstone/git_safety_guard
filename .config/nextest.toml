@@ -1,0 +1,81 @@
+# cargo-nextest configuration for git_safety_guard
+# https://nexte.st/book/configuration.html
+
+# =============================================================================
+# Default Profile - Development
+# =============================================================================
+[profile.default]
+# Fail fast during local development
+fail-fast = true
+# Run tests in parallel (default: number of CPUs)
+test-threads = "num-cpus"
+# Output format for local development
+status-level = "pass"
+final-status-level = "fail"
+# Retry configuration
+retries = 0
+# Slow test thresholds
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# =============================================================================
+# CI Profile - Continuous Integration
+# =============================================================================
+[profile.ci]
+# Don't fail fast in CI - run all tests to get complete results
+fail-fast = false
+# Use all CPUs
+test-threads = "num-cpus"
+# Verbose output for CI logs
+status-level = "all"
+final-status-level = "all"
+# Retry flaky tests once in CI
+retries = 1
+# Longer timeout for CI (may be slower)
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# JUnit XML output for CI integration
+[profile.ci.junit]
+# Output path for JUnit XML report (relative to store dir)
+path = "junit.xml"
+# Report name shown in CI systems
+report-name = "git-safety-guard-test-results"
+# Store output on failure for debugging
+store-success-output = false
+store-failure-output = true
+
+# =============================================================================
+# E2E Profile - End-to-end tests (sequential)
+# =============================================================================
+[profile.e2e]
+# Don't fail fast - run all E2E tests
+fail-fast = false
+# E2E tests often need sequential execution
+test-threads = 1
+status-level = "all"
+final-status-level = "all"
+retries = 1
+# E2E tests may take longer
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[profile.e2e.junit]
+path = "junit.xml"
+report-name = "git-safety-guard-e2e-test-results"
+store-success-output = false
+store-failure-output = true
+
+# =============================================================================
+# Coverage Profile
+# =============================================================================
+[profile.ci-coverage]
+fail-fast = false
+test-threads = "num-cpus"
+status-level = "all"
+final-status-level = "all"
+retries = 0
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[profile.ci-coverage.junit]
+path = "junit.xml"
+report-name = "git-safety-guard-coverage-test-results"
+store-success-output = false
+store-failure-output = true

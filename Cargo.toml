@@ -2,16 +2,57 @@
 name = "git_safety_guard"
 version = "0.1.0"
 edition = "2024"
+resolver = "2"
+authors = [
+    "Jeffrey Emanuel <jeff@jeffreyemanuel.dev>",
+    "Dowwie <dowwie@gmail.com>"
+]
+description = "A Claude Code hook that blocks destructive git and filesystem commands"
+repository = "https://github.com/Dicklesworthstone/git_safety_guard"
+homepage = "https://github.com/Dicklesworthstone/git_safety_guard"
+license = "MIT"
+keywords = ["git", "safety", "claude", "hook", "cli"]
+categories = ["command-line-utilities", "development-tools"]
+readme = "README.md"
+rust-version = "1.85"
+exclude = [
+    ".github/",
+    ".beads/",
+    "scripts/",
+    "*.md",
+    "!README.md",
+]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 fancy-regex = "0.14"
-regex = "1.10"
+memchr = "2.7"
+colored = "2.1"
+thiserror = "2.0"
+
+[build-dependencies]
+vergen-gix = { version = "1.0", features = ["build", "cargo", "rustc"] }
+
+[dev-dependencies]
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.14"
 
 [profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-panic = "abort"
-strip = true
+opt-level = "z"     # Optimize for size (lean binary for distribution)
+lto = true          # Link-time optimization across crates
+codegen-units = 1   # Single codegen unit for better optimization
+panic = "abort"     # Smaller binary, no unwinding overhead
+strip = true        # Remove debug symbols
+
+[profile.dev]
+opt-level = 1       # Faster compile times during development
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"

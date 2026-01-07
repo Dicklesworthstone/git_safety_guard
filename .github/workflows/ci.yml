@@ -1,0 +1,130 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Check compilation
+        run: cargo check --all-targets
+
+      - name: Run tests (with JUnit XML report)
+        run: |
+          cargo nextest run --profile ci --no-fail-fast
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-check
+          path: target/nextest/ci/junit.xml
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Test Report Summary
+        if: always()
+        uses: dorny/test-reporter@v1
+        with:
+          name: Unit Tests
+          path: target/nextest/ci/junit.xml
+          reporter: java-junit
+          fail-on-error: false
+
+  coverage:
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-cov-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-cov-
+
+      - name: Run tests with coverage
+        run: |
+          cargo llvm-cov --all-features --workspace \
+            --ignore-filename-regex='(tests/|benches/|\.cargo/)' \
+            --no-report
+
+      - name: Generate coverage reports
+        run: |
+          # Generate LCOV from collected data (no re-running tests)
+          cargo llvm-cov report --all-features --workspace \
+            --ignore-filename-regex='(tests/|benches/|\.cargo/)' \
+            --lcov --output-path lcov.info
+          # Generate text summary from collected data
+          cargo llvm-cov report --all-features --workspace \
+            --ignore-filename-regex='(tests/|benches/|\.cargo/)' \
+            --text > coverage-summary.txt
+          echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -20 coverage-summary.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            lcov.info
+            coverage-summary.txt
+          retention-days: 30
+
+      - name: Check coverage threshold (informational)
+        run: |
+          # Extract total coverage percentage (informational, not blocking)
+          COVERAGE=$(grep -oP 'TOTAL.*?(\d+\.\d+)%' coverage-summary.txt | grep -oP '\d+\.\d+' | tail -1 || echo "0")
+          echo "Total coverage: ${COVERAGE}%"
+          echo "coverage=${COVERAGE}" >> $GITHUB_OUTPUT
+          # Log warning if below 50% (informational only)
+          if [ "$(echo "$COVERAGE < 50" | bc -l)" -eq 1 ]; then
+            echo "::warning::Coverage is below 50% (${COVERAGE}%)"
+          fi
