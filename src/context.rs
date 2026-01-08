@@ -20,6 +20,7 @@
 //! // The 'git commit -m' part is classified as Executed
 //! ```
 
+use std::borrow::Cow;
 use std::ops::Range;
 
 /// Classification of a command-line span.
@@ -705,20 +706,573 @@ pub fn is_argument_data(command: &str, preceding_flag: Option<&str>) -> bool {
     false
 }
 
-/// Sanitize a command by stripping known-safe string arguments.
+/// Create a sanitized view of `command` for regex-based pattern matching.
 ///
-/// This function removes safe data spans (single-quoted strings, known-safe flags)
-/// from the command before pattern matching. This reduces false positives when
-/// dangerous keywords appear in string literals rather than actual command arguments.
+/// This function replaces known-safe *string arguments* (commit messages, issue
+/// descriptions, grep patterns, etc.) so dangerous substrings inside those
+/// arguments don't trigger false-positive blocks.
 ///
-/// TODO(git_safety_guard-t8x): Full implementation pending - currently returns input unchanged.
+/// The sanitizer is intentionally conservative:
+/// - It only strips arguments in the explicit [`SAFE_STRING_REGISTRY`].
+/// - It never strips any token that appears to contain shell-executed constructs
+///   like `$(` or backticks (even if the flag/command is otherwise safe).
+///
+/// This is designed to be used on the hot path, so it returns a borrowed view
+/// when no sanitization is required.
 #[must_use]
-#[allow(clippy::missing_const_for_fn)] // Will not be const when fully implemented
-pub fn sanitize_for_pattern_matching(cmd: &str) -> std::borrow::Cow<'_, str> {
-    // Stub implementation: return input unchanged
-    // Full implementation will use classify_command() to identify safe spans
-    // and replace their content with harmless placeholders.
-    std::borrow::Cow::Borrowed(cmd)
+pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
+    let tokens = tokenize_command(command);
+    if tokens.is_empty() {
+        return Cow::Borrowed(command);
+    }
+
+    let mut mask_ranges: Vec<Range<usize>> = Vec::new();
+
+    // Per-segment state (segments split on shell separators like |, ;, &&, ||).
+    let mut segment_cmd: Option<&str> = None;
+    let mut segment_cmd_is_all_args_data = false;
+    let mut pending_safe_flag: Option<&str> = None; // Safe flag waiting for its value token
+    let mut options_ended = false;
+    let mut search_pattern_masked = false;
+    let mut wrapper: WrapperState = WrapperState::None;
+
+    for token in &tokens {
+        if token.kind == SanitizeTokenKind::Separator {
+            segment_cmd = None;
+            segment_cmd_is_all_args_data = false;
+            pending_safe_flag = None;
+            options_ended = false;
+            search_pattern_masked = false;
+            wrapper = WrapperState::None;
+            continue;
+        }
+
+        let Some(token_text) = token.text(command) else {
+            // If we can't safely slice the token (unlikely, but possible with odd UTF-8
+            // boundaries), fail open by returning the original command unchanged.
+            return Cow::Borrowed(command);
+        };
+
+        if segment_cmd.is_none() {
+            // Wrapper / prefix handling: allow stacked wrappers like `sudo env VAR=1 git ...`.
+            if let Some(next_wrapper) = WrapperState::from_command_word(token_text) {
+                wrapper = next_wrapper;
+                continue;
+            }
+            if wrapper.should_skip_token(token_text) {
+                wrapper = wrapper.advance_if_needed(token_text);
+                continue;
+            }
+            if is_env_assignment(token_text) {
+                continue;
+            }
+
+            segment_cmd = Some(token_text);
+            segment_cmd_is_all_args_data = SAFE_STRING_REGISTRY.is_all_args_data(token_text);
+            pending_safe_flag = None;
+            options_ended = false;
+            search_pattern_masked = false;
+            continue;
+        }
+
+        let Some(cmd) = segment_cmd else {
+            // Should be unreachable because we set segment_cmd on the first word of each segment,
+            // but fail open for safety.
+            continue;
+        };
+
+        if segment_cmd_is_all_args_data {
+            // For commands like echo/printf, treat all args as data, but never strip inline code.
+            if !token.has_inline_code {
+                mask_ranges.push(token.byte_range.clone());
+            }
+            continue;
+        }
+
+        if let Some(flag) = pending_safe_flag.take() {
+            if !token.has_inline_code {
+                mask_ranges.push(token.byte_range.clone());
+                if is_search_pattern_flag(cmd, flag) {
+                    search_pattern_masked = true;
+                }
+            }
+            continue;
+        }
+
+        // Handle --flag=value (and similar) forms.
+        if let Some((flag, value_range)) = split_flag_assignment(token_text, token.byte_range.start)
+        {
+            if SAFE_STRING_REGISTRY.is_flag_data(cmd, flag) && !token.has_inline_code {
+                // Mask only the value portion (after '='). Keep the flag prefix for readability.
+                mask_ranges.push(value_range);
+
+                // For search tools, masking a flag-supplied pattern should prevent masking the
+                // first positional argument as a pattern.
+                if is_search_pattern_flag(cmd, flag) {
+                    search_pattern_masked = true;
+                }
+            }
+            continue;
+        }
+
+        // Handle separate flag + value forms.
+        if SAFE_STRING_REGISTRY.is_flag_data(cmd, token_text) {
+            pending_safe_flag = Some(token_text);
+            continue;
+        }
+
+        // Search tools: treat the first positional argument as pattern (when not already supplied
+        // via -e/--regexp/etc).
+        if is_search_command(cmd) {
+            if token_text == "--" {
+                options_ended = true;
+                continue;
+            }
+
+            let is_option = !options_ended && token_text.starts_with('-') && token_text != "-";
+            if is_option {
+                continue;
+            }
+
+            if !search_pattern_masked && !token.has_inline_code {
+                mask_ranges.push(token.byte_range.clone());
+                search_pattern_masked = true;
+            }
+        }
+    }
+
+    if mask_ranges.is_empty() {
+        return Cow::Borrowed(command);
+    }
+
+    // Merge overlapping ranges and apply masks.
+    mask_ranges.sort_by_key(|r| r.start);
+    let merged = merge_ranges(&mask_ranges);
+
+    let bytes = command.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut last = 0;
+    for range in merged {
+        if range.start > last {
+            out.extend_from_slice(&bytes[last..range.start]);
+        }
+        out.extend(std::iter::repeat_n(b' ', range.end.saturating_sub(range.start)));
+        last = range.end;
+    }
+    if last < bytes.len() {
+        out.extend_from_slice(&bytes[last..]);
+    }
+
+    match String::from_utf8(out) {
+        Ok(s) => Cow::Owned(s),
+        Err(_) => Cow::Borrowed(command),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WrapperState {
+    None,
+    Sudo { options_ended: bool },
+    Env { options_ended: bool },
+    Command { options_ended: bool },
+}
+
+impl WrapperState {
+    #[inline]
+    #[must_use]
+    fn from_command_word(word: &str) -> Option<Self> {
+        match word {
+            "sudo" => Some(Self::Sudo { options_ended: false }),
+            "env" => Some(Self::Env { options_ended: false }),
+            "command" => Some(Self::Command { options_ended: false }),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    fn should_skip_token(self, token: &str) -> bool {
+        match self {
+            Self::None => false,
+            Self::Sudo { options_ended } | Self::Env { options_ended } | Self::Command { options_ended } => {
+                if options_ended {
+                    return false;
+                }
+                token == "--" || token.starts_with('-')
+            }
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    fn advance_if_needed(self, token: &str) -> Self {
+        match self {
+            Self::Sudo { options_ended } => {
+                if options_ended || token != "--" {
+                    Self::Sudo { options_ended }
+                } else {
+                    Self::Sudo { options_ended: true }
+                }
+            }
+            Self::Env { options_ended } => {
+                if options_ended || token != "--" {
+                    Self::Env { options_ended }
+                } else {
+                    Self::Env { options_ended: true }
+                }
+            }
+            Self::Command { options_ended } => {
+                if options_ended || token != "--" {
+                    Self::Command { options_ended }
+                } else {
+                    Self::Command { options_ended: true }
+                }
+            }
+            Self::None => Self::None,
+        }
+    }
+}
+
+#[inline]
+#[must_use]
+fn is_env_assignment(token: &str) -> bool {
+    // Rough heuristic for KEY=VALUE tokens used as env assignments.
+    let Some((key, _value)) = token.split_once('=') else {
+        return false;
+    };
+    !key.is_empty()
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && !token.starts_with('-')
+}
+
+#[inline]
+#[must_use]
+fn is_search_command(cmd: &str) -> bool {
+    let base_name = cmd.rsplit('/').next().unwrap_or(cmd);
+    matches!(base_name, "rg" | "grep")
+}
+
+#[inline]
+#[must_use]
+fn is_search_pattern_flag(cmd: &str, flag: &str) -> bool {
+    let base_name = cmd.rsplit('/').next().unwrap_or(cmd);
+    match base_name {
+        "rg" => matches!(flag, "-e" | "--regexp" | "--fixed-strings"),
+        "grep" => matches!(flag, "-e" | "--regexp" | "-F" | "--fixed-strings"),
+        _ => false,
+    }
+}
+
+#[must_use]
+fn split_flag_assignment(token: &str, token_start: usize) -> Option<(&str, Range<usize>)> {
+    // Only consider tokens that start like a flag.
+    if !token.starts_with('-') {
+        return None;
+    }
+
+    let (flag, value) = token.split_once('=')?;
+    if value.is_empty() {
+        return None;
+    }
+
+    // Compute the byte range for the value part within the original command.
+    // `split_once` is by bytes, so this is safe.
+    let eq_offset = flag.len();
+    let value_start = token_start + eq_offset + 1;
+    let value_end = token_start + token.len();
+    Some((flag, value_start..value_end))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SanitizeTokenKind {
+    Word,
+    Separator,
+}
+
+#[derive(Debug, Clone)]
+struct SanitizeToken {
+    kind: SanitizeTokenKind,
+    byte_range: Range<usize>,
+    has_inline_code: bool,
+}
+
+impl SanitizeToken {
+    #[inline]
+    #[must_use]
+    fn text<'a>(&self, command: &'a str) -> Option<&'a str> {
+        command.get(self.byte_range.clone())
+    }
+}
+
+#[must_use]
+fn tokenize_command(command: &str) -> Vec<SanitizeToken> {
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+
+    let mut tokens = Vec::new();
+    let mut i = 0;
+
+    while i < len {
+        i = skip_ascii_whitespace(bytes, i, len);
+        if i >= len {
+            break;
+        }
+
+        if let Some(end) = consume_separator_token(bytes, i, len, &mut tokens) {
+            i = end;
+            continue;
+        }
+
+        let start = i;
+        let (end, has_inline_code) = consume_word_token(command, bytes, i, len);
+        i = end;
+
+        if start < i {
+            tokens.push(SanitizeToken {
+                kind: SanitizeTokenKind::Word,
+                byte_range: start..i,
+                has_inline_code,
+            });
+        }
+    }
+
+    tokens
+}
+
+#[inline]
+#[must_use]
+fn skip_ascii_whitespace(bytes: &[u8], mut i: usize, len: usize) -> usize {
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+#[inline]
+fn consume_separator_token(
+    bytes: &[u8],
+    i: usize,
+    len: usize,
+    tokens: &mut Vec<SanitizeToken>,
+) -> Option<usize> {
+    match bytes[i] {
+        b'|' => {
+            let end = if i + 1 < len && bytes[i + 1] == b'|' {
+                i + 2
+            } else {
+                i + 1
+            };
+            tokens.push(SanitizeToken {
+                kind: SanitizeTokenKind::Separator,
+                byte_range: i..end,
+                has_inline_code: false,
+            });
+            Some(end)
+        }
+        b';' => {
+            tokens.push(SanitizeToken {
+                kind: SanitizeTokenKind::Separator,
+                byte_range: i..i + 1,
+                has_inline_code: false,
+            });
+            Some(i + 1)
+        }
+        b'&' => {
+            let end = if i + 1 < len && bytes[i + 1] == b'&' {
+                i + 2
+            } else {
+                i + 1
+            };
+            tokens.push(SanitizeToken {
+                kind: SanitizeTokenKind::Separator,
+                byte_range: i..end,
+                has_inline_code: false,
+            });
+            Some(end)
+        }
+        _ => None,
+    }
+}
+
+#[must_use]
+fn consume_word_token(command: &str, bytes: &[u8], mut i: usize, len: usize) -> (usize, bool) {
+    let mut has_inline_code = false;
+
+    while i < len {
+        let b = bytes[i];
+
+        if b.is_ascii_whitespace() {
+            break;
+        }
+
+        if matches!(b, b'|' | b';' | b'&') {
+            break;
+        }
+
+        match b {
+            b'\\' => {
+                // Skip escaped byte. This is conservative for UTF-8: if the escape
+                // is used with a multibyte char, this may desync, but we fail open
+                // (no masking) if slicing becomes invalid.
+                i = (i + 2).min(len);
+            }
+            b'\'' => {
+                // Single-quoted segment (no escapes)
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1; // consume closing quote
+                }
+            }
+            b'"' => {
+                // Double-quoted segment (escapes + substitution)
+                i += 1;
+                while i < len {
+                    match bytes[i] {
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        b'\\' => {
+                            i = (i + 2).min(len);
+                        }
+                        b'$' if i + 1 < len && bytes[i + 1] == b'(' => {
+                            has_inline_code = true;
+                            i = consume_dollar_paren(command, i);
+                        }
+                        b'`' => {
+                            has_inline_code = true;
+                            i = consume_backticks(command, i);
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            b'$' if i + 1 < len && bytes[i + 1] == b'(' => {
+                has_inline_code = true;
+                i = consume_dollar_paren(command, i);
+            }
+            b'`' => {
+                has_inline_code = true;
+                i = consume_backticks(command, i);
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    (i, has_inline_code)
+}
+
+#[must_use]
+fn consume_dollar_paren(command: &str, start: usize) -> usize {
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+
+    debug_assert!(bytes.get(start) == Some(&b'$'));
+    debug_assert!(bytes.get(start + 1) == Some(&b'('));
+
+    let mut i = start + 2;
+    let mut depth: u32 = 1;
+
+    while i < len {
+        match bytes[i] {
+            b'\\' => {
+                i = (i + 2).min(len);
+            }
+            b'\'' => {
+                // Single quotes inside: consume until closing
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                // Double quotes inside: consume until closing, respecting escapes
+                i += 1;
+                while i < len {
+                    match bytes[i] {
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        b'\\' => {
+                            i = (i + 2).min(len);
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            b'$' if i + 1 < len && bytes[i + 1] == b'(' => {
+                depth += 1;
+                i += 2;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                i += 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    i
+}
+
+#[must_use]
+fn consume_backticks(command: &str, start: usize) -> usize {
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+
+    debug_assert!(bytes.get(start) == Some(&b'`'));
+
+    let mut i = start + 1;
+    while i < len {
+        match bytes[i] {
+            b'\\' => {
+                i = (i + 2).min(len);
+            }
+            b'`' => {
+                i += 1;
+                break;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    i
+}
+
+#[must_use]
+fn merge_ranges(ranges: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut merged: Vec<Range<usize>> = Vec::new();
+    for range in ranges {
+        if let Some(last) = merged.last_mut() {
+            if range.start <= last.end {
+                last.end = last.end.max(range.end);
+                continue;
+            }
+        }
+        merged.push(range.clone());
+    }
+    merged
 }
 
 #[cfg(test)]

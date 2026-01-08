@@ -55,6 +55,7 @@ pub mod cli;
 pub mod config;
 pub mod context;
 pub mod evaluator;
+pub mod heredoc;
 pub mod hook;
 pub mod packs;
 
@@ -71,4 +72,10 @@ pub use packs::{Pack, PackId, PackRegistry};
 pub use context::{
     CommandSpans, ContextClassifier, SAFE_STRING_REGISTRY, SafeFlagEntry, SafeStringRegistry, Span,
     SpanKind, classify_command, is_argument_data, sanitize_for_pattern_matching,
+};
+
+// Re-export heredoc detection types
+pub use heredoc::{
+    ExtractionLimits, ExtractionResult, ExtractedContent, ScriptLanguage, TriggerResult,
+    check_triggers, extract_content, matched_triggers,
 };

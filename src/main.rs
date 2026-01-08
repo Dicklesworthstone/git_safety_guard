@@ -459,24 +459,7 @@ fn main() {
     // Normalize the command (strips /usr/bin/git -> git, etc.)
     let normalized = normalize_command(&command);
 
-    // LEGACY: Check safe patterns first (whitelist approach).
-    // If any safe pattern matches, allow immediately.
-    for pattern in SAFE_PATTERNS.iter() {
-        if pattern.regex.is_match(&normalized).unwrap_or(false) {
-            return;
-        }
-    }
-
-    // LEGACY: Check destructive patterns (blacklist approach).
-    // If any destructive pattern matches, deny with reason.
-    for pattern in DESTRUCTIVE_PATTERNS.iter() {
-        if pattern.regex.is_match(&normalized).unwrap_or(false) {
-            hook::output_denial(&command, pattern.reason, None);
-            return;
-        }
-    }
-
-    // NEW: Check against enabled packs from configuration
+    // Check against enabled packs from configuration
     // (enabled_packs was computed earlier for pack-aware quick reject)
     let result = REGISTRY.check_command(&normalized, &enabled_packs);
 

@@ -404,6 +404,7 @@ dependencies = [
  "once_cell",
  "predicates",
  "proptest",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",
