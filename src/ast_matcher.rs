@@ -390,8 +390,24 @@ fn default_patterns() -> HashMap<ScriptLanguage, Vec<CompiledPattern>> {
                 Severity::High,
                 None,
             ),
+            // Also match when Path is imported directly: from pathlib import Path
+            CompiledPattern::new(
+                "Path($$$).unlink($$$)".to_string(),
+                "heredoc.python.pathlib_unlink".to_string(),
+                "Path.unlink() deletes files".to_string(),
+                Severity::High,
+                None,
+            ),
             CompiledPattern::new(
                 "pathlib.Path($$$).rmdir($$$)".to_string(),
+                "heredoc.python.pathlib_rmdir".to_string(),
+                "Path.rmdir() deletes directories".to_string(),
+                Severity::High,
+                None,
+            ),
+            // Also match when Path is imported directly
+            CompiledPattern::new(
+                "Path($$$).rmdir($$$)".to_string(),
                 "heredoc.python.pathlib_rmdir".to_string(),
                 "Path.rmdir() deletes directories".to_string(),
                 Severity::High,
@@ -888,6 +904,186 @@ mod tests {
         match matches {
             Ok(m) => assert!(m.is_empty(), "should not match safe code"),
             Err(e) => panic!("unexpected error: {e}"),
+        }
+    }
+
+    // =========================================================================
+    // Python Fixture Tests (git_safety_guard-beq)
+    // =========================================================================
+
+    /// Positive fixtures: patterns that MUST match (Critical/High severity = blocks)
+    mod python_positive_fixtures {
+        use super::*;
+
+        #[test]
+        fn shutil_rmtree_blocks() {
+            let matcher = AstMatcher::new();
+            let code = "import shutil\nshutil.rmtree('/dangerous/path')";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(!matches.is_empty(), "shutil.rmtree must match");
+            assert_eq!(matches[0].rule_id, "heredoc.python.shutil_rmtree");
+            assert!(matches[0].severity.blocks_by_default());
+        }
+
+        #[test]
+        fn os_remove_blocks() {
+            let matcher = AstMatcher::new();
+            let code = "import os\nos.remove('/etc/passwd')";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(!matches.is_empty(), "os.remove must match");
+            assert_eq!(matches[0].rule_id, "heredoc.python.os_remove");
+            assert!(matches[0].severity.blocks_by_default());
+        }
+
+        #[test]
+        fn os_rmdir_blocks() {
+            let matcher = AstMatcher::new();
+            let code = "import os\nos.rmdir('/important/dir')";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(!matches.is_empty(), "os.rmdir must match");
+            assert_eq!(matches[0].rule_id, "heredoc.python.os_rmdir");
+            assert!(matches[0].severity.blocks_by_default());
+        }
+
+        #[test]
+        fn os_unlink_blocks() {
+            let matcher = AstMatcher::new();
+            let code = "import os\nos.unlink('/critical/file')";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(!matches.is_empty(), "os.unlink must match");
+            assert_eq!(matches[0].rule_id, "heredoc.python.os_unlink");
+            assert!(matches[0].severity.blocks_by_default());
+        }
+
+        #[test]
+        fn pathlib_unlink_blocks() {
+            let matcher = AstMatcher::new();
+            let code = "from pathlib import Path\nPath('/secret').unlink()";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(!matches.is_empty(), "pathlib.Path().unlink() must match");
+            assert_eq!(matches[0].rule_id, "heredoc.python.pathlib_unlink");
+            assert!(matches[0].severity.blocks_by_default());
+        }
+
+        #[test]
+        fn pathlib_rmdir_blocks() {
+            let matcher = AstMatcher::new();
+            let code = "from pathlib import Path\nPath('/danger/dir').rmdir()";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(!matches.is_empty(), "pathlib.Path().rmdir() must match");
+            assert_eq!(matches[0].rule_id, "heredoc.python.pathlib_rmdir");
+            assert!(matches[0].severity.blocks_by_default());
+        }
+
+        #[test]
+        fn subprocess_run_warns() {
+            // subprocess.run is Medium severity - warns but doesn't block by default
+            // per bead: "Do not block on shell=True alone"
+            let matcher = AstMatcher::new();
+            let code = "import subprocess\nsubprocess.run(['ls', '-la'])";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(!matches.is_empty(), "subprocess.run must match");
+            assert_eq!(matches[0].rule_id, "heredoc.python.subprocess_run");
+            assert!(!matches[0].severity.blocks_by_default(), "Medium should not block");
+        }
+
+        #[test]
+        fn os_system_warns() {
+            // os.system is Medium severity - warns but doesn't block by default
+            let matcher = AstMatcher::new();
+            let code = "import os\nos.system('echo hello')";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(!matches.is_empty(), "os.system must match");
+            assert_eq!(matches[0].rule_id, "heredoc.python.os_system");
+            assert!(!matches[0].severity.blocks_by_default(), "Medium should not block");
+        }
+    }
+
+    /// Negative fixtures: patterns that must NOT match (safe code)
+    mod python_negative_fixtures {
+        use super::*;
+
+        #[test]
+        fn print_statement_does_not_match() {
+            let matcher = AstMatcher::new();
+            // String containing destructive command text is NOT executed
+            let code = "print('rm -rf /')";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(matches.is_empty(), "print statement must not match");
+        }
+
+        #[test]
+        fn import_alone_does_not_match() {
+            let matcher = AstMatcher::new();
+            // Just importing doesn't execute anything dangerous
+            let code = "import shutil\nimport os\nimport subprocess";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(matches.is_empty(), "imports alone must not match");
+        }
+
+        #[test]
+        fn comment_does_not_match() {
+            let matcher = AstMatcher::new();
+            // Comments mentioning dangerous operations are not executed
+            let code = "# shutil.rmtree('/') would be dangerous\nx = 1";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(matches.is_empty(), "comments must not match");
+        }
+
+        #[test]
+        fn safe_file_operations_do_not_match() {
+            let matcher = AstMatcher::new();
+            // Safe file operations should not trigger
+            let code = r"
+import os
+os.path.exists('/tmp/test')
+os.path.isfile('/tmp/test')
+os.listdir('/tmp')
+with open('/tmp/log.txt', 'w') as f:
+    f.write('hello')
+";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(matches.is_empty(), "safe file operations must not match");
+        }
+
+        #[test]
+        fn string_variable_does_not_match() {
+            let matcher = AstMatcher::new();
+            // String that looks like dangerous code but is just data
+            let code = r#"
+dangerous_cmd = "shutil.rmtree('/')"
+docs = "Example: os.remove(path)"
+"#;
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(matches.is_empty(), "string literals must not match");
+        }
+
+        #[test]
+        fn docstring_does_not_match() {
+            let matcher = AstMatcher::new();
+            let code = r#"
+def cleanup():
+    """
+    Warning: Do not call shutil.rmtree('/') as it will delete everything.
+    Use os.remove() for single files only.
+    """
+    pass
+"#;
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            assert!(matches.is_empty(), "docstrings must not match");
+        }
+
+        #[test]
+        fn safe_tmp_cleanup_in_context() {
+            let matcher = AstMatcher::new();
+            // This tests structural matching - the pattern matches but this is
+            // about whether we match at all (we do), not about path safety
+            // NOTE: This test verifies the pattern DOES match (as expected)
+            // Path-based filtering would be a separate concern
+            let code = "import shutil\nshutil.rmtree('/tmp/build_artifacts')";
+            let matches = matcher.find_matches(code, ScriptLanguage::Python).unwrap();
+            // Pattern matching finds this - path filtering is separate policy
+            assert!(!matches.is_empty(), "shutil.rmtree matches structurally");
         }
     }
 }
