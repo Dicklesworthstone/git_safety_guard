@@ -1403,6 +1403,17 @@ fn clean_path_token(token: &str) -> &str {
     token.trim_end_matches(&[';', ',', ')', ']', '}'][..])
 }
 
+/// Check if a path contains `..` as an actual path component (not in a filename).
+///
+/// Examples:
+/// - `/tmp/../etc` → true (path traversal)
+/// - `/tmp/foo..bar` → false (dots in filename, not traversal)
+/// - `../etc` → true (relative path traversal)
+fn contains_path_traversal(path: &str) -> bool {
+    // Check for `..` as a path segment: `/../`, `/..` at end, `../` at start, or exactly `..`
+    path.contains("/../") || path.ends_with("/..") || path.starts_with("../") || path == ".."
+}
+
 fn is_catastrophic_path(path: &str) -> bool {
     // Root or home always catastrophic
     if matches!(path, "/" | "~") || path.starts_with("~/") {
@@ -1412,7 +1423,7 @@ fn is_catastrophic_path(path: &str) -> bool {
     // Temp directories are safe UNLESS they contain path traversal.
     // Path traversal can escape temp directories (e.g., /tmp/../etc -> /etc).
     if path.starts_with("/tmp") || path.starts_with("/var/tmp") {
-        return path.contains("..");
+        return contains_path_traversal(path);
     }
 
     // Standard catastrophic system paths
@@ -2196,6 +2207,23 @@ mod tests {
                 .unwrap();
             assert!(matches.is_empty());
         }
+
+        #[test]
+        fn fs_rmsync_tmp_dotdot_in_filename_does_not_block() {
+            // Filenames with consecutive dots are NOT path traversal
+            let matcher = AstMatcher::new();
+            let code =
+                "const fs = require('fs');\nfs.rmSync('/tmp/foo..bar', { recursive: true });";
+
+            let matches = matcher
+                .find_matches(code, ScriptLanguage::JavaScript)
+                .unwrap();
+            // Should match as medium severity (warn), NOT as catastrophic
+            assert!(
+                !matches.iter().any(|m| m.rule_id.contains("catastrophic")),
+                "foo..bar is a filename, not path traversal"
+            );
+        }
     }
 
     #[test]
@@ -2508,6 +2536,36 @@ mod tests {
                 "exec('git reset --hard ...') should block"
             );
         }
+
+        #[test]
+        fn open3_capture3_rm_rf_catastrophic_blocks() {
+            let matcher = AstMatcher::new();
+            let code = "require 'open3'\nOpen3.capture3('rm -rf /')";
+
+            let matches = matcher.find_matches(code, ScriptLanguage::Ruby).unwrap();
+            assert!(
+                matches
+                    .iter()
+                    .any(|m| m.rule_id.ends_with(".rm_rf_catastrophic")
+                        && m.severity.blocks_by_default()),
+                "Open3.capture3('rm -rf /') should block"
+            );
+        }
+
+        #[test]
+        fn open3_popen3_git_reset_hard_blocks() {
+            let matcher = AstMatcher::new();
+            let code = "Open3.popen3('git reset --hard') { |i,o,e,t| }";
+
+            let matches = matcher.find_matches(code, ScriptLanguage::Ruby).unwrap();
+            assert!(
+                matches
+                    .iter()
+                    .any(|m| m.rule_id.ends_with(".git_reset_hard")
+                        && m.severity.blocks_by_default()),
+                "Open3.popen3('git reset --hard') should block"
+            );
+        }
     }
 
     mod ruby_negative_fixtures {
@@ -2529,6 +2587,18 @@ mod tests {
 
             let matches = matcher.find_matches(code, ScriptLanguage::Ruby).unwrap();
             assert!(matches.is_empty());
+        }
+
+        #[test]
+        fn open3_capture3_safe_payload_does_not_match() {
+            let matcher = AstMatcher::new();
+            let code = "Open3.capture3('git status')";
+
+            let matches = matcher.find_matches(code, ScriptLanguage::Ruby).unwrap();
+            assert!(
+                matches.is_empty(),
+                "Open3.capture3 with safe payload should not match"
+            );
         }
 
         #[test]

@@ -361,10 +361,13 @@ fn register_core_filesystem_suggestions(m: &mut HashMap<&'static str, Vec<Sugges
     m.insert("core.filesystem:rm-recursive-force-long", rm_rf_suggestions);
 }
 
-/// Register suggestions for heredoc pattern rules (placeholder for expansion).
+/// Register suggestions for heredoc pattern rules.
+///
+/// Note: Rule IDs use the canonical `pack_id:pattern_name` format with colons,
+/// matching the format used by `RuleId` in the allowlist module.
 fn register_heredoc_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>) {
     m.insert(
-        "heredoc.python.shutil_rmtree",
+        "heredoc.python:shutil_rmtree",
         vec![
             Suggestion::new(
                 SuggestionKind::PreviewFirst,
@@ -378,7 +381,7 @@ fn register_heredoc_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>) 
     );
 
     m.insert(
-        "heredoc.javascript.fs_rmsync",
+        "heredoc.javascript:fs_rmsync",
         vec![
             Suggestion::new(
                 SuggestionKind::PreviewFirst,
@@ -516,6 +519,27 @@ mod tests {
             assert!(
                 get_suggestions(rule).is_some(),
                 "Expected suggestions for {rule}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_has_heredoc_rules() {
+        // Verify heredoc rules use canonical colon format (pack_id:pattern_name)
+        let expected_rules = [
+            "heredoc.python:shutil_rmtree",
+            "heredoc.javascript:fs_rmsync",
+        ];
+
+        for rule in expected_rules {
+            assert!(
+                get_suggestions(rule).is_some(),
+                "Expected suggestions for {rule}"
+            );
+            // Verify the format uses colon separator (matches RuleId format)
+            assert!(
+                rule.contains(':'),
+                "Rule ID should use colon format: {rule}"
             );
         }
     }

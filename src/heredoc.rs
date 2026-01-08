@@ -2471,10 +2471,11 @@ echo "done""#;
         #[test]
         fn skips_comments() {
             // Comments mentioning dangerous commands should NOT be extracted
+            // tree-sitter-bash parses "# ..." as a comment node, not a command node
             let commands = extract_shell_commands("# rm -rf / would be bad");
             assert!(
-                commands.is_empty() || !commands.iter().any(|c| c.text.contains("rm")),
-                "comments must not be extracted as commands"
+                commands.is_empty(),
+                "comment-only content should produce zero commands, got: {commands:?}"
             );
         }
 
@@ -2518,11 +2519,11 @@ echo "done""#;
 
         #[test]
         fn comment_only_returns_no_commands() {
+            // tree-sitter-bash parses "# ..." as a comment node, not a command node
             let commands = extract_shell_commands("# This is just a comment");
-            // Comments should not produce commands
             assert!(
-                commands.is_empty() || commands.iter().all(|c| c.text.trim().starts_with('#')),
-                "comment-only content should not produce executable commands"
+                commands.is_empty(),
+                "comment-only content should produce zero commands, got: {commands:?}"
             );
         }
 
