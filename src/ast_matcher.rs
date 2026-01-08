@@ -1404,12 +1404,18 @@ fn clean_path_token(token: &str) -> &str {
 }
 
 fn is_catastrophic_path(path: &str) -> bool {
+    // Root or home always catastrophic
     if matches!(path, "/" | "~") || path.starts_with("~/") {
         return true;
     }
+
+    // Temp directories are safe UNLESS they contain path traversal.
+    // Path traversal can escape temp directories (e.g., /tmp/../etc -> /etc).
     if path.starts_with("/tmp") || path.starts_with("/var/tmp") {
-        return false;
+        return path.contains("..");
     }
+
+    // Standard catastrophic system paths
     path.starts_with("/etc")
         || path.starts_with("/home")
         || path.starts_with("/usr")
@@ -2108,6 +2114,28 @@ mod tests {
                         && m.severity.blocks_by_default()),
                 "spawnSync('rm', ['-rf','/']) should block"
             );
+        }
+
+        #[test]
+        fn fs_rmsync_path_traversal_escapes_tmp_blocks() {
+            // Path traversal from /tmp to /etc should be detected as catastrophic
+            let matcher = AstMatcher::new();
+            let code = "const fs = require('fs');\nfs.rmSync('/tmp/../etc', { recursive: true });";
+
+            let matches = matcher
+                .find_matches(code, ScriptLanguage::JavaScript)
+                .unwrap();
+            assert!(
+                matches
+                    .iter()
+                    .any(|m| m.rule_id == "heredoc.javascript.fs_rmsync.catastrophic"),
+                "path traversal /tmp/../etc should be detected as catastrophic"
+            );
+            let hit = matches
+                .into_iter()
+                .find(|m| m.rule_id == "heredoc.javascript.fs_rmsync.catastrophic")
+                .unwrap();
+            assert!(hit.severity.blocks_by_default());
         }
     }
 
