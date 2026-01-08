@@ -178,6 +178,7 @@ impl CommandSpans {
     }
 
     /// Extract the text content for all executable spans.
+    #[must_use]
     pub fn executable_text<'a>(&self, command: &'a str) -> Vec<&'a str> {
         self.executable_spans()
             .map(|s| s.text(command))
@@ -228,6 +229,7 @@ impl Default for ContextClassifier {
 
 impl ContextClassifier {
     /// Create a new context classifier with default settings.
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             inline_code_commands: &[
@@ -246,6 +248,7 @@ impl ContextClassifier {
     ///
     /// Returns a `CommandSpans` structure containing classified spans.
     /// Each byte in the command will belong to exactly one span.
+    #[must_use]
     pub fn classify(&self, command: &str) -> CommandSpans {
         let bytes = command.as_bytes();
         let len = bytes.len();
@@ -500,6 +503,7 @@ impl ContextClassifier {
 /// }
 /// ```
 #[inline]
+#[must_use]
 pub fn classify_command(command: &str) -> CommandSpans {
     ContextClassifier::new().classify(command)
 }
