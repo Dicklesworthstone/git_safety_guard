@@ -66,7 +66,7 @@ Command Input
           │ Content + language
           ▼
 ┌─────────────────────┐
-│ Tier 3: AST Scan    │ ─── No match ──► ALLOW
+│ Tier 3: AST Scan    │ ─── No match ──► Continue to pack patterns
 │ (ast-grep-core,     │ ─── Match ──► BLOCK
 │  <5ms, timeout 20ms)│
 └─────────────────────┘

@@ -130,7 +130,7 @@ They're only evaluated when:
 | ID | Pattern | Severity | FP Risk |
 |----|---------|----------|---------|
 | shutil_rmtree | `shutil.rmtree($PATH)` | Critical | Low |
-| os_remove_system | `os.remove("/")`, `os.remove("/etc")` | Critical | Low |
+| os_removedirs | `os.removedirs($PATH)` (removes empty dirs up path) | Critical | Low |
 | subprocess_rm_rf | `subprocess.*(["rm", "-rf", ...])` | Critical | Medium |
 | os_system_rm | `os.system("rm ...")` | Critical | Medium |
 
