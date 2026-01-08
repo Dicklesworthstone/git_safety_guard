@@ -153,6 +153,7 @@ fn build_suggestion_registry() -> HashMap<&'static str, Vec<Suggestion>> {
 }
 
 /// Register suggestions for core.git pack rules.
+#[allow(clippy::too_many_lines)]
 fn register_core_git_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>) {
     m.insert(
         "core.git:reset-hard",
@@ -253,6 +254,83 @@ fn register_core_git_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>)
                 "Use `git branch -d` (lowercase) to only delete if merged",
             )
             .with_command("git branch -d branch-name"),
+        ],
+    );
+
+    // restore worktree patterns
+    let restore_worktree_suggestions = vec![
+        Suggestion::new(
+            SuggestionKind::PreviewFirst,
+            "Run `git diff` to see uncommitted changes that would be lost",
+        )
+        .with_command("git diff"),
+        Suggestion::new(
+            SuggestionKind::SaferAlternative,
+            "Use `git restore --staged` to unstage without discarding changes",
+        )
+        .with_command("git restore --staged"),
+        Suggestion::new(
+            SuggestionKind::WorkflowFix,
+            "Stash changes before discarding with `git stash`",
+        )
+        .with_command("git stash"),
+    ];
+    m.insert(
+        "core.git:restore-worktree",
+        restore_worktree_suggestions.clone(),
+    );
+    m.insert(
+        "core.git:restore-worktree-explicit",
+        restore_worktree_suggestions,
+    );
+
+    // reset --merge
+    m.insert(
+        "core.git:reset-merge",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Run `git status` to see uncommitted changes that could be lost",
+            )
+            .with_command("git status"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Use `git merge --abort` to cleanly abort an in-progress merge",
+            )
+            .with_command("git merge --abort"),
+        ],
+    );
+
+    // stash destruction
+    m.insert(
+        "core.git:stash-drop",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "List stashes with `git stash list` and view contents with `git stash show -p`",
+            )
+            .with_command("git stash list"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Apply the stash first with `git stash apply` before dropping",
+            )
+            .with_command("git stash apply"),
+        ],
+    );
+
+    m.insert(
+        "core.git:stash-clear",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "List all stashes with `git stash list` to review what would be deleted",
+            )
+            .with_command("git stash list"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Drop stashes individually with `git stash drop` for more control",
+            )
+            .with_command("git stash drop stash@{0}"),
         ],
     );
 }
@@ -402,12 +480,17 @@ mod tests {
         // These must match actual pattern names from src/packs/core/git.rs
         let expected_rules = [
             "core.git:reset-hard",
+            "core.git:reset-merge",
             "core.git:clean-force",
             "core.git:push-force-long",
             "core.git:push-force-short",
             "core.git:checkout-discard",
             "core.git:checkout-ref-discard",
             "core.git:branch-force-delete",
+            "core.git:restore-worktree",
+            "core.git:restore-worktree-explicit",
+            "core.git:stash-drop",
+            "core.git:stash-clear",
         ];
 
         for rule in expected_rules {
