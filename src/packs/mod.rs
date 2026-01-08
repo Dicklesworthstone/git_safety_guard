@@ -1648,4 +1648,112 @@ mod tests {
         let default: DecisionMode = DecisionMode::default();
         assert_eq!(default, DecisionMode::Deny);
     }
+
+    // =========================================================================
+    // Severity regression tests (git_safety_guard-1gt.3.2)
+    // =========================================================================
+    // These tests prevent accidental severity drift for high-impact rules.
+    // Changing severity of a rule changes its blocking behavior (critical/high block,
+    // medium warns, low logs). Unintentional changes could let dangerous commands through.
+
+    /// Verify critical git rules remain at Critical severity.
+    #[test]
+    fn severity_regression_git_critical_rules() {
+        let git_pack = REGISTRY
+            .get("core.git")
+            .expect("core.git pack should exist");
+
+        // These rules should ALWAYS be Critical - they're the most dangerous
+        let critical_rules = [
+            "reset-hard",
+            "clean-force",
+            "push-force-long",
+            "push-force-short",
+            "stash-clear",
+        ];
+
+        for rule_name in critical_rules {
+            let pattern = git_pack
+                .destructive_patterns
+                .iter()
+                .find(|p| p.name == Some(rule_name))
+                .unwrap_or_else(|| panic!("Rule {rule_name} should exist in core.git"));
+
+            assert_eq!(
+                pattern.severity,
+                Severity::Critical,
+                "Rule {rule_name} in core.git should be Critical severity"
+            );
+        }
+    }
+
+    /// Verify filesystem critical rule remains at Critical severity.
+    #[test]
+    fn severity_regression_filesystem_critical_rules() {
+        let fs_pack = REGISTRY
+            .get("core.filesystem")
+            .expect("core.filesystem pack should exist");
+
+        // rm -rf on root/home is the most dangerous possible command
+        let pattern = fs_pack
+            .destructive_patterns
+            .iter()
+            .find(|p| p.name == Some("rm-rf-root-home"))
+            .expect("rm-rf-root-home rule should exist");
+
+        assert_eq!(
+            pattern.severity,
+            Severity::Critical,
+            "rm-rf-root-home should be Critical severity (most dangerous)"
+        );
+    }
+
+    /// Verify high-severity rules aren't accidentally downgraded.
+    #[test]
+    fn severity_regression_git_high_rules() {
+        let git_pack = REGISTRY
+            .get("core.git")
+            .expect("core.git pack should exist");
+
+        // These should be at least High (blocking by default)
+        let high_or_above_rules = [
+            "checkout-discard",
+            "checkout-ref-discard",
+            "restore-worktree",
+            "restore-worktree-explicit",
+            "reset-merge",
+            "branch-force-delete",
+            "stash-drop",
+        ];
+
+        for rule_name in high_or_above_rules {
+            let pattern = git_pack
+                .destructive_patterns
+                .iter()
+                .find(|p| p.name == Some(rule_name))
+                .unwrap_or_else(|| panic!("Rule {rule_name} should exist in core.git"));
+
+            assert!(
+                pattern.severity.blocks_by_default(),
+                "Rule {rule_name} in core.git should block by default (High or Critical)"
+            );
+        }
+    }
+
+    /// Verify all core pack rules have explicit blocking behavior.
+    #[test]
+    fn all_core_rules_block_by_default() {
+        // Core packs should be conservative - all rules should block by default
+        for pack_id in ["core.git", "core.filesystem"] {
+            let pack = REGISTRY.get(pack_id).expect("Pack should exist");
+
+            for pattern in &pack.destructive_patterns {
+                let name = pattern.name.unwrap_or("<unnamed>");
+                assert!(
+                    pattern.severity.blocks_by_default(),
+                    "Core pack rule {pack_id}:{name} should block by default"
+                );
+            }
+        }
+    }
 }

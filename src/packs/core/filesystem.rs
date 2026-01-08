@@ -153,30 +153,40 @@ fn create_safe_patterns() -> Vec<SafePattern> {
 }
 
 fn create_destructive_patterns() -> Vec<DestructivePattern> {
+    // Severity levels:
+    // - Critical: Most dangerous, irreversible, high-confidence detections
+    // - High: Dangerous but more context-dependent (default)
+    // - Medium: Warn by default
+    // - Low: Log only
+
     vec![
-        // rm -rf on root or home paths (most dangerous)
+        // rm -rf on root or home paths (CRITICAL - catastrophic, never allow)
         destructive_pattern!(
             "rm-rf-root-home",
             r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+[/~]|rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+[/~]",
-            "rm -rf on root or home paths is EXTREMELY DANGEROUS. This command will NOT be executed. Ask the user to run it manually if truly needed."
+            "rm -rf on root or home paths is EXTREMELY DANGEROUS. This command will NOT be executed. Ask the user to run it manually if truly needed.",
+            Critical
         ),
-        // General rm -rf (caught after safe patterns)
+        // General rm -rf (caught after safe patterns) - High because temp paths are allowed
         destructive_pattern!(
             "rm-rf-general",
             r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f|rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]",
-            "rm -rf is destructive and requires human approval. Explain what you want to delete and why, then ask the user to run the command manually."
+            "rm -rf is destructive and requires human approval. Explain what you want to delete and why, then ask the user to run the command manually.",
+            High
         ),
         // rm -r -f (separate flags)
         destructive_pattern!(
             "rm-r-f-separate",
             r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f|rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]",
-            "rm with separate -r -f flags is destructive and requires human approval."
+            "rm with separate -r -f flags is destructive and requires human approval.",
+            High
         ),
         // rm --recursive --force (long flags)
         destructive_pattern!(
             "rm-recursive-force-long",
             r"rm\s+.*--recursive.*--force|rm\s+.*--force.*--recursive",
-            "rm --recursive --force is destructive and requires human approval."
+            "rm --recursive --force is destructive and requires human approval.",
+            High
         ),
     ]
 }

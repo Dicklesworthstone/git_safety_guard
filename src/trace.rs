@@ -42,6 +42,7 @@
 
 use crate::allowlist::AllowlistLayer;
 use crate::evaluator::{EvaluationDecision, MatchSource};
+use crate::packs::Severity;
 use serde::Serialize;
 use std::time::Instant;
 
@@ -181,6 +182,8 @@ pub struct MatchInfo {
     pub pack_id: Option<String>,
     /// Pattern name that matched.
     pub pattern_name: Option<String>,
+    /// Severity level of the matched pattern.
+    pub severity: Option<Severity>,
     /// Human-readable reason.
     pub reason: String,
     /// Source of the match.
@@ -775,6 +778,9 @@ pub struct JsonMatchInfo {
     /// Pattern name within the pack.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern_name: Option<String>,
+    /// Severity level (critical, high, medium, low).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub severity: Option<String>,
     /// Human-readable reason for the match.
     pub reason: String,
     /// Source of the match.
@@ -935,6 +941,7 @@ impl MatchInfo {
             rule_id: self.rule_id.clone(),
             pack_id: self.pack_id.clone(),
             pattern_name: self.pattern_name.clone(),
+            severity: self.severity.map(|s| s.label().to_string()),
             reason: self.reason.clone(),
             source: match self.source {
                 MatchSource::Pack => "pack".to_string(),
