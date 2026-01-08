@@ -618,6 +618,243 @@ test_command 'FOO=1 git commit -m "Fix rm -rf detection"' "allow" "env assignmen
 test_command 'sudo bash -c "rm -rf /"' "block" "sudo bash -c executes rm -rf /"
 test_command 'env FOO=1 bash -c "rm -rf /"' "block" "env VAR=... bash -c executes rm -rf /"
 
+log_section "Allowlist E2E Tests (git_safety_guard-1gt.2.6)"
+
+# Test helper: run command with a project allowlist file in an isolated directory.
+# This tests the real hook path with allowlist layering.
+test_command_with_allowlist() {
+    local cmd="$1"
+    local allowlist_content="$2"
+    local expected="$3"  # "block" or "allow"
+    local desc="$4"
+
+    log_test_start "$desc"
+    if $VERBOSE; then
+        echo -e "  ${CYAN}Command:${NC} $(truncate_cmd "$cmd")"
+        echo -e "  ${CYAN}Allowlist:${NC} $(echo "$allowlist_content" | tr '\n' ' ' | head -c 80)..."
+    fi
+
+    # Create isolated temp directory with .dcg/allowlist.toml
+    # IMPORTANT: Initialize a git repo so allowlist discovery works (finds repo root)
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    (cd "$tmpdir" && git init -q) 2>/dev/null || true
+    mkdir -p "$tmpdir/.dcg"
+    echo "$allowlist_content" > "$tmpdir/.dcg/allowlist.toml"
+
+    # Create JSON input and base64 encode it
+    local escaped_cmd
+    escaped_cmd=$(json_escape "$cmd")
+    local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$escaped_cmd\"}}"
+    local encoded
+    encoded=$(echo -n "$json" | base64 -w 0)
+
+    # Run the binary from the temp directory so it discovers the project allowlist
+    local result
+    result=$(cd "$tmpdir" && echo "$encoded" | base64 -d | "$BINARY" 2>/dev/null || true)
+
+    # Cleanup
+    rm -rf "$tmpdir"
+
+    # Check result
+    if [[ "$expected" == "block" ]]; then
+        if echo "$result" | grep -q '"permissionDecision"' && echo "$result" | grep -q '"deny"'; then
+            log_pass "BLOCKED (with allowlist): $desc"
+            return 0
+        fi
+        log_fail "Should BLOCK (with allowlist): $desc" "JSON with permissionDecision: deny" "${result:-<empty>}"
+        return 0
+    else
+        # Expected: allow (empty output)
+        if [[ -z "$result" ]]; then
+            log_pass "ALLOWED (with allowlist): $desc"
+            return 0
+        else
+            log_fail "Should ALLOW (with allowlist): $desc" "<empty output>" "$result"
+            return 0
+        fi
+    fi
+}
+
+# 1) Baseline: verify a known destructive command is blocked without allowlist
+test_command "git reset --hard" "block" "Baseline: git reset --hard blocked (no allowlist)"
+
+# 2) Project allowlist overrides exact rule (core.git:reset-hard)
+test_command_with_allowlist \
+    "git reset --hard" \
+    '[[allow]]
+rule = "core.git:reset-hard"
+reason = "Allowed for E2E testing"
+added_by = "e2e_test.sh"' \
+    "allow" \
+    "Allowlist: core.git:reset-hard overrides deny"
+
+# 3) Non-target rule remains enforced (git clean -f is NOT allowlisted)
+test_command_with_allowlist \
+    "git clean -f" \
+    '[[allow]]
+rule = "core.git:reset-hard"
+reason = "Only reset-hard is allowed"
+added_by = "e2e_test.sh"' \
+    "block" \
+    "Allowlist: git clean -f remains blocked (non-target rule)"
+
+# 4) Expired allowlist entry does NOT apply
+test_command_with_allowlist \
+    "git reset --hard" \
+    '[[allow]]
+rule = "core.git:reset-hard"
+reason = "This entry has expired"
+added_by = "e2e_test.sh"
+expires_at = "2020-01-01"' \
+    "block" \
+    "Allowlist: expired entry does not apply"
+
+# 5) Future expiration still applies
+test_command_with_allowlist \
+    "git reset --hard" \
+    '[[allow]]
+rule = "core.git:reset-hard"
+reason = "This entry has not expired yet"
+added_by = "e2e_test.sh"
+expires_at = "2099-12-31"' \
+    "allow" \
+    "Allowlist: future expiration still applies"
+
+# 6) Wildcard pack rule (core.git:*) works without risk acknowledgement
+# Note: The implementation allows pack-scoped wildcards without explicit ack.
+# They're less dangerous than regex patterns which DO require acknowledgement.
+test_command_with_allowlist \
+    "git reset --hard" \
+    '[[allow]]
+rule = "core.git:*"
+reason = "Wildcard allows all rules in pack"
+added_by = "e2e_test.sh"' \
+    "allow" \
+    "Allowlist: wildcard core.git:* allows all git rules"
+
+# 7) Global wildcard (*:*) is rejected (never allowed)
+# Even with risk_acknowledged, we never allow bypassing ALL packs.
+test_command_with_allowlist \
+    "git reset --hard" \
+    '[[allow]]
+rule = "*:reset-hard"
+reason = "Global pack wildcard should be rejected"
+added_by = "e2e_test.sh"
+risk_acknowledged = true' \
+    "block" \
+    "Allowlist: global wildcard *:pattern is rejected"
+
+# 8) Regex entry without risk_acknowledged is ignored
+test_command_with_allowlist \
+    "git reset --hard" \
+    '[[allow]]
+pattern = "git reset"
+reason = "Regex without ack should be ignored"
+added_by = "e2e_test.sh"' \
+    "block" \
+    "Allowlist: regex without risk_acknowledged is ignored"
+
+# 9) Regex entry with risk_acknowledged=true is honored
+test_command_with_allowlist \
+    "git reset --hard" \
+    '[[allow]]
+pattern = "git reset --hard"
+reason = "Regex with ack enabled"
+added_by = "e2e_test.sh"
+risk_acknowledged = true' \
+    "allow" \
+    "Allowlist: regex with risk_acknowledged=true works"
+
+# 10) Condition not met: entry skipped
+test_command_with_allowlist \
+    "git reset --hard" \
+    '[[allow]]
+rule = "core.git:reset-hard"
+reason = "Only in CI"
+added_by = "e2e_test.sh"
+[allow.conditions]
+CI = "true"' \
+    "block" \
+    "Allowlist: entry with unmet condition is skipped"
+
+# 11) Condition met: entry applies (set CI=true in env)
+# Note: We need a modified test helper for this case
+test_command_with_allowlist_and_env() {
+    local cmd="$1"
+    local allowlist_content="$2"
+    local env_vars="$3"
+    local expected="$4"
+    local desc="$5"
+
+    log_test_start "$desc"
+    if $VERBOSE; then
+        echo -e "  ${CYAN}Command:${NC} $(truncate_cmd "$cmd")"
+        echo -e "  ${CYAN}Env:${NC} $env_vars"
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    (cd "$tmpdir" && git init -q) 2>/dev/null || true
+    mkdir -p "$tmpdir/.dcg"
+    echo "$allowlist_content" > "$tmpdir/.dcg/allowlist.toml"
+
+    local escaped_cmd
+    escaped_cmd=$(json_escape "$cmd")
+    local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$escaped_cmd\"}}"
+    local encoded
+    encoded=$(echo -n "$json" | base64 -w 0)
+
+    local result
+    result=$(cd "$tmpdir" && echo "$encoded" | base64 -d | env $env_vars "$BINARY" 2>/dev/null || true)
+
+    rm -rf "$tmpdir"
+
+    if [[ "$expected" == "block" ]]; then
+        if echo "$result" | grep -q '"permissionDecision"' && echo "$result" | grep -q '"deny"'; then
+            log_pass "BLOCKED (with env): $desc"
+            return 0
+        fi
+        log_fail "Should BLOCK (with env): $desc" "JSON with permissionDecision: deny" "${result:-<empty>}"
+        return 0
+    else
+        if [[ -z "$result" ]]; then
+            log_pass "ALLOWED (with env): $desc"
+            return 0
+        else
+            log_fail "Should ALLOW (with env): $desc" "<empty output>" "$result"
+            return 0
+        fi
+    fi
+}
+
+test_command_with_allowlist_and_env \
+    "git reset --hard" \
+    '[[allow]]
+rule = "core.git:reset-hard"
+reason = "Only in CI"
+added_by = "e2e_test.sh"
+[allow.conditions]
+CI = "true"' \
+    "CI=true" \
+    "allow" \
+    "Allowlist: entry with met condition applies"
+
+# 12) Multiple allowlist entries: first match wins
+test_command_with_allowlist \
+    "git clean -f" \
+    '[[allow]]
+rule = "core.git:reset-hard"
+reason = "Only reset-hard"
+added_by = "e2e_test.sh"
+
+[[allow]]
+rule = "core.git:clean-force"
+reason = "Also allow clean"
+added_by = "e2e_test.sh"' \
+    "allow" \
+    "Allowlist: multiple entries, second one matches"
+
 #
 # SUMMARY
 #

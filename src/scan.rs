@@ -722,4 +722,485 @@ mod tests {
         assert_eq!(finding.rule_id.as_deref(), Some("core.git:reset-hard"));
         assert!(finding.reason.is_some());
     }
+
+    // ========================================================================
+    // JSON schema tests (git_safety_guard-scan.2.4)
+    // ========================================================================
+
+    #[test]
+    fn json_schema_version_is_present() {
+        let report = build_report(vec![], 0, 0, 0, false, None);
+        assert_eq!(report.schema_version, SCAN_SCHEMA_VERSION);
+        assert_eq!(report.schema_version, 1);
+    }
+
+    #[test]
+    fn json_schema_has_all_required_fields() {
+        let report = build_report(vec![], 5, 2, 10, false, Some(42));
+
+        // Summary fields
+        assert_eq!(report.summary.files_scanned, 5);
+        assert_eq!(report.summary.files_skipped, 2);
+        assert_eq!(report.summary.commands_extracted, 10);
+        assert_eq!(report.summary.findings_total, 0);
+        assert!(!report.summary.max_findings_reached);
+        assert_eq!(report.summary.elapsed_ms, Some(42));
+
+        // Decision counts
+        assert_eq!(report.summary.decisions.allow, 0);
+        assert_eq!(report.summary.decisions.warn, 0);
+        assert_eq!(report.summary.decisions.deny, 0);
+
+        // Severity counts
+        assert_eq!(report.summary.severities.info, 0);
+        assert_eq!(report.summary.severities.warning, 0);
+        assert_eq!(report.summary.severities.error, 0);
+    }
+
+    #[test]
+    fn report_serializes_to_valid_json() {
+        let report = build_report(
+            vec![ScanFinding {
+                file: "test.sh".to_string(),
+                line: 42,
+                col: Some(5),
+                extractor_id: "shell.script".to_string(),
+                extracted_command: "rm -rf /".to_string(),
+                decision: ScanDecision::Deny,
+                severity: ScanSeverity::Error,
+                rule_id: Some("core.filesystem:rm-rf-root-home".to_string()),
+                reason: Some("dangerous".to_string()),
+                suggestion: Some("use safer rm".to_string()),
+            }],
+            1,
+            0,
+            1,
+            false,
+            Some(100),
+        );
+
+        let json = serde_json::to_string(&report).expect("should serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("should parse");
+
+        assert_eq!(parsed["schema_version"], 1);
+        assert_eq!(parsed["summary"]["files_scanned"], 1);
+        assert_eq!(parsed["findings"][0]["file"], "test.sh");
+        assert_eq!(parsed["findings"][0]["line"], 42);
+        assert_eq!(parsed["findings"][0]["col"], 5);
+        assert_eq!(parsed["findings"][0]["decision"], "deny");
+        assert_eq!(parsed["findings"][0]["severity"], "error");
+    }
+
+    // ========================================================================
+    // Summary calculation tests
+    // ========================================================================
+
+    #[test]
+    fn summary_counts_decisions_correctly() {
+        let findings = vec![
+            make_finding("a", ScanDecision::Allow, ScanSeverity::Info),
+            make_finding("b", ScanDecision::Allow, ScanSeverity::Info),
+            make_finding("c", ScanDecision::Warn, ScanSeverity::Warning),
+            make_finding("d", ScanDecision::Deny, ScanSeverity::Error),
+            make_finding("e", ScanDecision::Deny, ScanSeverity::Error),
+            make_finding("f", ScanDecision::Deny, ScanSeverity::Error),
+        ];
+
+        let report = build_report(findings, 6, 0, 6, false, None);
+
+        assert_eq!(report.summary.decisions.allow, 2);
+        assert_eq!(report.summary.decisions.warn, 1);
+        assert_eq!(report.summary.decisions.deny, 3);
+    }
+
+    #[test]
+    fn summary_counts_severities_correctly() {
+        let findings = vec![
+            make_finding("a", ScanDecision::Allow, ScanSeverity::Info),
+            make_finding("b", ScanDecision::Warn, ScanSeverity::Warning),
+            make_finding("c", ScanDecision::Warn, ScanSeverity::Warning),
+            make_finding("d", ScanDecision::Deny, ScanSeverity::Error),
+        ];
+
+        let report = build_report(findings, 4, 0, 4, false, None);
+
+        assert_eq!(report.summary.severities.info, 1);
+        assert_eq!(report.summary.severities.warning, 2);
+        assert_eq!(report.summary.severities.error, 1);
+    }
+
+    fn make_finding(file: &str, decision: ScanDecision, severity: ScanSeverity) -> ScanFinding {
+        ScanFinding {
+            file: file.to_string(),
+            line: 1,
+            col: None,
+            extractor_id: "test".to_string(),
+            extracted_command: "cmd".to_string(),
+            decision,
+            severity,
+            rule_id: None,
+            reason: None,
+            suggestion: None,
+        }
+    }
+
+    // ========================================================================
+    // Redaction tests
+    // ========================================================================
+
+    #[test]
+    fn redact_quoted_strings_handles_single_quotes() {
+        let input = "echo 'secret password here'";
+        let output = redact_quoted_strings(input);
+        assert_eq!(output, "echo '…'");
+    }
+
+    #[test]
+    fn redact_quoted_strings_handles_double_quotes() {
+        let input = r#"echo "secret password here""#;
+        let output = redact_quoted_strings(input);
+        assert_eq!(output, r#"echo "…""#);
+    }
+
+    #[test]
+    fn redact_quoted_strings_handles_escaped_quotes() {
+        let input = r#"echo "hello \"world\" test""#;
+        let output = redact_quoted_strings(input);
+        assert_eq!(output, r#"echo "…""#);
+    }
+
+    #[test]
+    fn redact_quoted_strings_handles_mixed_quotes() {
+        let input = r#"cmd 'arg1' "arg2" 'arg3'"#;
+        let output = redact_quoted_strings(input);
+        assert_eq!(output, r#"cmd '…' "…" '…'"#);
+    }
+
+    #[test]
+    fn redact_quoted_strings_preserves_unquoted() {
+        let input = "git reset --hard HEAD";
+        let output = redact_quoted_strings(input);
+        assert_eq!(output, input);
+    }
+
+    #[test]
+    fn redact_aggressively_redacts_sensitive_env_vars() {
+        let input = "curl -H TOKEN=abc123secret";
+        let output = redact_aggressively(input);
+        assert!(output.contains("TOKEN=…"));
+        assert!(!output.contains("abc123secret"));
+    }
+
+    #[test]
+    fn redact_aggressively_redacts_long_hex_strings() {
+        // Long hex strings are redacted when they appear as standalone tokens
+        let input = "curl -H 0123456789abcdef0123456789abcdef";
+        let output = redact_aggressively(input);
+        // The 32+ char hex string should be redacted to "…"
+        assert!(output.contains("…"));
+        assert!(!output.contains("0123456789abcdef0123456789abcdef"));
+    }
+
+    #[test]
+    fn redact_aggressively_preserves_normal_commands() {
+        let input = "git status --short";
+        let output = redact_aggressively(input);
+        assert_eq!(output, input);
+    }
+
+    // ========================================================================
+    // Truncation tests
+    // ========================================================================
+
+    #[test]
+    fn truncate_utf8_handles_short_strings() {
+        assert_eq!(truncate_utf8("hello", 10), "hello");
+        // With limit 5, we keep 4 chars + ellipsis = 5 total
+        assert_eq!(truncate_utf8("hello", 6), "hello");
+    }
+
+    #[test]
+    fn truncate_utf8_truncates_long_strings() {
+        assert_eq!(truncate_utf8("hello world", 6), "hello…");
+        assert_eq!(truncate_utf8("abcdefghij", 5), "abcd…");
+    }
+
+    #[test]
+    fn truncate_utf8_handles_edge_cases() {
+        assert_eq!(truncate_utf8("hello", 1), "…");
+        assert_eq!(truncate_utf8("hello", 0), "hello"); // 0 means no truncation
+    }
+
+    #[test]
+    fn truncate_utf8_handles_unicode() {
+        // Emoji are multi-byte but single chars
+        let input = "🎉🎊🎈🎁";
+        assert_eq!(truncate_utf8(input, 3), "🎉🎊…");
+        assert_eq!(truncate_utf8(input, 5), input);
+    }
+
+    // ========================================================================
+    // Fail-on policy tests
+    // ========================================================================
+
+    #[test]
+    fn fail_on_none_never_fails() {
+        assert!(!ScanFailOn::None.blocks(ScanSeverity::Info));
+        assert!(!ScanFailOn::None.blocks(ScanSeverity::Warning));
+        assert!(!ScanFailOn::None.blocks(ScanSeverity::Error));
+    }
+
+    #[test]
+    fn fail_on_warning_blocks_warning_and_error() {
+        assert!(!ScanFailOn::Warning.blocks(ScanSeverity::Info));
+        assert!(ScanFailOn::Warning.blocks(ScanSeverity::Warning));
+        assert!(ScanFailOn::Warning.blocks(ScanSeverity::Error));
+    }
+
+    #[test]
+    fn fail_on_error_blocks_only_error() {
+        assert!(!ScanFailOn::Error.blocks(ScanSeverity::Info));
+        assert!(!ScanFailOn::Error.blocks(ScanSeverity::Warning));
+        assert!(ScanFailOn::Error.blocks(ScanSeverity::Error));
+    }
+
+    #[test]
+    fn should_fail_with_warning_only_findings() {
+        let report = build_report(
+            vec![make_finding("a", ScanDecision::Warn, ScanSeverity::Warning)],
+            1,
+            0,
+            1,
+            false,
+            None,
+        );
+
+        assert!(!should_fail(&report, ScanFailOn::Error));
+        assert!(should_fail(&report, ScanFailOn::Warning));
+        assert!(!should_fail(&report, ScanFailOn::None));
+    }
+
+    #[test]
+    fn should_fail_with_empty_report() {
+        let report = build_report(vec![], 0, 0, 0, false, None);
+
+        assert!(!should_fail(&report, ScanFailOn::Error));
+        assert!(!should_fail(&report, ScanFailOn::Warning));
+        assert!(!should_fail(&report, ScanFailOn::None));
+    }
+
+    // ========================================================================
+    // Finding sorting tests
+    // ========================================================================
+
+    #[test]
+    fn sort_findings_by_file_then_line() {
+        let mut findings = vec![
+            make_finding_at("z.sh", 10),
+            make_finding_at("a.sh", 5),
+            make_finding_at("a.sh", 1),
+            make_finding_at("m.sh", 20),
+        ];
+
+        sort_findings(&mut findings);
+
+        assert_eq!(findings[0].file, "a.sh");
+        assert_eq!(findings[0].line, 1);
+        assert_eq!(findings[1].file, "a.sh");
+        assert_eq!(findings[1].line, 5);
+        assert_eq!(findings[2].file, "m.sh");
+        assert_eq!(findings[3].file, "z.sh");
+    }
+
+    #[test]
+    fn sort_findings_by_column_when_same_line() {
+        let mut findings = vec![
+            make_finding_at_col("a.sh", 1, Some(20)),
+            make_finding_at_col("a.sh", 1, Some(5)),
+            make_finding_at_col("a.sh", 1, None),
+        ];
+
+        sort_findings(&mut findings);
+
+        assert_eq!(findings[0].col, None); // None sorts as 0
+        assert_eq!(findings[1].col, Some(5));
+        assert_eq!(findings[2].col, Some(20));
+    }
+
+    fn make_finding_at(file: &str, line: usize) -> ScanFinding {
+        ScanFinding {
+            file: file.to_string(),
+            line,
+            col: None,
+            extractor_id: "test".to_string(),
+            extracted_command: "cmd".to_string(),
+            decision: ScanDecision::Deny,
+            severity: ScanSeverity::Error,
+            rule_id: None,
+            reason: None,
+            suggestion: None,
+        }
+    }
+
+    fn make_finding_at_col(file: &str, line: usize, col: Option<usize>) -> ScanFinding {
+        ScanFinding {
+            file: file.to_string(),
+            line,
+            col,
+            extractor_id: "test".to_string(),
+            extracted_command: "cmd".to_string(),
+            decision: ScanDecision::Deny,
+            severity: ScanSeverity::Error,
+            rule_id: None,
+            reason: None,
+            suggestion: None,
+        }
+    }
+
+    // ========================================================================
+    // Severity ranking tests
+    // ========================================================================
+
+    #[test]
+    fn severity_rank_ordering() {
+        assert!(ScanSeverity::Error.rank() > ScanSeverity::Warning.rank());
+        assert!(ScanSeverity::Warning.rank() > ScanSeverity::Info.rank());
+    }
+
+    // ========================================================================
+    // Safe command tests (must NOT block)
+    // ========================================================================
+
+    #[test]
+    fn safe_commands_are_not_blocked() {
+        let config = default_config();
+        let ctx = ScanEvalContext::from_config(&config);
+        let options = ScanOptions {
+            format: ScanFormat::Pretty,
+            fail_on: ScanFailOn::Error,
+            max_file_size_bytes: 1024 * 1024,
+            max_findings: 100,
+            redact: ScanRedactMode::None,
+            truncate: 0,
+        };
+
+        let safe_commands = [
+            "git status",
+            "git log --oneline",
+            "ls -la",
+            "echo hello",
+            "cat file.txt",
+            "grep pattern file",
+            "rm file.txt", // single file rm without -rf is not blocked
+        ];
+
+        for cmd in safe_commands {
+            let extracted = ExtractedCommand {
+                file: "test.sh".to_string(),
+                line: 1,
+                col: None,
+                extractor_id: "shell.script".to_string(),
+                command: cmd.to_string(),
+                metadata: None,
+            };
+
+            let finding = evaluate_extracted_command(&extracted, &options, &config, &ctx);
+            assert!(
+                finding.is_none(),
+                "Command '{cmd}' should not be blocked but got: {finding:?}"
+            );
+        }
+    }
+
+    // ========================================================================
+    // Dangerous command tests (MUST block)
+    // ========================================================================
+
+    #[test]
+    fn dangerous_commands_are_blocked() {
+        let config = default_config();
+        let ctx = ScanEvalContext::from_config(&config);
+        let options = ScanOptions {
+            format: ScanFormat::Pretty,
+            fail_on: ScanFailOn::Error,
+            max_file_size_bytes: 1024 * 1024,
+            max_findings: 100,
+            redact: ScanRedactMode::None,
+            truncate: 0,
+        };
+
+        let dangerous_commands = [
+            ("git reset --hard", "core.git:reset-hard"),
+            ("git push --force origin main", "core.git:push-force-long"),
+            ("git clean -fd", "core.git:clean-force"),
+            // Note: rm -rf /path matches rm-rf-root-home (starts with /)
+            // Use a relative path to match rm-rf-general
+            ("rm -rf ./some/path", "core.filesystem:rm-rf-general"),
+        ];
+
+        for (cmd, expected_rule) in dangerous_commands {
+            let extracted = ExtractedCommand {
+                file: "test.sh".to_string(),
+                line: 1,
+                col: None,
+                extractor_id: "shell.script".to_string(),
+                command: cmd.to_string(),
+                metadata: None,
+            };
+
+            let finding = evaluate_extracted_command(&extracted, &options, &config, &ctx)
+                .unwrap_or_else(|| panic!("Command '{cmd}' should be blocked"));
+            assert_eq!(
+                finding.decision,
+                ScanDecision::Deny,
+                "Command '{cmd}' should be denied"
+            );
+            assert_eq!(
+                finding.rule_id.as_deref(),
+                Some(expected_rule),
+                "Command '{cmd}' should match rule {expected_rule}"
+            );
+        }
+    }
+
+    // ========================================================================
+    // Suggestion integration tests
+    // ========================================================================
+
+    #[test]
+    fn blocked_commands_include_suggestions_when_available() {
+        let config = default_config();
+        let ctx = ScanEvalContext::from_config(&config);
+        let options = ScanOptions {
+            format: ScanFormat::Pretty,
+            fail_on: ScanFailOn::Error,
+            max_file_size_bytes: 1024 * 1024,
+            max_findings: 100,
+            redact: ScanRedactMode::None,
+            truncate: 0,
+        };
+
+        let extracted = ExtractedCommand {
+            file: "test.sh".to_string(),
+            line: 1,
+            col: None,
+            extractor_id: "shell.script".to_string(),
+            command: "git reset --hard HEAD".to_string(),
+            metadata: None,
+        };
+
+        let finding = evaluate_extracted_command(&extracted, &options, &config, &ctx)
+            .expect("should be blocked");
+
+        // core.git:reset-hard has SaferAlternative suggestion
+        assert!(
+            finding.suggestion.is_some(),
+            "Finding should include suggestion"
+        );
+        assert!(
+            finding.suggestion.as_ref().unwrap().contains("soft")
+                || finding.suggestion.as_ref().unwrap().contains("mixed"),
+            "Suggestion should mention safer alternatives"
+        );
+    }
 }

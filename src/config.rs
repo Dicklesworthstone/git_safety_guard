@@ -1365,4 +1365,253 @@ mod tests {
         assert_eq!(compiled.check_block("block-2"), Some("Reason 2"));
         assert_eq!(compiled.check_block("block-3"), None);
     }
+
+    // ========================================================================
+    // PolicyConfig Tests (git_safety_guard-1gt.3)
+    // ========================================================================
+
+    #[test]
+    fn test_policy_mode_to_decision_mode() {
+        assert_eq!(
+            PolicyMode::Deny.to_decision_mode(),
+            crate::packs::DecisionMode::Deny
+        );
+        assert_eq!(
+            PolicyMode::Warn.to_decision_mode(),
+            crate::packs::DecisionMode::Warn
+        );
+        assert_eq!(
+            PolicyMode::Log.to_decision_mode(),
+            crate::packs::DecisionMode::Log
+        );
+    }
+
+    #[test]
+    fn test_policy_resolve_mode_rule_override_takes_precedence() {
+        let policy = PolicyConfig {
+            default_mode: Some(PolicyMode::Deny),
+            packs: std::collections::HashMap::from([("core.git".to_string(), PolicyMode::Warn)]),
+            rules: std::collections::HashMap::from([(
+                "core.git:reset-hard".to_string(),
+                PolicyMode::Log,
+            )]),
+        };
+
+        // Rule-specific override should win
+        let mode = policy.resolve_mode(
+            Some("core.git"),
+            Some("reset-hard"),
+            Some(crate::packs::Severity::High),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Log);
+    }
+
+    #[test]
+    fn test_policy_resolve_mode_pack_override_when_no_rule() {
+        let policy = PolicyConfig {
+            default_mode: Some(PolicyMode::Deny),
+            packs: std::collections::HashMap::from([("core.git".to_string(), PolicyMode::Warn)]),
+            ..Default::default()
+        };
+
+        // No rule override, so pack override wins
+        let mode = policy.resolve_mode(
+            Some("core.git"),
+            Some("push-force"),
+            Some(crate::packs::Severity::High),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Warn);
+    }
+
+    #[test]
+    fn test_policy_resolve_mode_global_default_when_no_pack() {
+        let policy = PolicyConfig {
+            default_mode: Some(PolicyMode::Log),
+            ..Default::default()
+        };
+
+        // No pack override, so global default wins
+        let mode = policy.resolve_mode(
+            Some("containers.docker"),
+            Some("prune"),
+            Some(crate::packs::Severity::Medium),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Log);
+    }
+
+    #[test]
+    fn test_policy_resolve_mode_severity_default_when_nothing_set() {
+        let policy = PolicyConfig::default();
+
+        // High severity defaults to Deny
+        let mode_high = policy.resolve_mode(
+            Some("core.git"),
+            Some("reset-hard"),
+            Some(crate::packs::Severity::High),
+        );
+        assert_eq!(mode_high, crate::packs::DecisionMode::Deny);
+
+        // Medium severity defaults to Warn
+        let mode_medium = policy.resolve_mode(
+            Some("core.git"),
+            Some("something"),
+            Some(crate::packs::Severity::Medium),
+        );
+        assert_eq!(mode_medium, crate::packs::DecisionMode::Warn);
+
+        // Low severity defaults to Log
+        let mode_low = policy.resolve_mode(
+            Some("core.git"),
+            Some("something"),
+            Some(crate::packs::Severity::Low),
+        );
+        assert_eq!(mode_low, crate::packs::DecisionMode::Log);
+    }
+
+    #[test]
+    fn test_policy_resolve_mode_critical_cannot_be_loosened_by_pack() {
+        let mut policy = PolicyConfig::default();
+        policy
+            .packs
+            .insert("core.git".to_string(), PolicyMode::Warn);
+
+        // Critical severity should ALWAYS be Deny, even with pack override
+        let mode = policy.resolve_mode(
+            Some("core.git"),
+            Some("reset-hard"),
+            Some(crate::packs::Severity::Critical),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Deny);
+    }
+
+    #[test]
+    fn test_policy_resolve_mode_critical_cannot_be_loosened_by_global() {
+        let policy = PolicyConfig {
+            default_mode: Some(PolicyMode::Log),
+            ..Default::default()
+        };
+
+        // Critical severity should ALWAYS be Deny, even with global override
+        let mode = policy.resolve_mode(
+            Some("core.git"),
+            Some("reset-hard"),
+            Some(crate::packs::Severity::Critical),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Deny);
+    }
+
+    #[test]
+    fn test_policy_resolve_mode_critical_can_be_loosened_by_rule() {
+        let mut policy = PolicyConfig::default();
+        policy
+            .rules
+            .insert("core.git:reset-hard".to_string(), PolicyMode::Warn);
+
+        // Critical CAN be loosened via explicit per-rule override
+        let mode = policy.resolve_mode(
+            Some("core.git"),
+            Some("reset-hard"),
+            Some(crate::packs::Severity::Critical),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Warn);
+    }
+
+    #[test]
+    fn test_policy_resolve_mode_no_severity_defaults_to_deny() {
+        let policy = PolicyConfig::default();
+
+        // No severity provided should default to Deny
+        let mode = policy.resolve_mode(Some("core.git"), Some("pattern"), None);
+        assert_eq!(mode, crate::packs::DecisionMode::Deny);
+    }
+
+    #[test]
+    fn test_policy_env_override_default_mode() {
+        let env_map: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::from([("DCG_POLICY_DEFAULT_MODE", "warn")]);
+
+        let mut config = Config::default();
+        config.apply_env_overrides_from(|key| env_map.get(key).map(|v| (*v).to_string()));
+
+        assert_eq!(config.policy.default_mode, Some(PolicyMode::Warn));
+    }
+
+    #[test]
+    fn test_policy_env_override_parses_all_modes() {
+        for (input, expected) in [
+            ("deny", Some(PolicyMode::Deny)),
+            ("block", Some(PolicyMode::Deny)),
+            ("warn", Some(PolicyMode::Warn)),
+            ("warning", Some(PolicyMode::Warn)),
+            ("log", Some(PolicyMode::Log)),
+            ("log-only", Some(PolicyMode::Log)),
+            ("logonly", Some(PolicyMode::Log)),
+            ("DENY", Some(PolicyMode::Deny)), // case-insensitive
+            ("invalid", None),
+        ] {
+            let result = parse_policy_mode(input);
+            assert_eq!(result, expected, "parse_policy_mode({input:?}) mismatch");
+        }
+    }
+
+    #[test]
+    fn test_policy_config_merge() {
+        let mut base = Config::default();
+        base.policy.default_mode = Some(PolicyMode::Deny);
+        base.policy
+            .packs
+            .insert("core.git".to_string(), PolicyMode::Deny);
+
+        let other = Config {
+            policy: PolicyConfig {
+                default_mode: Some(PolicyMode::Warn),
+                packs: std::collections::HashMap::from([(
+                    "containers.docker".to_string(),
+                    PolicyMode::Log,
+                )]),
+                rules: std::collections::HashMap::from([(
+                    "core.git:reset-hard".to_string(),
+                    PolicyMode::Log,
+                )]),
+            },
+            ..Default::default()
+        };
+
+        base.merge(other);
+
+        // Other's default_mode should win
+        assert_eq!(base.policy.default_mode, Some(PolicyMode::Warn));
+        // Both packs should be present
+        assert_eq!(base.policy.packs.get("core.git"), Some(&PolicyMode::Deny));
+        assert_eq!(
+            base.policy.packs.get("containers.docker"),
+            Some(&PolicyMode::Log)
+        );
+        // Rules should be merged
+        assert_eq!(
+            base.policy.rules.get("core.git:reset-hard"),
+            Some(&PolicyMode::Log)
+        );
+    }
+
+    #[test]
+    fn test_sample_config_includes_policy_section() {
+        let sample = Config::generate_sample_config();
+        assert!(
+            sample.contains("[policy]"),
+            "Sample config should have [policy] section"
+        );
+        assert!(
+            sample.contains("default_mode"),
+            "Sample config should mention default_mode"
+        );
+        assert!(
+            sample.contains("[policy.packs]"),
+            "Sample config should have [policy.packs]"
+        );
+        assert!(
+            sample.contains("[policy.rules]"),
+            "Sample config should have [policy.rules]"
+        );
+    }
 }
