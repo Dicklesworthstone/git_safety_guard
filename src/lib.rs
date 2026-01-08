@@ -67,6 +67,8 @@ pub mod evaluator;
 pub mod heredoc;
 pub mod hook;
 pub mod packs;
+pub mod suggestions;
+pub mod trace;
 
 // Re-export commonly used types
 pub use allowlist::{
@@ -99,3 +101,11 @@ pub use ast_matcher::{
     AstMatcher, CompiledPattern, DEFAULT_MATCHER, MatchError, PatternMatch as AstPatternMatch,
     Severity,
 };
+
+// Re-export trace types for explain mode
+pub use trace::{
+    AllowlistInfo, ExplainTrace, MatchInfo, PackSummary, TraceCollector, TraceDetails, TraceStep,
+};
+
+// Re-export suggestion types
+pub use suggestions::{Suggestion, SuggestionKind, get_suggestions, get_suggestion_by_kind};
