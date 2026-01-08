@@ -36,7 +36,7 @@ use crate::suggestions::{SuggestionKind, get_suggestion_by_kind};
 use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const SCAN_SCHEMA_VERSION: u32 = 1;
 
@@ -477,25 +477,19 @@ fn redact_token(token: &str) -> String {
 ///
 /// This is a small, conservative implementation intended to support the `scan`
 /// epic without pulling in heavy parsing dependencies. Extraction is delegated
-/// to extractor modules (implemented in follow-up tasks).
+/// to extractor modules.
 ///
-/// Currently this function does **not** implement extractors; it is a framework
-/// for deterministic output and evaluator integration.
+/// Currently implements:
+/// - Shell-script extractor (`*.sh`)
+/// - Dockerfile extractor (`Dockerfile`, `*.dockerfile`, `Dockerfile.*`)
 #[allow(clippy::missing_errors_doc)]
-#[allow(clippy::missing_const_for_fn)] // Can't be const: returns Result with Vec::new()
 pub fn scan_paths(
     paths: &[PathBuf],
     options: &ScanOptions,
-    _config: &Config,
-    _ctx: &ScanEvalContext,
+    config: &Config,
+    ctx: &ScanEvalContext,
 ) -> Result<ScanReport, String> {
     let started = std::time::Instant::now();
-
-    // NOTE: Extractors are implemented in follow-up beads. This function currently only
-    // computes deterministic file/summary statistics and returns an empty finding list.
-    //
-    // This ensures `dcg scan` output is still well-formed and stable while extraction
-    // work proceeds, and it gives CI integrations a schema to build around.
 
     let mut files: Vec<PathBuf> = Vec::new();
     for path in paths {
@@ -507,8 +501,16 @@ pub fn scan_paths(
 
     let mut files_scanned = 0usize;
     let mut files_skipped = 0usize;
+    let mut commands_extracted = 0usize;
+    let mut findings: Vec<ScanFinding> = Vec::new();
+    let mut max_findings_reached = false;
 
     for file in &files {
+        if findings.len() >= options.max_findings {
+            max_findings_reached = true;
+            break;
+        }
+
         let Ok(meta) = std::fs::metadata(file) else {
             files_skipped += 1;
             continue;
@@ -524,22 +526,71 @@ pub fn scan_paths(
             continue;
         }
 
-        files_scanned += 1;
-    }
+        // Determine which extractor(s) to use
+        let is_shell = is_shell_script_path(file);
+        let is_docker = is_dockerfile_path(file);
 
-    let findings: Vec<ScanFinding> = Vec::new();
+        if !is_shell && !is_docker {
+            files_skipped += 1;
+            continue;
+        }
+
+        let Ok(bytes) = std::fs::read(file) else {
+            files_skipped += 1;
+            continue;
+        };
+
+        let content = String::from_utf8_lossy(&bytes);
+        let file_label = file.to_string_lossy();
+        files_scanned += 1;
+
+        // Extract commands using appropriate extractor(s)
+        let mut extracted: Vec<ExtractedCommand> = Vec::new();
+
+        if is_shell {
+            extracted.extend(extract_shell_script_from_str(
+                &file_label,
+                &content,
+                &ctx.enabled_keywords,
+            ));
+        }
+
+        if is_docker {
+            extracted.extend(extract_dockerfile_from_str(
+                &file_label,
+                &content,
+                &ctx.enabled_keywords,
+            ));
+        }
+
+        commands_extracted += extracted.len();
+
+        for cmd in extracted {
+            if findings.len() >= options.max_findings {
+                max_findings_reached = true;
+                break;
+            }
+
+            if let Some(finding) = evaluate_extracted_command(&cmd, options, config, ctx) {
+                findings.push(finding);
+            }
+        }
+
+        if max_findings_reached {
+            break;
+        }
+    }
 
     let elapsed_ms = u64::try_from(started.elapsed().as_millis()).ok();
     Ok(build_report(
         findings,
         files_scanned,
         files_skipped,
-        0,
-        false,
+        commands_extracted,
+        max_findings_reached,
         elapsed_ms,
     ))
 }
-
 fn collect_files_recursively(path: &PathBuf, out: &mut Vec<PathBuf>) {
     let Ok(meta) = std::fs::metadata(path) else {
         return;
@@ -567,6 +618,378 @@ fn collect_files_recursively(path: &PathBuf, out: &mut Vec<PathBuf>) {
     }
 }
 
+// ============================================================================
+// Shell script extractor (*.sh)
+// ============================================================================
+
+fn is_shell_script_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext: &str| ext.eq_ignore_ascii_case("sh"))
+}
+
+fn extract_shell_script_from_str(
+    file: &str,
+    content: &str,
+    enabled_keywords: &[&'static str],
+) -> Vec<ExtractedCommand> {
+    const MAX_CONTINUATION_LINES: usize = 20;
+    const MAX_JOINED_CHARS: usize = 8 * 1024;
+
+    let mut out = Vec::new();
+    let mut buffer: Option<(usize, String, usize)> = None;
+
+    for (idx, raw_line) in content.lines().enumerate() {
+        let line_no = idx + 1;
+
+        let mut segment = raw_line.trim();
+        let mut continues = false;
+
+        if let Some(before) = segment.strip_suffix('\\') {
+            continues = true;
+            segment = before.trim_end();
+        }
+
+        if let Some((start_line, mut joined, cont_lines)) = buffer.take() {
+            if !joined.is_empty() && !segment.is_empty() {
+                joined.push(' ');
+            }
+            joined.push_str(segment);
+
+            if continues && cont_lines < MAX_CONTINUATION_LINES && joined.len() < MAX_JOINED_CHARS {
+                buffer = Some((start_line, joined, cont_lines + 1));
+                continue;
+            }
+
+            if let Some(cmd) =
+                extract_shell_command_line(file, start_line, &joined, enabled_keywords)
+            {
+                out.push(cmd);
+            }
+            continue;
+        }
+
+        if continues {
+            buffer = Some((line_no, segment.to_string(), 1));
+            continue;
+        }
+
+        if let Some(cmd) = extract_shell_command_line(file, line_no, segment, enabled_keywords) {
+            out.push(cmd);
+        }
+    }
+
+    if let Some((start_line, joined, _)) = buffer.take() {
+        if let Some(cmd) = extract_shell_command_line(file, start_line, &joined, enabled_keywords) {
+            out.push(cmd);
+        }
+    }
+
+    out
+}
+
+fn extract_shell_command_line(
+    file: &str,
+    line: usize,
+    candidate: &str,
+    enabled_keywords: &[&'static str],
+) -> Option<ExtractedCommand> {
+    let candidate = candidate.trim();
+
+    if candidate.is_empty() || candidate.starts_with('#') {
+        return None;
+    }
+
+    if !enabled_keywords.is_empty() && !contains_any_keyword(candidate, enabled_keywords) {
+        return None;
+    }
+
+    let words = split_shell_words(candidate);
+    let first = words.first()?.as_str();
+
+    if is_shell_control_line(first) {
+        return None;
+    }
+
+    if is_shell_function_declaration(&words) {
+        return None;
+    }
+
+    if is_shell_assignment_only(&words) {
+        return None;
+    }
+
+    Some(ExtractedCommand {
+        file: file.to_string(),
+        line,
+        col: None,
+        extractor_id: "shell.script".to_string(),
+        command: candidate.to_string(),
+        metadata: None,
+    })
+}
+
+fn is_shell_control_line(first_word: &str) -> bool {
+    matches!(
+        first_word,
+        "if" | "then"
+            | "elif"
+            | "fi"
+            | "for"
+            | "while"
+            | "until"
+            | "do"
+            | "done"
+            | "case"
+            | "esac"
+            | "{"
+            | "}"
+            | "function"
+            | "export"
+            | "local"
+            | "readonly"
+            | "declare"
+            | "typeset"
+    )
+}
+
+fn is_shell_function_declaration(words: &[String]) -> bool {
+    let Some(first) = words.first() else {
+        return false;
+    };
+
+    if first == "function" {
+        return true;
+    }
+
+    if first.ends_with("()") {
+        return true;
+    }
+
+    if first.contains("()") && words.get(1).is_some_and(|w| w == "{") {
+        return true;
+    }
+
+    false
+}
+
+fn is_shell_assignment_only(words: &[String]) -> bool {
+    let mut idx = 0usize;
+    while idx < words.len() && is_shell_assignment_word(&words[idx]) {
+        idx += 1;
+    }
+
+    idx == words.len()
+}
+
+fn is_shell_assignment_word(word: &str) -> bool {
+    let Some(eq) = word.find('=') else {
+        return false;
+    };
+
+    if eq == 0 {
+        return false;
+    }
+
+    let var = &word[..eq];
+    is_shell_var_name(var)
+}
+
+fn is_shell_var_name(s: &str) -> bool {
+    let mut it = s.chars();
+    let Some(first) = it.next() else {
+        return false;
+    };
+
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+
+    it.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn contains_any_keyword(haystack: &str, keywords: &[&'static str]) -> bool {
+    keywords.iter().any(|k| haystack.contains(k))
+}
+
+fn split_shell_words(s: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut cur = String::new();
+
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for c in s.chars() {
+        if escaped {
+            cur.push(c);
+            escaped = false;
+            continue;
+        }
+
+        if c == '\\' && !in_single {
+            escaped = true;
+            continue;
+        }
+
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+                cur.push(c);
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+                cur.push(c);
+            }
+            c if c.is_whitespace() && !in_single && !in_double => {
+                if !cur.is_empty() {
+                    words.push(cur);
+                    cur = String::new();
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+
+    words
+}
+
+// ============================================================================
+// Dockerfile extractor (Dockerfile, *.dockerfile, Dockerfile.*)
+// ============================================================================
+
+fn is_dockerfile_path(path: &Path) -> bool {
+    let file_name = path.file_name().and_then(std::ffi::OsStr::to_str);
+    let Some(name) = file_name else {
+        return false;
+    };
+
+    let lower = name.to_ascii_lowercase();
+
+    if lower == "dockerfile" {
+        return true;
+    }
+
+    if lower.ends_with(".dockerfile") {
+        return true;
+    }
+
+    if lower.starts_with("dockerfile.") {
+        return true;
+    }
+
+    false
+}
+
+fn extract_dockerfile_from_str(
+    file: &str,
+    content: &str,
+    enabled_keywords: &[&'static str],
+) -> Vec<ExtractedCommand> {
+    const MAX_CONTINUATION_LINES: usize = 50;
+    const MAX_JOINED_CHARS: usize = 32 * 1024;
+
+    let mut out = Vec::new();
+    let lines: Vec<&str> = content.lines().collect();
+    let mut idx = 0;
+
+    while idx < lines.len() {
+        let line_no = idx + 1;
+        let raw_line = lines[idx];
+        let trimmed = raw_line.trim();
+
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            idx += 1;
+            continue;
+        }
+
+        let upper = trimmed.to_ascii_uppercase();
+        if !upper.starts_with("RUN ") && upper != "RUN" {
+            idx += 1;
+            continue;
+        }
+
+        let cmd_start = if trimmed.len() > 4 { &trimmed[4..] } else { "" };
+        let cmd_trimmed = cmd_start.trim_start();
+
+        if cmd_trimmed.starts_with('[') {
+            idx += 1;
+            continue;
+        }
+
+        let (command, lines_consumed) =
+            join_dockerfile_continuation(&lines, idx, MAX_CONTINUATION_LINES, MAX_JOINED_CHARS);
+
+        idx += lines_consumed;
+
+        let full_trimmed = command.trim();
+        let cmd_part = if full_trimmed.len() > 4 {
+            full_trimmed[4..].trim_start()
+        } else {
+            continue;
+        };
+
+        if cmd_part.starts_with('[') {
+            continue;
+        }
+
+        if cmd_part.is_empty() {
+            continue;
+        }
+
+        if !enabled_keywords.is_empty() && !contains_any_keyword(cmd_part, enabled_keywords) {
+            continue;
+        }
+
+        out.push(ExtractedCommand {
+            file: file.to_string(),
+            line: line_no,
+            col: None,
+            extractor_id: "dockerfile.run".to_string(),
+            command: cmd_part.to_string(),
+            metadata: None,
+        });
+    }
+
+    out
+}
+
+fn join_dockerfile_continuation(
+    lines: &[&str],
+    start_idx: usize,
+    max_lines: usize,
+    max_chars: usize,
+) -> (String, usize) {
+    let mut joined = String::new();
+    let mut idx = start_idx;
+    let mut lines_consumed = 0usize;
+
+    while idx < lines.len() && lines_consumed < max_lines && joined.len() < max_chars {
+        let raw_line = lines[idx];
+        lines_consumed += 1;
+        idx += 1;
+
+        let trimmed = raw_line.trim_end();
+        let (segment, continues) = trimmed
+            .strip_suffix('\\')
+            .map_or((trimmed, false), |before| (before.trim_end(), true));
+
+        if !joined.is_empty() && !segment.trim().is_empty() {
+            joined.push(' ');
+        }
+        joined.push_str(segment.trim_start());
+
+        if !continues {
+            break;
+        }
+    }
+
+    (joined, lines_consumed)
+}
 #[must_use]
 pub fn build_report(
     mut findings: Vec<ScanFinding>,
@@ -1202,5 +1625,103 @@ mod tests {
                 || finding.suggestion.as_ref().unwrap().contains("mixed"),
             "Suggestion should mention safer alternatives"
         );
+    }
+
+    // ========================================================================
+    // Shell extractor tests (git_safety_guard-scan.3.1)
+    // ========================================================================
+
+    #[test]
+    fn shell_extractor_skips_comments() {
+        let content = "# comment with git keyword\ngit status";
+        let extracted = extract_shell_script_from_str("test.sh", content, &["git"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "git status");
+    }
+
+    #[test]
+    fn shell_extractor_skips_control_structures() {
+        let content = "if [ -n \"$X\" ]; then\n  git status\nfi";
+        let extracted = extract_shell_script_from_str("test.sh", content, &["git"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "git status");
+        assert_eq!(extracted[0].line, 2);
+    }
+
+    #[test]
+    fn shell_extractor_joins_line_continuations() {
+        let content = "git log \\\n  --oneline";
+        let extracted = extract_shell_script_from_str("test.sh", content, &["git"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].line, 1);
+        assert_eq!(extracted[0].command, "git log --oneline");
+    }
+
+    #[test]
+    fn shell_extractor_keyword_prefilter() {
+        let content = "echo hello\ngit status";
+        let extracted = extract_shell_script_from_str("test.sh", content, &["git"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "git status");
+    }
+
+    // ========================================================================
+    // Dockerfile extractor tests (git_safety_guard-scan.3.2)
+    // ========================================================================
+
+    #[test]
+    fn dockerfile_extractor_extracts_run_shell_form() {
+        let content = "FROM alpine\nRUN apt-get update";
+        let extracted = extract_dockerfile_from_str("Dockerfile", content, &["apt"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].line, 2);
+        assert_eq!(extracted[0].extractor_id, "dockerfile.run");
+        assert_eq!(extracted[0].command, "apt-get update");
+    }
+
+    #[test]
+    fn dockerfile_extractor_ignores_json_exec_form() {
+        let content = "FROM alpine\nRUN [\"apt-get\", \"update\"]\nRUN apt-get install";
+        let extracted = extract_dockerfile_from_str("Dockerfile", content, &["apt"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "apt-get install");
+    }
+
+    #[test]
+    fn dockerfile_extractor_handles_continuations() {
+        let content = "FROM alpine\nRUN apt-get update \\\n    && apt-get install curl";
+        let extracted = extract_dockerfile_from_str("Dockerfile", content, &["apt"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].line, 2);
+        assert!(extracted[0].command.contains("apt-get update"));
+        assert!(extracted[0].command.contains("apt-get install"));
+    }
+
+    #[test]
+    fn dockerfile_extractor_ignores_non_run() {
+        let content = "# apt comment\nFROM alpine\nLABEL apt=test\nRUN apt-get update";
+        let extracted = extract_dockerfile_from_str("Dockerfile", content, &["apt"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "apt-get update");
+    }
+
+    #[test]
+    fn dockerfile_path_detection() {
+        use std::path::Path;
+        assert!(is_dockerfile_path(Path::new("Dockerfile")));
+        assert!(is_dockerfile_path(Path::new("dockerfile")));
+        assert!(is_dockerfile_path(Path::new("Dockerfile.dev")));
+        assert!(is_dockerfile_path(Path::new("app.dockerfile")));
+        assert!(!is_dockerfile_path(Path::new("Dockerfile-backup")));
+        assert!(!is_dockerfile_path(Path::new("build.sh")));
+    }
+
+    #[test]
+    fn shell_path_detection() {
+        use std::path::Path;
+        assert!(is_shell_script_path(Path::new("build.sh")));
+        assert!(is_shell_script_path(Path::new("deploy.SH")));
+        assert!(!is_shell_script_path(Path::new("script.bash")));
+        assert!(!is_shell_script_path(Path::new("Dockerfile")));
     }
 }

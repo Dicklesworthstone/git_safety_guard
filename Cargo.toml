@@ -54,6 +54,11 @@ assert_cmd = "2.0"
 predicates = "3.1"
 tempfile = "3.14"
 proptest = "1.4"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "heredoc_perf"
+harness = false
 
 [profile.release]
 opt-level = "z"     # Optimize for size (lean binary for distribution)
