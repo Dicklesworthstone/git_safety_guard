@@ -20,16 +20,19 @@ use clap::Parser;
 use colored::Colorize;
 use destructive_command_guard::cli::{self, Cli};
 use destructive_command_guard::config::Config;
-use destructive_command_guard::context::sanitize_for_pattern_matching;
+use destructive_command_guard::evaluator::{EvaluationDecision, evaluate_command};
 use destructive_command_guard::hook;
 use destructive_command_guard::load_default_allowlists;
-use destructive_command_guard::packs::{REGISTRY, normalize_command, pack_aware_quick_reject};
+use destructive_command_guard::packs::REGISTRY;
+#[cfg(test)]
+use destructive_command_guard::packs::{normalize_command, pack_aware_quick_reject};
 #[cfg(test)]
 use fancy_regex::Regex;
 #[cfg(test)]
 use memchr::memmem;
 // Import HookInput for parsing stdin JSON in hook mode
 use destructive_command_guard::hook::HookInput;
+#[cfg(test)]
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, BufRead, IsTerminal};
@@ -485,92 +488,29 @@ fn main() {
         return;
     }
 
-    // Check explicit allow overrides first (using precompiled regexes)
-    if compiled_overrides.check_allow(&command) {
-        return;
-    }
+    // Use the shared evaluator for hook mode parity with `dcg test`.
+    let result = evaluate_command(
+        &command,
+        &config,
+        &enabled_keywords,
+        &compiled_overrides,
+        &allowlists,
+    );
 
-    // Check explicit block overrides (using precompiled regexes)
-    if let Some(reason) = compiled_overrides.check_block(&command) {
-        hook::output_denial(&command, reason, None);
-        return;
-    }
-
-    // Quick rejection: if command doesn't contain any keywords from enabled packs,
-    // allow immediately. This is the hot path for 99%+ of commands.
-    //
-    // This uses pack_aware_quick_reject which checks keywords from ALL enabled packs
-    // (not just core git/rm), ensuring non-core packs like docker/kubectl are reachable.
-    if pack_aware_quick_reject(&command, &enabled_keywords) {
-        return;
-    }
-
-    // False-positive immunity: strip known-safe string arguments (commit messages, search patterns,
-    // issue descriptions, etc.) so dangerous substrings inside data do not trigger blocking.
-    //
-    // If the sanitizer actually removes anything, re-run the keyword gate on the sanitized view:
-    // this keeps `bd create --description="... rm -rf ..."` fast and non-blocking.
-    let sanitized = sanitize_for_pattern_matching(&command);
-    let command_for_match = sanitized.as_ref();
-    if matches!(sanitized, Cow::Owned(_))
-        && pack_aware_quick_reject(command_for_match, &enabled_keywords)
-    {
-        return;
-    }
-
-    // Normalize the command (strips /usr/bin/git -> git, etc.)
-    let normalized = normalize_command(command_for_match);
-
-    // Check against enabled packs from configuration.
-    //
-    // IMPORTANT: allowlisting must bypass only the specific matched rule and must not
-    // prevent other packs from being evaluated. If allowlisted, keep scanning.
-    let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
-
-    for pack_id in ordered_packs {
-        let Some(pack) = REGISTRY.get(&pack_id) else {
-            continue;
+    if result.decision == EvaluationDecision::Deny {
+        let Some(info) = result.pattern_info else {
+            // Fail open: structurally unexpected, but hook safety wins.
+            return;
         };
 
-        if !pack.might_match(&normalized) {
-            continue;
-        }
+        let pack = info.pack_id.as_deref();
+        hook::output_denial(&command, &info.reason, pack);
 
-        if pack.matches_safe(&normalized) {
-            continue;
-        }
-
-        for pattern in &pack.destructive_patterns {
-            // Until warn/log are surfaced in hook output, only deny-by-default patterns block.
-            if !pattern.severity.blocks_by_default() {
-                continue;
-            }
-
-            if !pattern.regex.is_match(&normalized).unwrap_or(false) {
-                continue;
-            }
-
-            // Allowlist check: only applies when the matched pack pattern has a stable name.
-            if let Some(pattern_name) = pattern.name {
-                if allowlists.match_rule(&pack_id, pattern_name).is_some() {
-                    continue;
-                }
-            }
-
-            let reason = pattern.reason;
-            let pack_id_str = Some(pack_id.as_str());
-            hook::output_denial(&command, reason, pack_id_str);
-
-            // Log if configured
-            if let Some(log_file) = &config.general.log_file {
-                let _ = hook::log_blocked_command(log_file, &command, reason, pack_id_str);
-            }
-
-            return;
+        // Log if configured
+        if let Some(log_file) = &config.general.log_file {
+            let _ = hook::log_blocked_command(log_file, &command, &info.reason, pack);
         }
     }
-
-    // No pattern matched: default allow
 }
 
 /// Print help information.

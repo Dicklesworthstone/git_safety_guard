@@ -1001,9 +1001,10 @@ fn extract_heredocs(
             timeout,
         ) {
             Ok((content, end_pos)) => {
+                let (language, _confidence) = ScriptLanguage::detect(command, &content);
                 extracted.push(ExtractedContent {
                     content,
-                    language: ScriptLanguage::Bash, // Default to bash for heredocs
+                    language,
                     delimiter: Some(delimiter.to_string()),
                     byte_range: full_match.start()..end_pos.min(command.len()),
                     quoted,

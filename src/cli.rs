@@ -301,6 +301,7 @@ fn test_command(config: &Config, command: &str, extra_packs: Option<Vec<String>>
                     MatchSource::ConfigOverride => "config override",
                     MatchSource::LegacyPattern => "legacy pattern",
                     MatchSource::Pack => "pack",
+                    MatchSource::HeredocAst => "heredoc/inline script (AST)",
                 };
                 println!("Source: {source}");
             }

@@ -487,6 +487,17 @@ test_command_with_packs "kubectl delete namespace foo" "block" "containers.docke
 test_command "docker system prune" "allow" "docker system prune (no docker pack, quick reject)"
 test_command "kubectl delete namespace foo" "allow" "kubectl delete namespace (no kubectl pack, quick reject)"
 
+log_section "Heredoc / Inline Script Tests (git_safety_guard-e7m)"
+
+# Must BLOCK: destructive operations inside heredocs (requires Tier 1→2→3 integration)
+test_command $'node <<EOF\nconst fs = require(\'fs\');\nfs.rmSync(\'/etc\', { recursive: true });\nEOF\n' "block" "node heredoc fs.rmSync('/etc', {recursive:true})"
+
+# Must ALLOW: safe heredoc content should not be blocked
+test_command $'node <<EOF\nconsole.log(\"hello\");\nEOF\n' "allow" "node heredoc safe content"
+
+# Must ALLOW: heredoc/inline trigger strings inside known-safe string args must not be treated as executed
+test_command 'git commit -m "example: node -e \"require(\x27child_process\x27).execSync(\x27rm -rf /\x27)\""' "allow" "git commit -m contains node -e rm -rf (data context)"
+
 log_section "Execution Context Regression Tests (git_safety_guard-t8x.3)"
 
 # Must ALLOW (data contexts)

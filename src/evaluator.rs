@@ -44,10 +44,15 @@
 //! ```
 
 use crate::allowlist::{AllowlistLayer, LayeredAllowlist};
+use crate::ast_matcher::DEFAULT_MATCHER;
 use crate::config::Config;
 use crate::context::sanitize_for_pattern_matching;
+use crate::heredoc::{
+    ExtractionLimits, ExtractionResult, TriggerResult, check_triggers, extract_content,
+};
 use crate::packs::{REGISTRY, normalize_command, pack_aware_quick_reject};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 /// The decision made by the evaluator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +96,8 @@ pub enum MatchSource {
     LegacyPattern,
     /// Matched a pattern from a pack.
     Pack,
+    /// Matched an AST/heuristic pattern in an embedded script (heredoc / inline code).
+    HeredocAst,
 }
 
 /// Result of evaluating a command.
@@ -273,9 +280,40 @@ pub fn evaluate_command(
         return EvaluationResult::denied_by_config(reason.to_string());
     }
 
-    // Step 3: Quick rejection - if no relevant keywords, allow immediately
-    // This handles the 99%+ case where commands don't need pattern checking
+    // Step 3: Heredoc / inline-script detection (Tier 1/2/3, fail-open).
+    //
+    // IMPORTANT: this must run BEFORE keyword quick-reject, because the top-level command
+    // might not contain any pack keywords even when the embedded script does.
+    //
+    // To avoid expensive work on obvious false triggers (e.g., `git commit -m "fix <<EOF"`),
+    // we re-check triggers on a sanitized view that masks known-safe string arguments.
+    let mut precomputed_sanitized = None;
+    let mut heredoc_allowlist_hit: Option<(PatternMatch, AllowlistLayer, String)> = None;
+
+    if check_triggers(command) == TriggerResult::Triggered {
+        let sanitized = sanitize_for_pattern_matching(command);
+        let sanitized_str = sanitized.as_ref();
+        let should_scan = if matches!(sanitized, std::borrow::Cow::Owned(_)) {
+            check_triggers(sanitized_str) == TriggerResult::Triggered
+        } else {
+            true
+        };
+        precomputed_sanitized = Some(sanitized);
+
+        if should_scan {
+            if let Some(blocked) = evaluate_heredoc(command, allowlists, &mut heredoc_allowlist_hit)
+            {
+                return blocked;
+            }
+        }
+    }
+
+    // Step 4: Quick rejection - if no relevant keywords, allow immediately
+    // This handles the 99%+ case where commands don't need pattern checking.
     if pack_aware_quick_reject(command, enabled_keywords) {
+        if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
+            return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
+        }
         return EvaluationResult::allowed();
     }
 
@@ -283,11 +321,14 @@ pub fn evaluate_command(
     // issue descriptions, etc.) so dangerous substrings inside data do not trigger blocking.
     //
     // If the sanitizer actually removes anything, re-run the keyword gate on the sanitized view.
-    let sanitized = sanitize_for_pattern_matching(command);
+    let sanitized = precomputed_sanitized.unwrap_or_else(|| sanitize_for_pattern_matching(command));
     let command_for_match = sanitized.as_ref();
     if matches!(sanitized, std::borrow::Cow::Owned(_))
         && pack_aware_quick_reject(command_for_match, enabled_keywords)
     {
+        if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
+            return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
+        }
         return EvaluationResult::allowed();
     }
 
@@ -305,7 +346,14 @@ pub fn evaluate_command(
     // "disable other packs" by stopping evaluation early. If a command matches multiple
     // packs/patterns, allowlisting the first match should still allow later matches to
     // deny the command.
-    evaluate_packs_with_allowlists(&normalized, config, allowlists)
+    let result = evaluate_packs_with_allowlists(&normalized, config, allowlists);
+    if result.allowlist_override.is_none() {
+        if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
+            return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
+        }
+    }
+
+    result
 }
 
 fn evaluate_packs_with_allowlists(
@@ -429,18 +477,46 @@ where
         return EvaluationResult::denied_by_config(reason.to_string());
     }
 
-    // Step 3: Quick rejection - if no relevant keywords, allow immediately
+    // Step 3: Heredoc / inline-script detection (Tier 1/2/3, fail-open).
+    // See `evaluate_command` for detailed rationale.
+    let mut precomputed_sanitized = None;
+    let mut heredoc_allowlist_hit: Option<(PatternMatch, AllowlistLayer, String)> = None;
+    if check_triggers(command) == TriggerResult::Triggered {
+        let sanitized = sanitize_for_pattern_matching(command);
+        let sanitized_str = sanitized.as_ref();
+        let should_scan = if matches!(sanitized, std::borrow::Cow::Owned(_)) {
+            check_triggers(sanitized_str) == TriggerResult::Triggered
+        } else {
+            true
+        };
+        precomputed_sanitized = Some(sanitized);
+
+        if should_scan {
+            if let Some(blocked) = evaluate_heredoc(command, allowlists, &mut heredoc_allowlist_hit)
+            {
+                return blocked;
+            }
+        }
+    }
+
+    // Step 4: Quick rejection - if no relevant keywords, allow immediately
     if pack_aware_quick_reject(command, enabled_keywords) {
+        if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
+            return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
+        }
         return EvaluationResult::allowed();
     }
 
     // False-positive immunity: strip known-safe string arguments (commit messages, search patterns,
     // issue descriptions, etc.) so dangerous substrings inside data do not trigger blocking.
-    let sanitized = sanitize_for_pattern_matching(command);
+    let sanitized = precomputed_sanitized.unwrap_or_else(|| sanitize_for_pattern_matching(command));
     let command_for_match = sanitized.as_ref();
     if matches!(sanitized, std::borrow::Cow::Owned(_))
         && pack_aware_quick_reject(command_for_match, enabled_keywords)
     {
+        if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
+            return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
+        }
         return EvaluationResult::allowed();
     }
 
@@ -462,7 +538,122 @@ where
     }
 
     // Step 7: Check enabled packs with allowlist override semantics.
-    evaluate_packs_with_allowlists(&normalized, config, allowlists)
+    let result = evaluate_packs_with_allowlists(&normalized, config, allowlists);
+    if result.allowlist_override.is_none() {
+        if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
+            return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
+        }
+    }
+
+    result
+}
+
+// ============================================================================
+// Heredoc / Inline Script Evaluation (Tier 2/3)
+// ============================================================================
+
+static DEFAULT_EXTRACTION_LIMITS: LazyLock<ExtractionLimits> =
+    LazyLock::new(ExtractionLimits::default);
+
+fn evaluate_heredoc(
+    command: &str,
+    allowlists: &LayeredAllowlist,
+    first_allowlist_hit: &mut Option<(PatternMatch, AllowlistLayer, String)>,
+) -> Option<EvaluationResult> {
+    let extracted = match extract_content(command, &DEFAULT_EXTRACTION_LIMITS) {
+        ExtractionResult::Extracted(contents) => contents,
+        ExtractionResult::NoContent
+        | ExtractionResult::Skipped(_)
+        | ExtractionResult::Failed(_) => {
+            return None;
+        }
+    };
+
+    for content in extracted {
+        let Ok(matches) = DEFAULT_MATCHER.find_matches(&content.content, content.language) else {
+            continue; // Fail-open on parse/timeout/unsupported
+        };
+
+        for m in matches {
+            if !m.severity.blocks_by_default() {
+                continue;
+            }
+
+            let (pack_id, pattern_name) = split_ast_rule_id(&m.rule_id);
+
+            if let Some(hit) = allowlists.match_rule(&pack_id, &pattern_name) {
+                if first_allowlist_hit.is_none() {
+                    let reason =
+                        format_heredoc_denial_reason(&content, &m, &pack_id, &pattern_name);
+                    *first_allowlist_hit = Some((
+                        PatternMatch {
+                            pack_id: Some(pack_id),
+                            pattern_name: Some(pattern_name),
+                            reason,
+                            source: MatchSource::HeredocAst,
+                        },
+                        hit.layer,
+                        hit.entry.reason.clone(),
+                    ));
+                }
+                continue;
+            }
+
+            let reason = format_heredoc_denial_reason(&content, &m, &pack_id, &pattern_name);
+            return Some(EvaluationResult {
+                decision: EvaluationDecision::Deny,
+                pattern_info: Some(PatternMatch {
+                    pack_id: Some(pack_id),
+                    pattern_name: Some(pattern_name),
+                    reason,
+                    source: MatchSource::HeredocAst,
+                }),
+                allowlist_override: None,
+            });
+        }
+    }
+
+    None
+}
+
+fn split_ast_rule_id(rule_id: &str) -> (String, String) {
+    // Expected format: heredoc.<language>.<pattern>[.<suffix>...]
+    if let Some(rest) = rule_id.strip_prefix("heredoc.") {
+        if let Some((lang, tail)) = rest.split_once('.') {
+            let pack_id = format!("heredoc.{lang}");
+            return (pack_id, tail.to_string());
+        }
+        return ("heredoc".to_string(), rest.to_string());
+    }
+
+    // Fallback: best-effort split on last dot.
+    if let Some((pack_id, pattern_name)) = rule_id.rsplit_once('.') {
+        return (pack_id.to_string(), pattern_name.to_string());
+    }
+
+    ("unknown".to_string(), rule_id.to_string())
+}
+
+fn format_heredoc_denial_reason(
+    extracted: &crate::heredoc::ExtractedContent,
+    m: &crate::ast_matcher::PatternMatch,
+    pack_id: &str,
+    pattern_name: &str,
+) -> String {
+    let lang = match extracted.language {
+        crate::heredoc::ScriptLanguage::Bash => "bash",
+        crate::heredoc::ScriptLanguage::Python => "python",
+        crate::heredoc::ScriptLanguage::Ruby => "ruby",
+        crate::heredoc::ScriptLanguage::Perl => "perl",
+        crate::heredoc::ScriptLanguage::JavaScript => "javascript",
+        crate::heredoc::ScriptLanguage::TypeScript => "typescript",
+        crate::heredoc::ScriptLanguage::Unknown => "unknown",
+    };
+
+    format!(
+        "Embedded {lang} code blocked: {} (rule {pack_id}:{pattern_name}, line {}, matched: {})",
+        m.reason, m.line_number, m.matched_text_preview
+    )
 }
 
 /// Trait for legacy safe patterns.
@@ -647,6 +838,46 @@ mod tests {
         assert!(result.is_allowed());
     }
 
+    // =========================================================================
+    // Heredoc / Inline Script Integration Tests (git_safety_guard-e7m)
+    // =========================================================================
+
+    #[test]
+    fn heredoc_scan_runs_before_keyword_quick_reject() {
+        let config = default_config();
+        let compiled = default_compiled_overrides();
+        let allowlists = default_allowlists();
+
+        // This command would be ALLOWED by keyword quick-reject if we only looked for
+        // unrelated pack keywords. The embedded JavaScript is still destructive and must
+        // be analyzed and denied.
+        let cmd = r#"node -e "require('child_process').execSync('rm -rf /')""#;
+        let result = evaluate_command(cmd, &config, &["kubectl"], &compiled, &allowlists);
+        assert!(result.is_denied());
+
+        let info = result.pattern_info.expect("deny must include pattern info");
+        assert_eq!(info.source, MatchSource::HeredocAst);
+        assert!(
+            info.pack_id
+                .as_deref()
+                .is_some_and(|p| p.starts_with("heredoc."))
+        );
+    }
+
+    #[test]
+    fn heredoc_triggers_inside_safe_string_arguments_do_not_scan_or_block() {
+        let config = default_config();
+        let compiled = default_compiled_overrides();
+        let allowlists = default_allowlists();
+
+        // The commit message contains heredoc/inline-script trigger strings and a destructive
+        // payload, but it's data-only (safe-string context). We must not treat it as executed.
+        let cmd =
+            r#"git commit -m "example: node -e \"require('child_process').execSync('rm -rf /')\"""#;
+        let result = evaluate_command(cmd, &config, &["git"], &compiled, &allowlists);
+        assert!(result.is_allowed());
+    }
+
     #[test]
     fn test_evaluation_decision_equality() {
         assert_eq!(EvaluationDecision::Allow, EvaluationDecision::Allow);
@@ -659,6 +890,7 @@ mod tests {
         assert_eq!(MatchSource::ConfigOverride, MatchSource::ConfigOverride);
         assert_eq!(MatchSource::LegacyPattern, MatchSource::LegacyPattern);
         assert_eq!(MatchSource::Pack, MatchSource::Pack);
+        assert_eq!(MatchSource::HeredocAst, MatchSource::HeredocAst);
         assert_ne!(MatchSource::ConfigOverride, MatchSource::Pack);
     }
 
