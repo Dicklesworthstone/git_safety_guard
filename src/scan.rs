@@ -700,6 +700,11 @@ fn extract_shell_command_line(
         return None;
     }
 
+    let candidate = strip_shell_inline_comment(candidate).trim();
+    if candidate.is_empty() {
+        return None;
+    }
+
     if !enabled_keywords.is_empty() && !contains_any_keyword(candidate, enabled_keywords) {
         return None;
     }
@@ -745,11 +750,6 @@ fn is_shell_control_line(first_word: &str) -> bool {
             | "{"
             | "}"
             | "function"
-            | "export"
-            | "local"
-            | "readonly"
-            | "declare"
-            | "typeset"
     )
 }
 
@@ -775,6 +775,14 @@ fn is_shell_function_declaration(words: &[String]) -> bool {
 
 fn is_shell_assignment_only(words: &[String]) -> bool {
     let mut idx = 0usize;
+    if words.first().is_some_and(|w| {
+        matches!(
+            w.as_str(),
+            "export" | "local" | "readonly" | "declare" | "typeset"
+        )
+    }) {
+        idx += 1;
+    }
     while idx < words.len() && is_shell_assignment_word(&words[idx]) {
         idx += 1;
     }
@@ -810,6 +818,48 @@ fn is_shell_var_name(s: &str) -> bool {
 
 fn contains_any_keyword(haystack: &str, keywords: &[&'static str]) -> bool {
     keywords.iter().any(|k| haystack.contains(k))
+}
+
+fn strip_shell_inline_comment(s: &str) -> &str {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut prev: Option<char> = None;
+
+    for (i, c) in s.char_indices() {
+        if escaped {
+            escaped = false;
+            prev = Some(c);
+            continue;
+        }
+
+        if c == '\\' && !in_single {
+            escaped = true;
+            prev = Some(c);
+            continue;
+        }
+
+        match c {
+            '\'' if !in_double => {
+                in_single = !in_single;
+            }
+            '"' if !in_single => {
+                in_double = !in_double;
+            }
+            '#' if !in_single && !in_double => {
+                let token_start = i == 0
+                    || prev.is_some_and(|p| p.is_whitespace() || matches!(p, ';' | '|' | '&'));
+                if token_start {
+                    return &s[..i];
+                }
+            }
+            _ => {}
+        }
+
+        prev = Some(c);
+    }
+
+    s
 }
 
 fn split_shell_words(s: &str) -> Vec<String> {
@@ -936,6 +986,8 @@ fn extract_dockerfile_from_str(
         if cmd_part.starts_with('[') {
             continue;
         }
+
+        let cmd_part = strip_shell_inline_comment(cmd_part).trim();
 
         if cmd_part.is_empty() {
             continue;
@@ -1144,6 +1196,59 @@ mod tests {
         assert_eq!(finding.severity, ScanSeverity::Error);
         assert_eq!(finding.rule_id.as_deref(), Some("core.git:reset-hard"));
         assert!(finding.reason.is_some());
+    }
+
+    // ========================================================================
+    // Extractor tests (false-positive controls)
+    // ========================================================================
+
+    #[test]
+    fn shell_extractor_skips_assignment_with_trailing_comment() {
+        let content = r#"
+DOC="rm -rf /" # this is data, not an executed command
+export NOTE="git reset --hard" # also data
+"#;
+
+        let extracted = extract_shell_script_from_str("test.sh", content, &["rm", "git"]);
+        assert!(
+            extracted.is_empty(),
+            "Expected no extracted commands, got: {extracted:?}"
+        );
+    }
+
+    #[test]
+    fn shell_extractor_extracts_commands_after_export_assignment() {
+        let content = r"export FOO=bar && rm -rf ./tmp";
+        let extracted = extract_shell_script_from_str("test.sh", content, &["rm"]);
+
+        assert_eq!(extracted.len(), 1);
+        assert!(extracted[0].command.contains("rm -rf"));
+    }
+
+    #[test]
+    fn dockerfile_extractor_ignores_shell_comments_in_run() {
+        let content = r"
+FROM ubuntu:22.04
+RUN echo hello # rm -rf /
+";
+
+        let extracted = extract_dockerfile_from_str("Dockerfile", content, &["rm"]);
+        assert!(
+            extracted.is_empty(),
+            "Expected no extracted commands, got: {extracted:?}"
+        );
+    }
+
+    #[test]
+    fn dockerfile_extractor_strips_shell_comments_in_run_and_keeps_real_command() {
+        let content = r"
+FROM ubuntu:22.04
+RUN rm -rf ./tmp # cleanup temp dir
+";
+
+        let extracted = extract_dockerfile_from_str("Dockerfile", content, &["rm"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "rm -rf ./tmp");
     }
 
     // ========================================================================
