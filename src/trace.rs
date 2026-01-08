@@ -350,6 +350,93 @@ impl ExplainTrace {
     pub fn find_step(&self, name: &str) -> Option<&TraceStep> {
         self.steps.iter().find(|s| s.name == name)
     }
+
+    /// Format the trace as a compact single-line string.
+    ///
+    /// Format examples:
+    /// - `ALLOW (94us) git status`
+    /// - `DENY core.git:reset-hard (847us) git reset --hard — destroys uncommitted changes`
+    /// - `WARN containers.docker:system-prune (1.2ms) docker system prune -af — removes all unused data`
+    ///
+    /// The command is truncated to `max_command_len` characters (default 60) with UTF-8 safety.
+    #[must_use]
+    pub fn format_compact(&self, max_command_len: Option<usize>) -> String {
+        let max_len = max_command_len.unwrap_or(60);
+        let decision_str = match self.decision {
+            EvaluationDecision::Allow => "ALLOW",
+            EvaluationDecision::Deny => "DENY",
+        };
+
+        let duration_str = format_duration(self.total_duration_us);
+        let command_preview = truncate_utf8(&self.command, max_len);
+
+        #[allow(clippy::option_if_let_else)]
+        match &self.match_info {
+            Some(info) => {
+                let rule_id = info.rule_id.as_deref().unwrap_or("unknown");
+                let reason = &info.reason;
+                format!("{decision_str} {rule_id} ({duration_str}) {command_preview} — {reason}")
+            }
+            None => {
+                format!("{decision_str} ({duration_str}) {command_preview}")
+            }
+        }
+    }
+
+    /// Get the reason for the decision (from match info).
+    #[must_use]
+    pub fn reason(&self) -> Option<&str> {
+        self.match_info.as_ref().map(|m| m.reason.as_str())
+    }
+}
+
+/// Format a duration in microseconds as a human-readable string.
+///
+/// - Under 1000us: "847us"
+/// - 1000us to 9999us: "1.2ms" (one decimal place)
+/// - 10000us to 999999us: "10ms" (no decimal)
+/// - 1000000us+: "1.5s" (one decimal place)
+#[must_use]
+#[allow(clippy::cast_precision_loss)] // Precision loss is acceptable for display formatting
+pub fn format_duration(us: u64) -> String {
+    if us < 1000 {
+        format!("{us}us")
+    } else if us < 1_000_000 {
+        // Use integer comparison for threshold to avoid rounding issues
+        if us < 10_000 {
+            let ms = us as f64 / 1000.0;
+            format!("{ms:.1}ms")
+        } else {
+            let ms = us / 1000; // Integer division
+            format!("{ms}ms")
+        }
+    } else {
+        let s = us as f64 / 1_000_000.0;
+        format!("{s:.1}s")
+    }
+}
+
+/// Truncate a string to at most `max_len` characters, ensuring UTF-8 safety.
+///
+/// If truncation is needed, appends "..." and ensures the result is at most `max_len` chars.
+/// Never breaks in the middle of a multi-byte UTF-8 character.
+#[must_use]
+pub fn truncate_utf8(s: &str, max_len: usize) -> String {
+    if max_len < 4 {
+        // Too short for meaningful truncation with "..."
+        return s.chars().take(max_len).collect();
+    }
+
+    let char_count = s.chars().count();
+    if char_count <= max_len {
+        return s.to_string();
+    }
+
+    // Leave room for "..."
+    let truncate_at = max_len.saturating_sub(3);
+    let mut result: String = s.chars().take(truncate_at).collect();
+    result.push_str("...");
+    result
 }
 
 // ============================================================================
@@ -541,5 +628,187 @@ mod tests {
         assert_eq!(summary.enabled_count, 5);
         assert_eq!(summary.evaluated.len(), 2);
         assert_eq!(summary.skipped.len(), 1);
+    }
+
+    // ========================================================================
+    // Compact formatter tests
+    // ========================================================================
+
+    #[test]
+    fn format_duration_microseconds() {
+        assert_eq!(format_duration(0), "0us");
+        assert_eq!(format_duration(1), "1us");
+        assert_eq!(format_duration(94), "94us");
+        assert_eq!(format_duration(847), "847us");
+        assert_eq!(format_duration(999), "999us");
+    }
+
+    #[test]
+    fn format_duration_milliseconds() {
+        assert_eq!(format_duration(1000), "1.0ms");
+        assert_eq!(format_duration(1200), "1.2ms");
+        assert_eq!(format_duration(1500), "1.5ms");
+        assert_eq!(format_duration(9999), "10.0ms"); // 9.999ms rounds to 10.0ms (still in decimal range)
+        assert_eq!(format_duration(10000), "10ms");
+        assert_eq!(format_duration(100_000), "100ms");
+        assert_eq!(format_duration(999_999), "999ms"); // 999.999ms truncates to 999ms
+    }
+
+    #[test]
+    fn format_duration_seconds() {
+        assert_eq!(format_duration(1_000_000), "1.0s");
+        assert_eq!(format_duration(1_500_000), "1.5s");
+        assert_eq!(format_duration(10_000_000), "10.0s");
+    }
+
+    #[test]
+    fn truncate_utf8_no_truncation_needed() {
+        assert_eq!(truncate_utf8("hello", 10), "hello");
+        assert_eq!(truncate_utf8("hello", 5), "hello");
+        assert_eq!(truncate_utf8("", 10), "");
+    }
+
+    #[test]
+    fn truncate_utf8_basic_truncation() {
+        assert_eq!(truncate_utf8("hello world", 8), "hello...");
+        assert_eq!(
+            truncate_utf8("git reset --hard HEAD~5", 15),
+            "git reset --..."
+        );
+    }
+
+    #[test]
+    fn truncate_utf8_unicode_safe() {
+        // Japanese "hello" - each character is one char in Rust
+        let japanese = "こんにちは世界";
+        assert_eq!(truncate_utf8(japanese, 7), "こんにちは世界");
+        assert_eq!(truncate_utf8(japanese, 6), "こんに...");
+
+        // Emoji test - when max_len < 4, we can't fit "..." so we just truncate
+        let emoji = "🎉🎊🎁🎂";
+        assert_eq!(truncate_utf8(emoji, 4), "🎉🎊🎁🎂"); // Exact fit, no truncation
+        assert_eq!(truncate_utf8(emoji, 3), "🎉🎊🎁"); // max_len < 4, no room for "..."
+        assert_eq!(truncate_utf8(emoji, 5), "🎉🎊🎁🎂"); // Fits without truncation (4 chars < 5)
+
+        // More emojis to test actual truncation
+        let more_emoji = "🎉🎊🎁🎂🎈🎀";
+        assert_eq!(truncate_utf8(more_emoji, 5), "🎉🎊...");
+    }
+
+    #[test]
+    fn truncate_utf8_very_short_max() {
+        assert_eq!(truncate_utf8("hello", 3), "hel");
+        assert_eq!(truncate_utf8("hello", 2), "he");
+        assert_eq!(truncate_utf8("hello", 1), "h");
+        assert_eq!(truncate_utf8("hello", 0), "");
+    }
+
+    #[test]
+    fn format_compact_allow() {
+        let mut collector = TraceCollector::new("git status");
+        collector.record_step(
+            "test",
+            94,
+            TraceDetails::PolicyDecision {
+                decision: EvaluationDecision::Allow,
+                allowlisted: false,
+            },
+        );
+
+        let trace = ExplainTrace {
+            command: "git status".to_string(),
+            normalized_command: None,
+            sanitized_command: None,
+            decision: EvaluationDecision::Allow,
+            total_duration_us: 94,
+            steps: vec![],
+            match_info: None,
+            allowlist_info: None,
+            pack_summary: None,
+        };
+
+        let compact = trace.format_compact(None);
+        assert_eq!(compact, "ALLOW (94us) git status");
+    }
+
+    #[test]
+    fn format_compact_deny() {
+        let trace = ExplainTrace {
+            command: "git reset --hard".to_string(),
+            normalized_command: None,
+            sanitized_command: None,
+            decision: EvaluationDecision::Deny,
+            total_duration_us: 847,
+            steps: vec![],
+            match_info: Some(MatchInfo {
+                rule_id: Some("core.git:reset-hard".to_string()),
+                pack_id: Some("core.git".to_string()),
+                pattern_name: Some("reset-hard".to_string()),
+                reason: "destroys uncommitted changes".to_string(),
+                source: MatchSource::Pack,
+                match_start: None,
+                match_end: None,
+                matched_text_preview: None,
+            }),
+            allowlist_info: None,
+            pack_summary: None,
+        };
+
+        let compact = trace.format_compact(None);
+        assert_eq!(
+            compact,
+            "DENY core.git:reset-hard (847us) git reset --hard — destroys uncommitted changes"
+        );
+    }
+
+    #[test]
+    fn format_compact_long_command_truncated() {
+        let long_cmd =
+            "git commit -m 'This is a very long commit message that should be truncated'";
+        let trace = ExplainTrace {
+            command: long_cmd.to_string(),
+            normalized_command: None,
+            sanitized_command: None,
+            decision: EvaluationDecision::Allow,
+            total_duration_us: 1200,
+            steps: vec![],
+            match_info: None,
+            allowlist_info: None,
+            pack_summary: None,
+        };
+
+        let compact = trace.format_compact(Some(40));
+        assert!(compact.contains("..."));
+        assert!(compact.starts_with("ALLOW (1.2ms)"));
+    }
+
+    #[test]
+    fn format_compact_deny_milliseconds() {
+        let trace = ExplainTrace {
+            command: "docker system prune -af".to_string(),
+            normalized_command: None,
+            sanitized_command: None,
+            decision: EvaluationDecision::Deny,
+            total_duration_us: 1_500,
+            steps: vec![],
+            match_info: Some(MatchInfo {
+                rule_id: Some("containers.docker:system-prune".to_string()),
+                pack_id: Some("containers.docker".to_string()),
+                pattern_name: Some("system-prune".to_string()),
+                reason: "removes all unused data".to_string(),
+                source: MatchSource::Pack,
+                match_start: None,
+                match_end: None,
+                matched_text_preview: None,
+            }),
+            allowlist_info: None,
+            pack_summary: None,
+        };
+
+        let compact = trace.format_compact(None);
+        assert_eq!(
+            compact,
+            "DENY containers.docker:system-prune (1.5ms) docker system prune -af — removes all unused data"
+        );
     }
 }

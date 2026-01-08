@@ -2322,8 +2322,7 @@ mod tests {
         #[test]
         fn perl_file_path_rmtree_warns_by_default() {
             // Use longer timeout for test reliability (default 20ms can be flaky under load)
-            let matcher =
-                AstMatcher::new().with_timeout(std::time::Duration::from_millis(100));
+            let matcher = AstMatcher::new().with_timeout(std::time::Duration::from_millis(100));
             let code = "use File::Path;\nFile::Path::rmtree(\"/tmp/test\");\n";
 
             let matches = matcher

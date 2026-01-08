@@ -53,6 +53,44 @@ use crate::heredoc::{
 use crate::packs::{REGISTRY, normalize_command, pack_aware_quick_reject};
 use std::collections::HashSet;
 
+/// Maximum length for match text preview (in characters, not bytes).
+const MAX_PREVIEW_CHARS: usize = 80;
+
+/// Extract a UTF-8 safe preview of the matched text from a command.
+///
+/// The preview is truncated to `MAX_PREVIEW_CHARS` characters if too long,
+/// with "..." appended to indicate truncation.
+fn extract_match_preview(command: &str, span: &MatchSpan) -> String {
+    // Ensure byte offsets are within bounds
+    let start = span.start.min(command.len());
+    let end = span.end.min(command.len());
+
+    if start >= end {
+        return String::new();
+    }
+
+    // Extract the matched slice (might not be valid UTF-8 at boundaries)
+    let matched = &command[start..end];
+
+    // Truncate to MAX_PREVIEW_CHARS characters (UTF-8 safe)
+    truncate_preview(matched, MAX_PREVIEW_CHARS)
+}
+
+/// Truncate a string to at most `max_chars` characters, UTF-8 safe.
+///
+/// If truncation occurs, appends "..." to indicate more content exists.
+fn truncate_preview(text: &str, max_chars: usize) -> String {
+    let char_count = text.chars().count();
+    if char_count <= max_chars {
+        text.to_string()
+    } else {
+        // Leave room for "..."
+        let truncate_at = max_chars.saturating_sub(3);
+        let truncated: String = text.chars().take(truncate_at).collect();
+        format!("{truncated}...")
+    }
+}
+
 /// The decision made by the evaluator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvaluationDecision {
@@ -60,6 +98,15 @@ pub enum EvaluationDecision {
     Allow,
     /// Command is blocked from executing.
     Deny,
+}
+
+/// Byte span of a match within the evaluated command string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchSpan {
+    /// Start byte offset (inclusive).
+    pub start: usize,
+    /// End byte offset (exclusive).
+    pub end: usize,
 }
 
 /// Information about the pattern that matched (for denials).
@@ -73,6 +120,10 @@ pub struct PatternMatch {
     pub reason: String,
     /// Source of the match (for debugging/explain mode).
     pub source: MatchSource,
+    /// Byte span of the first match within the command (for explain highlighting).
+    pub matched_span: Option<MatchSpan>,
+    /// Preview of the matched text (UTF-8 safe, truncated if too long).
+    pub matched_text_preview: Option<String>,
 }
 
 /// Information about an allowlist override (DENY -> ALLOW).
@@ -133,6 +184,8 @@ impl EvaluationResult {
                 pattern_name: None,
                 reason,
                 source: MatchSource::ConfigOverride,
+                matched_span: None,
+                matched_text_preview: None,
             }),
             allowlist_override: None,
         }
@@ -149,6 +202,27 @@ impl EvaluationResult {
                 pattern_name: None,
                 reason: reason.to_string(),
                 source: MatchSource::LegacyPattern,
+                matched_span: None,
+                matched_text_preview: None,
+            }),
+            allowlist_override: None,
+        }
+    }
+
+    /// Create a "denied" result from legacy pattern with match span.
+    #[inline]
+    #[must_use]
+    pub fn denied_by_legacy_with_span(reason: &str, command: &str, span: MatchSpan) -> Self {
+        let preview = extract_match_preview(command, &span);
+        Self {
+            decision: EvaluationDecision::Deny,
+            pattern_info: Some(PatternMatch {
+                pack_id: None,
+                pattern_name: None,
+                reason: reason.to_string(),
+                source: MatchSource::LegacyPattern,
+                matched_span: Some(span),
+                matched_text_preview: Some(preview),
             }),
             allowlist_override: None,
         }
@@ -165,6 +239,8 @@ impl EvaluationResult {
                 pattern_name: None,
                 reason: reason.to_string(),
                 source: MatchSource::Pack,
+                matched_span: None,
+                matched_text_preview: None,
             }),
             allowlist_override: None,
         }
@@ -181,6 +257,33 @@ impl EvaluationResult {
                 pattern_name: Some(pattern_name.to_string()),
                 reason: reason.to_string(),
                 source: MatchSource::Pack,
+                matched_span: None,
+                matched_text_preview: None,
+            }),
+            allowlist_override: None,
+        }
+    }
+
+    /// Create a "denied" result from a pack with pattern name and match span.
+    #[inline]
+    #[must_use]
+    pub fn denied_by_pack_pattern_with_span(
+        pack_id: &str,
+        pattern_name: &str,
+        reason: &str,
+        command: &str,
+        span: MatchSpan,
+    ) -> Self {
+        let preview = extract_match_preview(command, &span);
+        Self {
+            decision: EvaluationDecision::Deny,
+            pattern_info: Some(PatternMatch {
+                pack_id: Some(pack_id.to_string()),
+                pattern_name: Some(pattern_name.to_string()),
+                reason: reason.to_string(),
+                source: MatchSource::Pack,
+                matched_span: Some(span),
+                matched_text_preview: Some(preview),
             }),
             allowlist_override: None,
         }
@@ -435,6 +538,8 @@ fn evaluate_packs_with_allowlists(
                                 pattern_name: Some(pattern_name.to_string()),
                                 reason: reason.to_string(),
                                 source: MatchSource::Pack,
+                                matched_span: None,
+                                matched_text_preview: None,
                             },
                             hit.layer,
                             hit.entry.reason.clone(),
@@ -590,6 +695,7 @@ where
 // Heredoc / Inline Script Evaluation (Tier 2/3)
 // ============================================================================
 
+#[allow(clippy::too_many_lines)]
 fn evaluate_heredoc(
     command: &str,
     allowlists: &LayeredAllowlist,
@@ -683,6 +789,12 @@ fn evaluate_heredoc(
                             pattern_name: Some(pattern_name),
                             reason,
                             source: MatchSource::HeredocAst,
+                            // AST matches already have span info from the matcher
+                            matched_span: Some(MatchSpan {
+                                start: m.start,
+                                end: m.end,
+                            }),
+                            matched_text_preview: Some(m.matched_text_preview),
                         },
                         hit.layer,
                         hit.entry.reason.clone(),
@@ -699,6 +811,12 @@ fn evaluate_heredoc(
                     pattern_name: Some(pattern_name),
                     reason,
                     source: MatchSource::HeredocAst,
+                    // AST matches already have span info from the matcher
+                    matched_span: Some(MatchSpan {
+                        start: m.start,
+                        end: m.end,
+                    }),
+                    matched_text_preview: Some(m.matched_text_preview),
                 }),
                 allowlist_override: None,
             });
@@ -1548,6 +1666,131 @@ mod tests {
         assert!(
             result1.is_denied(),
             "Normalized docker prune should be blocked"
+        );
+    }
+
+    // =========================================================================
+    // Match Span Tests (git_safety_guard-99e.2.4)
+    // =========================================================================
+
+    #[test]
+    fn truncate_preview_handles_utf8_safely() {
+        // ASCII string
+        let short = "hello";
+        assert_eq!(super::truncate_preview(short, 10), "hello");
+
+        // Exactly at limit
+        let exact = "hello";
+        assert_eq!(super::truncate_preview(exact, 5), "hello");
+
+        // Over limit, needs truncation
+        let long = "hello world";
+        assert_eq!(super::truncate_preview(long, 8), "hello...");
+
+        // UTF-8 multibyte characters (should not break in middle of char)
+        let japanese = "こんにちは世界"; // 7 chars, 21 bytes
+        let truncated = super::truncate_preview(japanese, 5);
+        assert!(truncated.ends_with("..."));
+        // Should have 2 chars + "..."
+        assert_eq!(truncated, "こん...");
+
+        // Emoji
+        let emoji = "🔥🔥🔥🔥🔥"; // 5 emoji, 20 bytes
+        let truncated_emoji = super::truncate_preview(emoji, 3);
+        assert_eq!(truncated_emoji, "..."); // 0 chars + "..." since 3-3=0
+    }
+
+    #[test]
+    fn extract_match_preview_bounds_check() {
+        let cmd = "rm -rf /important";
+
+        // Normal span
+        let span = super::MatchSpan { start: 0, end: 2 };
+        assert_eq!(super::extract_match_preview(cmd, &span), "rm");
+
+        // Span at end
+        let span_end = super::MatchSpan { start: 7, end: 17 };
+        assert_eq!(super::extract_match_preview(cmd, &span_end), "/important");
+
+        // Span beyond bounds (should clamp)
+        let span_overflow = super::MatchSpan {
+            start: 0,
+            end: 1000,
+        };
+        assert_eq!(
+            super::extract_match_preview(cmd, &span_overflow),
+            "rm -rf /important"
+        );
+
+        // Start beyond end (should return empty)
+        let span_invalid = super::MatchSpan {
+            start: 100,
+            end: 50,
+        };
+        assert_eq!(super::extract_match_preview(cmd, &span_invalid), "");
+    }
+
+    #[test]
+    fn heredoc_matches_include_span_info() {
+        let mut config = default_config();
+        config.packs.enabled.push("system.core".to_string());
+        let compiled = config.overrides.compile();
+        let allowlists = default_allowlists();
+        let enabled_packs = config.enabled_pack_ids();
+        let keywords_vec = crate::packs::REGISTRY.collect_enabled_keywords(&enabled_packs);
+        let keywords: Vec<&str> = keywords_vec.clone();
+
+        // Heredoc containing dangerous command
+        let cmd = "cat <<'EOF'\nrm -rf /\nEOF";
+
+        let result = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
+
+        if result.is_denied() {
+            if let Some(ref pattern_info) = result.pattern_info {
+                // If there's a span, verify it's valid
+                if let Some(span) = pattern_info.matched_span {
+                    assert!(span.start <= span.end, "Span start should not exceed end");
+                    assert!(
+                        span.end <= cmd.len(),
+                        "Span end should not exceed command length"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn match_span_determinism() {
+        let mut config = default_config();
+        config.packs.enabled.push("system.core".to_string());
+        let compiled = config.overrides.compile();
+        let allowlists = default_allowlists();
+        let enabled_packs = config.enabled_pack_ids();
+        let keywords_vec = crate::packs::REGISTRY.collect_enabled_keywords(&enabled_packs);
+        let keywords: Vec<&str> = keywords_vec.clone();
+
+        let cmd = "rm -rf /";
+
+        // Run multiple times and verify same result
+        let result1 = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
+        let result2 = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
+
+        assert_eq!(result1.decision, result2.decision);
+        assert_eq!(
+            result1.pattern_info.as_ref().map(|p| p.matched_span),
+            result2.pattern_info.as_ref().map(|p| p.matched_span),
+            "Match span should be deterministic"
+        );
+        assert_eq!(
+            result1
+                .pattern_info
+                .as_ref()
+                .map(|p| p.matched_text_preview.as_ref()),
+            result2
+                .pattern_info
+                .as_ref()
+                .map(|p| p.matched_text_preview.as_ref()),
+            "Match text preview should be deterministic"
         );
     }
 }

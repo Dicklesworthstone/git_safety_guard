@@ -67,6 +67,7 @@ pub mod evaluator;
 pub mod heredoc;
 pub mod hook;
 pub mod packs;
+pub mod scan;
 pub mod suggestions;
 pub mod trace;
 
@@ -78,7 +79,8 @@ pub use allowlist::{
 pub use config::Config;
 pub use evaluator::{
     EvaluationDecision, EvaluationResult, LegacyDestructivePattern, LegacySafePattern, MatchSource,
-    PatternMatch, evaluate_command, evaluate_command_with_legacy, evaluate_command_with_pack_order,
+    MatchSpan, PatternMatch, evaluate_command, evaluate_command_with_legacy,
+    evaluate_command_with_pack_order,
 };
 pub use hook::{HookInput, HookOutput, HookResult, HookSpecificOutput};
 pub use packs::{Pack, PackId, PackRegistry};
@@ -105,7 +107,14 @@ pub use ast_matcher::{
 // Re-export trace types for explain mode
 pub use trace::{
     AllowlistInfo, ExplainTrace, MatchInfo, PackSummary, TraceCollector, TraceDetails, TraceStep,
+    format_duration, truncate_utf8,
 };
 
 // Re-export suggestion types
 pub use suggestions::{Suggestion, SuggestionKind, get_suggestion_by_kind, get_suggestions};
+
+// Re-export scan types for `dcg scan`
+pub use scan::{
+    ExtractedCommand, ScanDecision, ScanEvalContext, ScanFailOn, ScanFinding, ScanFormat,
+    ScanOptions, ScanReport, ScanSeverity, ScanSummary, scan_paths, should_fail, sort_findings,
+};

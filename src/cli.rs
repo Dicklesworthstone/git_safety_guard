@@ -36,6 +36,51 @@ pub enum Command {
         fix: bool,
     },
 
+    /// Manage allowlist entries (add, list, remove, validate)
+    #[command(name = "allowlist")]
+    Allowlist {
+        #[command(subcommand)]
+        action: AllowlistAction,
+    },
+
+    /// Add a rule to the allowlist (shortcut for `allowlist add`)
+    #[command(name = "allow")]
+    Allow {
+        /// Rule ID to allowlist (e.g., "core.git:reset-hard")
+        rule_id: String,
+
+        /// Reason for allowlisting (required)
+        #[arg(long, short = 'r')]
+        reason: String,
+
+        /// Add to project allowlist (default if in git repo)
+        #[arg(long, conflicts_with = "user")]
+        project: bool,
+
+        /// Add to user allowlist
+        #[arg(long, conflicts_with = "project")]
+        user: bool,
+
+        /// Expiration date (ISO 8601 / RFC 3339)
+        #[arg(long)]
+        expires: Option<String>,
+    },
+
+    /// Remove a rule from the allowlist (shortcut for `allowlist remove`)
+    #[command(name = "unallow")]
+    Unallow {
+        /// Rule ID to remove (e.g., "core.git:reset-hard")
+        rule_id: String,
+
+        /// Remove from project allowlist (default if in git repo)
+        #[arg(long, conflicts_with = "user")]
+        project: bool,
+
+        /// Remove from user allowlist
+        #[arg(long, conflicts_with = "project")]
+        user: bool,
+    },
+
     /// Install the hook into Claude Code settings
     #[command(name = "install")]
     Install {
@@ -123,6 +168,116 @@ pub enum Command {
     ShowConfig,
 }
 
+/// Allowlist subcommand actions
+#[derive(Subcommand, Debug)]
+pub enum AllowlistAction {
+    /// Add a rule to the allowlist
+    #[command(name = "add")]
+    Add {
+        /// Rule ID to allowlist (e.g., "core.git:reset-hard")
+        rule_id: String,
+
+        /// Reason for allowlisting (required)
+        #[arg(long, short = 'r')]
+        reason: String,
+
+        /// Add to project allowlist (default if in git repo)
+        #[arg(long, conflicts_with = "user")]
+        project: bool,
+
+        /// Add to user allowlist
+        #[arg(long, conflicts_with = "project")]
+        user: bool,
+
+        /// Expiration date (ISO 8601 / RFC 3339)
+        #[arg(long)]
+        expires: Option<String>,
+
+        /// Environment condition (e.g., CI=true)
+        #[arg(long = "condition", value_name = "KEY=VAL")]
+        conditions: Vec<String>,
+    },
+
+    /// Add an exact command to the allowlist
+    #[command(name = "add-command")]
+    AddCommand {
+        /// Exact command to allowlist
+        command: String,
+
+        /// Reason for allowlisting (required)
+        #[arg(long, short = 'r')]
+        reason: String,
+
+        /// Add to project allowlist (default if in git repo)
+        #[arg(long, conflicts_with = "user")]
+        project: bool,
+
+        /// Add to user allowlist
+        #[arg(long, conflicts_with = "project")]
+        user: bool,
+
+        /// Expiration date (ISO 8601 / RFC 3339)
+        #[arg(long)]
+        expires: Option<String>,
+    },
+
+    /// List allowlist entries
+    #[command(name = "list")]
+    List {
+        /// Show project allowlist only
+        #[arg(long, conflicts_with = "user")]
+        project: bool,
+
+        /// Show user allowlist only
+        #[arg(long, conflicts_with = "project")]
+        user: bool,
+
+        /// Output format
+        #[arg(long, value_enum, default_value = "pretty")]
+        format: AllowlistOutputFormat,
+    },
+
+    /// Remove a rule from the allowlist
+    #[command(name = "remove")]
+    Remove {
+        /// Rule ID to remove (e.g., "core.git:reset-hard")
+        rule_id: String,
+
+        /// Remove from project allowlist (default if in git repo)
+        #[arg(long, conflicts_with = "user")]
+        project: bool,
+
+        /// Remove from user allowlist
+        #[arg(long, conflicts_with = "project")]
+        user: bool,
+    },
+
+    /// Validate allowlist entries
+    #[command(name = "validate")]
+    Validate {
+        /// Validate project allowlist only
+        #[arg(long, conflicts_with = "user")]
+        project: bool,
+
+        /// Validate user allowlist only
+        #[arg(long, conflicts_with = "project")]
+        user: bool,
+
+        /// Treat warnings as errors
+        #[arg(long)]
+        strict: bool,
+    },
+}
+
+/// Output format for allowlist list command
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum AllowlistOutputFormat {
+    /// Human-readable output
+    Pretty,
+    /// JSON output
+    Json,
+}
+
 /// Run the CLI command.
 ///
 /// # Errors
@@ -171,6 +326,29 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Command::ShowConfig) => {
             show_config(&config);
+        }
+        Some(Command::Allowlist { action }) => {
+            handle_allowlist_command(action)?;
+        }
+        Some(Command::Allow {
+            rule_id,
+            reason,
+            project,
+            user,
+            expires,
+        }) => {
+            // Shortcut for `allowlist add`
+            let layer = resolve_layer(project, user);
+            allowlist_add_rule(&rule_id, &reason, layer, expires.as_deref(), &[])?;
+        }
+        Some(Command::Unallow {
+            rule_id,
+            project,
+            user,
+        }) => {
+            // Shortcut for `allowlist remove`
+            let layer = resolve_layer(project, user);
+            allowlist_remove(&rule_id, layer)?;
         }
         None => {
             // No subcommand - run in hook mode (default behavior)
@@ -777,6 +955,645 @@ fn check_hook_registered() -> Result<bool, Box<dyn std::error::Error>> {
         .is_some_and(|a| a.iter().any(is_dcg_hook_entry));
 
     Ok(registered)
+}
+
+// ============================================================================
+// Allowlist CLI implementation
+// ============================================================================
+
+use crate::allowlist::{AllowEntry, AllowSelector, AllowlistLayer, RuleId};
+
+/// Resolve which allowlist layer to use based on CLI flags.
+///
+/// Default: project if in a git repo, otherwise user.
+fn resolve_layer(project: bool, user: bool) -> AllowlistLayer {
+    if user {
+        AllowlistLayer::User
+    } else if project {
+        AllowlistLayer::Project
+    } else {
+        // Default: project if we can detect a git repo, otherwise user
+        if find_repo_root_from_cwd().is_some() {
+            AllowlistLayer::Project
+        } else {
+            AllowlistLayer::User
+        }
+    }
+}
+
+/// Find the repo root from the current working directory.
+fn find_repo_root_from_cwd() -> Option<std::path::PathBuf> {
+    let cwd = std::env::current_dir().ok()?;
+    let mut current = cwd.as_path();
+    loop {
+        if current.join(".git").exists() {
+            return Some(current.to_path_buf());
+        }
+        current = current.parent()?;
+    }
+}
+
+/// Get the path to the allowlist file for a given layer.
+fn allowlist_path_for_layer(layer: AllowlistLayer) -> std::path::PathBuf {
+    match layer {
+        AllowlistLayer::Project => {
+            let repo_root = find_repo_root_from_cwd()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            repo_root.join(".dcg").join("allowlist.toml")
+        }
+        AllowlistLayer::User => config_dir().join("allowlist.toml"),
+        AllowlistLayer::System => std::path::PathBuf::from("/etc/dcg/allowlist.toml"),
+    }
+}
+
+/// Handle allowlist subcommand dispatch.
+fn handle_allowlist_command(action: AllowlistAction) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        AllowlistAction::Add {
+            rule_id,
+            reason,
+            project,
+            user,
+            expires,
+            conditions,
+        } => {
+            let layer = resolve_layer(project, user);
+            allowlist_add_rule(&rule_id, &reason, layer, expires.as_deref(), &conditions)?;
+        }
+        AllowlistAction::AddCommand {
+            command,
+            reason,
+            project,
+            user,
+            expires,
+        } => {
+            let layer = resolve_layer(project, user);
+            allowlist_add_command(&command, &reason, layer, expires.as_deref())?;
+        }
+        AllowlistAction::List {
+            project,
+            user,
+            format,
+        } => {
+            allowlist_list(project, user, format)?;
+        }
+        AllowlistAction::Remove {
+            rule_id,
+            project,
+            user,
+        } => {
+            let layer = resolve_layer(project, user);
+            allowlist_remove(&rule_id, layer)?;
+        }
+        AllowlistAction::Validate {
+            project,
+            user,
+            strict,
+        } => {
+            allowlist_validate(project, user, strict)?;
+        }
+    }
+    Ok(())
+}
+
+/// Add a rule to the allowlist.
+fn allowlist_add_rule(
+    rule_id: &str,
+    reason: &str,
+    layer: AllowlistLayer,
+    expires: Option<&str>,
+    conditions: &[String],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+
+    // Validate rule ID format
+    let parsed_rule = RuleId::parse(rule_id)
+        .ok_or_else(|| format!("Invalid rule ID: {rule_id} (expected pack_id:pattern_name)"))?;
+
+    let path = allowlist_path_for_layer(layer);
+    let mut doc = load_or_create_allowlist_doc(&path)?;
+
+    // Check for duplicate
+    if has_rule_entry(&doc, &parsed_rule) {
+        println!(
+            "{} Rule {} already exists in {} allowlist",
+            "Warning:".yellow(),
+            rule_id,
+            layer.label()
+        );
+        return Ok(());
+    }
+
+    // Build entry
+    let entry = build_rule_entry(&parsed_rule, reason, expires, conditions);
+    append_entry(&mut doc, entry);
+
+    // Write back
+    write_allowlist(&path, &doc)?;
+
+    println!(
+        "{} Added {} to {} allowlist",
+        "✓".green(),
+        rule_id.cyan(),
+        layer.label()
+    );
+    println!("  File: {}", path.display());
+
+    Ok(())
+}
+
+/// Add an exact command to the allowlist.
+fn allowlist_add_command(
+    command: &str,
+    reason: &str,
+    layer: AllowlistLayer,
+    expires: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+
+    let path = allowlist_path_for_layer(layer);
+    let mut doc = load_or_create_allowlist_doc(&path)?;
+
+    // Check for duplicate
+    if has_command_entry(&doc, command) {
+        println!(
+            "{} Command already exists in {} allowlist",
+            "Warning:".yellow(),
+            layer.label()
+        );
+        return Ok(());
+    }
+
+    // Build entry
+    let entry = build_command_entry(command, reason, expires);
+    append_entry(&mut doc, entry);
+
+    // Write back
+    write_allowlist(&path, &doc)?;
+
+    println!(
+        "{} Added exact command to {} allowlist",
+        "✓".green(),
+        layer.label()
+    );
+    println!("  File: {}", path.display());
+
+    Ok(())
+}
+
+/// List allowlist entries.
+fn allowlist_list(
+    project_only: bool,
+    user_only: bool,
+    format: AllowlistOutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+
+    let layers: Vec<AllowlistLayer> = if project_only {
+        vec![AllowlistLayer::Project]
+    } else if user_only {
+        vec![AllowlistLayer::User]
+    } else {
+        vec![AllowlistLayer::Project, AllowlistLayer::User]
+    };
+
+    let mut all_entries: Vec<(AllowlistLayer, std::path::PathBuf, AllowEntry)> = Vec::new();
+
+    for layer in layers {
+        let path = allowlist_path_for_layer(layer);
+        if !path.exists() {
+            continue;
+        }
+
+        let allowlist = crate::allowlist::load_default_allowlists();
+        for loaded in &allowlist.layers {
+            if loaded.layer == layer {
+                for entry in &loaded.file.entries {
+                    all_entries.push((layer, path.clone(), entry.clone()));
+                }
+            }
+        }
+    }
+
+    match format {
+        AllowlistOutputFormat::Pretty => {
+            if all_entries.is_empty() {
+                println!("{}", "No allowlist entries found.".yellow());
+                return Ok(());
+            }
+
+            println!("{}", "Allowlist entries:".bold());
+            println!();
+
+            for (layer, path, entry) in &all_entries {
+                let selector_str = match &entry.selector {
+                    AllowSelector::Rule(rule_id) => format!("rule: {rule_id}"),
+                    AllowSelector::ExactCommand(cmd) => format!("exact_command: {cmd}"),
+                    AllowSelector::CommandPrefix(prefix) => format!("command_prefix: {prefix}"),
+                    AllowSelector::RegexPattern(re) => format!("pattern: {re}"),
+                };
+
+                println!("  {} [{}]", selector_str.cyan(), layer.label());
+                println!("    Reason: {}", entry.reason);
+                if let Some(added_by) = &entry.added_by {
+                    println!("    Added by: {added_by}");
+                }
+                if let Some(added_at) = &entry.added_at {
+                    println!("    Added at: {added_at}");
+                }
+                if let Some(expires_at) = &entry.expires_at {
+                    let expired = is_expired(expires_at);
+                    let status = if expired {
+                        "EXPIRED".red().to_string()
+                    } else {
+                        expires_at.clone()
+                    };
+                    println!("    Expires: {status}");
+                }
+                println!("    File: {}", path.display());
+                println!();
+            }
+        }
+        AllowlistOutputFormat::Json => {
+            let json_entries: Vec<serde_json::Value> = all_entries
+                .iter()
+                .map(|(layer, path, entry)| {
+                    let selector = match &entry.selector {
+                        AllowSelector::Rule(rule_id) => {
+                            serde_json::json!({"type": "rule", "value": rule_id.to_string()})
+                        }
+                        AllowSelector::ExactCommand(cmd) => {
+                            serde_json::json!({"type": "exact_command", "value": cmd})
+                        }
+                        AllowSelector::CommandPrefix(prefix) => {
+                            serde_json::json!({"type": "command_prefix", "value": prefix})
+                        }
+                        AllowSelector::RegexPattern(re) => {
+                            serde_json::json!({"type": "pattern", "value": re})
+                        }
+                    };
+                    serde_json::json!({
+                        "layer": layer.label(),
+                        "path": path.display().to_string(),
+                        "selector": selector,
+                        "reason": entry.reason,
+                        "added_by": entry.added_by,
+                        "added_at": entry.added_at,
+                        "expires_at": entry.expires_at,
+                    })
+                })
+                .collect();
+
+            println!("{}", serde_json::to_string_pretty(&json_entries)?);
+        }
+    }
+
+    Ok(())
+}
+
+/// Remove a rule from the allowlist.
+fn allowlist_remove(
+    rule_id: &str,
+    layer: AllowlistLayer,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+
+    let parsed_rule = RuleId::parse(rule_id)
+        .ok_or_else(|| format!("Invalid rule ID: {rule_id} (expected pack_id:pattern_name)"))?;
+
+    let path = allowlist_path_for_layer(layer);
+    if !path.exists() {
+        println!(
+            "{} No {} allowlist file found at {}",
+            "Warning:".yellow(),
+            layer.label(),
+            path.display()
+        );
+        return Ok(());
+    }
+
+    let mut doc = load_or_create_allowlist_doc(&path)?;
+
+    let removed = remove_rule_entry(&mut doc, &parsed_rule);
+    if !removed {
+        println!(
+            "{} Rule {} not found in {} allowlist",
+            "Warning:".yellow(),
+            rule_id,
+            layer.label()
+        );
+        return Ok(());
+    }
+
+    write_allowlist(&path, &doc)?;
+
+    println!(
+        "{} Removed {} from {} allowlist",
+        "✓".green(),
+        rule_id.cyan(),
+        layer.label()
+    );
+
+    Ok(())
+}
+
+/// Validate allowlist entries.
+fn allowlist_validate(
+    project_only: bool,
+    user_only: bool,
+    strict: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+
+    let layers: Vec<AllowlistLayer> = if project_only {
+        vec![AllowlistLayer::Project]
+    } else if user_only {
+        vec![AllowlistLayer::User]
+    } else {
+        vec![AllowlistLayer::Project, AllowlistLayer::User]
+    };
+
+    let mut errors = 0;
+    let mut warnings = 0;
+
+    for layer in layers {
+        let path = allowlist_path_for_layer(layer);
+        if !path.exists() {
+            continue;
+        }
+
+        println!("{} allowlist: {}", layer.label().bold(), path.display());
+
+        let allowlist = crate::allowlist::load_default_allowlists();
+        for loaded in &allowlist.layers {
+            if loaded.layer != layer {
+                continue;
+            }
+
+            // Report parse errors
+            for err in &loaded.file.errors {
+                println!("  {} {}", "ERROR:".red(), err.message);
+                errors += 1;
+            }
+
+            // Check entries
+            for (idx, entry) in loaded.file.entries.iter().enumerate() {
+                // Check for expired entries
+                if let Some(expires_at) = &entry.expires_at {
+                    if is_expired(expires_at) {
+                        println!(
+                            "  {} Entry {} is expired ({})",
+                            "WARNING:".yellow(),
+                            idx + 1,
+                            expires_at
+                        );
+                        warnings += 1;
+                    }
+                }
+
+                // Check for risky regex patterns without acknowledgement
+                if matches!(entry.selector, AllowSelector::RegexPattern(_))
+                    && !entry.risk_acknowledged
+                {
+                    println!(
+                        "  {} Entry {} uses regex pattern without risk_acknowledged=true",
+                        "WARNING:".yellow(),
+                        idx + 1
+                    );
+                    warnings += 1;
+                }
+
+                // Check for overly broad wildcards
+                if let AllowSelector::Rule(rule_id) = &entry.selector {
+                    if rule_id.pack_id == "*" {
+                        println!(
+                            "  {} Entry {} uses global wildcard pack (dangerous)",
+                            "ERROR:".red(),
+                            idx + 1
+                        );
+                        errors += 1;
+                    } else if rule_id.pattern_name == "*" {
+                        println!(
+                            "  {} Entry {} uses pack wildcard ({}:*)",
+                            "WARNING:".yellow(),
+                            idx + 1,
+                            rule_id.pack_id
+                        );
+                        warnings += 1;
+                    }
+                }
+            }
+        }
+
+        println!();
+    }
+
+    let total_issues = if strict { errors + warnings } else { errors };
+
+    if total_issues == 0 {
+        println!("{}", "All allowlist entries are valid.".green());
+        Ok(())
+    } else {
+        let msg = format!(
+            "{} error(s), {} warning(s)",
+            errors.to_string().red(),
+            warnings.to_string().yellow()
+        );
+        println!("{msg}");
+        Err(format!("Validation failed: {errors} error(s), {warnings} warning(s)").into())
+    }
+}
+
+// ============================================================================
+// TOML manipulation helpers (using toml_edit for stable formatting)
+// ============================================================================
+
+/// Load an existing allowlist file or create an empty document.
+fn load_or_create_allowlist_doc(
+    path: &std::path::Path,
+) -> Result<toml_edit::DocumentMut, Box<dyn std::error::Error>> {
+    if path.exists() {
+        let content = std::fs::read_to_string(path)?;
+        let doc: toml_edit::DocumentMut = content.parse()?;
+        Ok(doc)
+    } else {
+        // Create new document with header comment
+        let mut doc = toml_edit::DocumentMut::new();
+        doc.as_table_mut().set_implicit(true);
+        Ok(doc)
+    }
+}
+
+/// Write the allowlist document back to disk.
+fn write_allowlist(
+    path: &std::path::Path,
+    doc: &toml_edit::DocumentMut,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create parent directory if needed
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    std::fs::write(path, doc.to_string())?;
+    Ok(())
+}
+
+/// Check if a rule entry already exists in the document.
+fn has_rule_entry(doc: &toml_edit::DocumentMut, rule_id: &RuleId) -> bool {
+    let Some(allow) = doc.get("allow") else {
+        return false;
+    };
+    let Some(arr) = allow.as_array_of_tables() else {
+        return false;
+    };
+
+    let rule_str = rule_id.to_string();
+    arr.iter().any(|tbl| {
+        tbl.get("rule")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s == rule_str)
+    })
+}
+
+/// Check if an exact command entry already exists.
+fn has_command_entry(doc: &toml_edit::DocumentMut, command: &str) -> bool {
+    let Some(allow) = doc.get("allow") else {
+        return false;
+    };
+    let Some(arr) = allow.as_array_of_tables() else {
+        return false;
+    };
+
+    arr.iter().any(|tbl| {
+        tbl.get("exact_command")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s == command)
+    })
+}
+
+/// Build a new rule entry as an inline table.
+fn build_rule_entry(
+    rule_id: &RuleId,
+    reason: &str,
+    expires: Option<&str>,
+    conditions: &[String],
+) -> toml_edit::Table {
+    let mut tbl = toml_edit::Table::new();
+
+    tbl.insert("rule", toml_edit::value(rule_id.to_string()));
+    tbl.insert("reason", toml_edit::value(reason));
+
+    // Add audit metadata
+    if let Some(user) = get_current_user() {
+        tbl.insert("added_by", toml_edit::value(user));
+    }
+    tbl.insert("added_at", toml_edit::value(current_timestamp()));
+
+    if let Some(exp) = expires {
+        tbl.insert("expires_at", toml_edit::value(exp));
+    }
+
+    if !conditions.is_empty() {
+        let mut cond_tbl = toml_edit::InlineTable::new();
+        for cond in conditions {
+            if let Some((k, v)) = cond.split_once('=') {
+                cond_tbl.insert(k.trim(), v.trim().into());
+            }
+        }
+        tbl.insert("conditions", toml_edit::Item::Value(cond_tbl.into()));
+    }
+
+    tbl
+}
+
+/// Build a new exact command entry.
+fn build_command_entry(command: &str, reason: &str, expires: Option<&str>) -> toml_edit::Table {
+    let mut tbl = toml_edit::Table::new();
+
+    tbl.insert("exact_command", toml_edit::value(command));
+    tbl.insert("reason", toml_edit::value(reason));
+
+    // Add audit metadata
+    if let Some(user) = get_current_user() {
+        tbl.insert("added_by", toml_edit::value(user));
+    }
+    tbl.insert("added_at", toml_edit::value(current_timestamp()));
+
+    if let Some(exp) = expires {
+        tbl.insert("expires_at", toml_edit::value(exp));
+    }
+
+    tbl
+}
+
+/// Append an entry to the [[allow]] array.
+fn append_entry(doc: &mut toml_edit::DocumentMut, entry: toml_edit::Table) {
+    // Get or create the [[allow]] array of tables
+    let allow = doc
+        .entry("allow")
+        .or_insert_with(|| toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()));
+
+    if let Some(arr) = allow.as_array_of_tables_mut() {
+        arr.push(entry);
+    }
+}
+
+/// Remove a rule entry from the document. Returns true if removed.
+fn remove_rule_entry(doc: &mut toml_edit::DocumentMut, rule_id: &RuleId) -> bool {
+    let Some(allow) = doc.get_mut("allow") else {
+        return false;
+    };
+    let Some(arr) = allow.as_array_of_tables_mut() else {
+        return false;
+    };
+
+    let rule_str = rule_id.to_string();
+    let initial_len = arr.len();
+
+    // Find the index to remove
+    let mut remove_idx = None;
+    for (idx, tbl) in arr.iter().enumerate() {
+        if tbl
+            .get("rule")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s == rule_str)
+        {
+            remove_idx = Some(idx);
+            break;
+        }
+    }
+
+    if let Some(idx) = remove_idx {
+        arr.remove(idx);
+    }
+
+    arr.len() < initial_len
+}
+
+/// Get the current user (from environment or whoami).
+fn get_current_user() -> Option<String> {
+    std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .ok()
+}
+
+/// Get current timestamp in RFC 3339 format.
+fn current_timestamp() -> String {
+    chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
+/// Check if a timestamp string is expired.
+fn is_expired(timestamp: &str) -> bool {
+    // Try to parse as RFC 3339
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+        return dt < chrono::Utc::now();
+    }
+    // Try simpler formats
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S") {
+        let utc = dt.and_utc();
+        return utc < chrono::Utc::now();
+    }
+    false
 }
 
 #[cfg(test)]
