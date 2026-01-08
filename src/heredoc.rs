@@ -203,6 +203,245 @@ impl ScriptLanguage {
             Self::Unknown
         }
     }
+
+    /// Infer language from a shebang line (e.g., `#!/usr/bin/env python3`).
+    ///
+    /// Parses both direct interpreter paths (`#!/bin/bash`) and env-based shebangs
+    /// (`#!/usr/bin/env python3`).
+    ///
+    /// Returns `None` if no valid shebang is found.
+    #[must_use]
+    pub fn from_shebang(content: &str) -> Option<Self> {
+        let first_line = content.lines().next()?;
+
+        // Shebang must start with #!
+        let shebang = first_line.strip_prefix("#!")?;
+        let shebang = shebang.trim();
+
+        if shebang.is_empty() {
+            return None;
+        }
+
+        // Extract interpreter: either the last path component or env argument
+        // Examples:
+        //   #!/bin/bash           -> bash
+        //   #!/usr/bin/env python3 -> python3
+        //   #!/usr/bin/python     -> python
+        let interpreter = shebang.split_whitespace().last()?.rsplit('/').next()?;
+
+        // Use existing from_command logic to map interpreter to language
+        let lang = Self::from_command(interpreter);
+        if lang == Self::Unknown {
+            None
+        } else {
+            Some(lang)
+        }
+    }
+
+    /// Infer language from content heuristics (fallback detection).
+    ///
+    /// Examines the first few lines for language-specific patterns like
+    /// import statements, requires, or function definitions.
+    ///
+    /// This is a low-confidence detection method used only when command
+    /// prefix and shebang detection fail.
+    ///
+    /// Returns `None` if no recognizable patterns are found.
+    #[must_use]
+    pub fn from_content(content: &str) -> Option<Self> {
+        // Only examine first 20 lines to bound heuristic cost
+        let lines: Vec<&str> = content.lines().take(20).collect();
+
+        // Python indicators (high confidence)
+        let has_python_import = lines.iter().any(|l| {
+            let trimmed = l.trim();
+            trimmed.starts_with("import ") || trimmed.starts_with("from ")
+        });
+        if has_python_import {
+            return Some(Self::Python);
+        }
+
+        // TypeScript indicators (check BEFORE JavaScript since TS is a superset)
+        // TypeScript-specific patterns that distinguish it from plain JS
+        let has_typescript_patterns = lines.iter().any(|l| {
+            let trimmed = l.trim();
+            trimmed.contains(": string")
+                || trimmed.contains(": number")
+                || trimmed.contains(": boolean")
+                || trimmed.contains("interface ")
+                || trimmed.starts_with("type ")
+        });
+        if has_typescript_patterns {
+            return Some(Self::TypeScript);
+        }
+
+        // JavaScript/Node indicators
+        let has_js_patterns = lines.iter().any(|l| {
+            let trimmed = l.trim();
+            trimmed.contains("require(")
+                || trimmed.starts_with("const ")
+                || trimmed.starts_with("let ")
+                || trimmed.starts_with("var ")
+                || trimmed.contains("module.exports")
+        });
+        if has_js_patterns {
+            return Some(Self::JavaScript);
+        }
+
+        // Ruby indicators
+        let has_ruby_patterns = lines.iter().any(|l| {
+            let trimmed = l.trim();
+            trimmed.starts_with("def ")
+                || trimmed.starts_with("class ")
+                || trimmed.starts_with("require ")
+                || trimmed.starts_with("require_relative ")
+                || trimmed.contains(".each do")
+                || trimmed.contains(" do |")
+        });
+        // Ruby also needs "end" somewhere to reduce false positives
+        let has_end = content.contains("\nend") || content.ends_with("end");
+        if has_ruby_patterns && has_end {
+            return Some(Self::Ruby);
+        }
+
+        // Perl indicators
+        let has_perl_patterns = lines.iter().any(|l| {
+            let trimmed = l.trim();
+            trimmed.starts_with("use strict")
+                || trimmed.starts_with("use warnings")
+                || trimmed.starts_with("my $")
+                || trimmed.starts_with("my @")
+                || trimmed.starts_with("my %")
+                || trimmed.contains("=~ /")
+                || trimmed.contains("=~ s/")
+        });
+        if has_perl_patterns {
+            return Some(Self::Perl);
+        }
+
+        // Bash indicators (low priority - many scripts look like bash)
+        let has_bash_patterns = lines.iter().any(|l| {
+            let trimmed = l.trim();
+            trimmed.starts_with("if [")
+                || trimmed.starts_with("for ")
+                || trimmed.starts_with("while ")
+                || trimmed.starts_with("case ")
+                || trimmed.contains("$((")
+                || trimmed.contains("${")
+                || trimmed.starts_with("function ")
+                || (trimmed.contains("()") && trimmed.contains('{'))
+        });
+        if has_bash_patterns {
+            return Some(Self::Bash);
+        }
+
+        None
+    }
+
+    /// Detect language using all available signals with priority order.
+    ///
+    /// Priority:
+    /// 1. Command prefix (highest confidence - e.g., `python -c`)
+    /// 2. Shebang line (high confidence - e.g., `#!/usr/bin/env python3`)
+    /// 3. Content heuristics (lower confidence - imports, patterns)
+    /// 4. Unknown (fallback)
+    ///
+    /// Returns a tuple of (language, confidence) for explainability.
+    #[must_use]
+    pub fn detect(cmd: &str, content: &str) -> (Self, DetectionConfidence) {
+        // Priority 1: Extract interpreter from command
+        // Handle formats like: "python3 -c", "/usr/bin/python -c", "env python3"
+        let cmd_interpreter = Self::extract_interpreter(cmd);
+        if let Some(interpreter) = cmd_interpreter {
+            let lang = Self::from_command(&interpreter);
+            if lang != Self::Unknown {
+                return (lang, DetectionConfidence::CommandPrefix);
+            }
+        }
+
+        // Priority 2: Shebang detection
+        if let Some(lang) = Self::from_shebang(content) {
+            return (lang, DetectionConfidence::Shebang);
+        }
+
+        // Priority 3: Content heuristics
+        if let Some(lang) = Self::from_content(content) {
+            return (lang, DetectionConfidence::ContentHeuristics);
+        }
+
+        // Priority 4: Unknown
+        (Self::Unknown, DetectionConfidence::Unknown)
+    }
+
+    /// Extract the interpreter name from a command string.
+    ///
+    /// Handles various formats:
+    /// - `python3 -c "code"` → "python3"
+    /// - `/usr/bin/python -c "code"` → "python"
+    /// - `env python3 -c "code"` → "python3"
+    /// - `bash -c "code"` → "bash"
+    fn extract_interpreter(cmd: &str) -> Option<String> {
+        let mut parts = cmd.split_whitespace();
+        let first = parts.next()?;
+
+        // Get basename (strip path)
+        let basename = first.rsplit('/').next().unwrap_or(first);
+
+        // If it's "env", the interpreter is the next argument
+        if basename == "env" {
+            let next = parts.next()?;
+            let next_basename = next.rsplit('/').next().unwrap_or(next);
+            return Some(next_basename.to_string());
+        }
+
+        Some(basename.to_string())
+    }
+}
+
+/// Confidence level of language detection.
+///
+/// Used by `dcg explain` to show why a particular language was detected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DetectionConfidence {
+    /// Detected from command prefix (e.g., `python -c`).
+    /// Highest confidence - the command explicitly names the interpreter.
+    CommandPrefix,
+
+    /// Detected from shebang line (e.g., `#!/usr/bin/env python3`).
+    /// High confidence - explicit interpreter declaration in the script.
+    Shebang,
+
+    /// Detected from content patterns (imports, syntax patterns).
+    /// Lower confidence - heuristic-based detection.
+    ContentHeuristics,
+
+    /// Could not determine language.
+    /// Lowest "confidence" - effectively no detection.
+    Unknown,
+}
+
+impl DetectionConfidence {
+    /// Human-readable label for this confidence level.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::CommandPrefix => "command-prefix",
+            Self::Shebang => "shebang",
+            Self::ContentHeuristics => "content-heuristics",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Descriptive reason for this confidence level.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        match self {
+            Self::CommandPrefix => "detected from command interpreter (highest confidence)",
+            Self::Shebang => "detected from shebang line (high confidence)",
+            Self::ContentHeuristics => "inferred from content patterns (lower confidence)",
+            Self::Unknown => "could not determine language",
+        }
+    }
 }
 
 /// Type of heredoc extraction.
@@ -235,6 +474,52 @@ pub struct ExtractedContent {
     pub heredoc_type: Option<HeredocType>,
 }
 
+/// Reason why extraction was skipped (for observability/logging).
+#[derive(Debug, Clone, PartialEq)]
+pub enum SkipReason {
+    /// Input exceeded maximum size limit.
+    ExceededSizeLimit { actual: usize, limit: usize },
+    /// Input exceeded maximum line count.
+    ExceededLineLimit { actual: usize, limit: usize },
+    /// Maximum heredoc count reached.
+    ExceededHeredocLimit { limit: usize },
+    /// Binary-like content detected (contains null bytes or high non-printable ratio).
+    BinaryContent { null_bytes: usize, non_printable_ratio: f32 },
+    /// Heredoc delimiter not found (unterminated).
+    UnterminatedHeredoc { delimiter: String },
+    /// Malformed input that couldn't be parsed.
+    MalformedInput { reason: String },
+}
+
+impl std::fmt::Display for SkipReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ExceededSizeLimit { actual, limit } => {
+                write!(f, "exceeded size limit: {actual} bytes > {limit} bytes")
+            }
+            Self::ExceededLineLimit { actual, limit } => {
+                write!(f, "exceeded line limit: {actual} lines > {limit} lines")
+            }
+            Self::ExceededHeredocLimit { limit } => {
+                write!(f, "exceeded heredoc limit: max {limit} heredocs")
+            }
+            Self::BinaryContent { null_bytes, non_printable_ratio } => {
+                write!(
+                    f,
+                    "binary content detected: {null_bytes} null bytes, {:.1}% non-printable",
+                    non_printable_ratio * 100.0
+                )
+            }
+            Self::UnterminatedHeredoc { delimiter } => {
+                write!(f, "unterminated heredoc: delimiter '{delimiter}' not found")
+            }
+            Self::MalformedInput { reason } => {
+                write!(f, "malformed input: {reason}")
+            }
+        }
+    }
+}
+
 /// Result of Tier 2 content extraction.
 #[derive(Debug)]
 pub enum ExtractionResult {
@@ -242,6 +527,8 @@ pub enum ExtractionResult {
     NoContent,
     /// Successfully extracted content.
     Extracted(Vec<ExtractedContent>),
+    /// Extraction was skipped (fail-open with reason for observability).
+    Skipped(Vec<SkipReason>),
     /// Extraction failed (timeout, malformed, etc.) - fail open with warning.
     Failed(String),
 }
@@ -276,6 +563,56 @@ static INLINE_SCRIPT_DOUBLE_QUOTE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("inline script double-quote regex compiles")
 });
 
+// ============================================================================
+// Robustness: Binary Content Detection
+// ============================================================================
+
+/// Threshold for non-printable character ratio to consider content binary.
+const BINARY_THRESHOLD: f32 = 0.30; // 30% non-printable characters
+
+/// Check if content appears to be binary (contains null bytes or high non-printable ratio).
+///
+/// # Returns
+///
+/// `Some(SkipReason::BinaryContent)` if the content appears binary, `None` otherwise.
+#[must_use]
+#[allow(clippy::cast_precision_loss)] // Precision loss acceptable
+#[allow(clippy::naive_bytecount)] // Acceptable for bounded content
+pub fn check_binary_content(content: &str) -> Option<SkipReason> {
+    let bytes = content.as_bytes();
+    if bytes.is_empty() {
+        return None;
+    }
+
+    // Count null bytes (definite binary indicator)
+    let null_bytes = bytes.iter().filter(|&&b| b == 0).count();
+    if null_bytes > 0 {
+        return Some(SkipReason::BinaryContent {
+            null_bytes,
+            non_printable_ratio: null_bytes as f32 / bytes.len() as f32,
+        });
+    }
+
+    // Count non-printable characters (excluding common whitespace)
+    let non_printable = bytes
+        .iter()
+        .filter(|&&b| {
+            // Non-printable if not in printable ASCII range and not common whitespace
+            !(b == b'\n' || b == b'\r' || b == b'\t' || (0x20..=0x7E).contains(&b))
+        })
+        .count();
+
+    let ratio = non_printable as f32 / bytes.len() as f32;
+    if ratio > BINARY_THRESHOLD {
+        return Some(SkipReason::BinaryContent {
+            null_bytes: 0,
+            non_printable_ratio: ratio,
+        });
+    }
+
+    None
+}
+
 /// Extract heredoc and inline script content from a command.
 ///
 /// This is Tier 2 of the detection pipeline - content extraction with safety bounds.
@@ -302,30 +639,44 @@ static INLINE_SCRIPT_DOUBLE_QUOTE: LazyLock<Regex> = LazyLock::new(|| {
 /// ```
 #[must_use]
 pub fn extract_content(command: &str, limits: &ExtractionLimits) -> ExtractionResult {
+    let mut skip_reasons: Vec<SkipReason> = Vec::new();
+
     // Enforce input size limit
     if command.len() > limits.max_body_bytes {
-        return ExtractionResult::Failed(format!(
-            "Command exceeds max size: {} > {}",
-            command.len(),
-            limits.max_body_bytes
-        ));
+        skip_reasons.push(SkipReason::ExceededSizeLimit {
+            actual: command.len(),
+            limit: limits.max_body_bytes,
+        });
+        return ExtractionResult::Skipped(skip_reasons);
+    }
+
+    // Check for binary content (null bytes or high non-printable ratio)
+    if let Some(reason) = check_binary_content(command) {
+        skip_reasons.push(reason);
+        return ExtractionResult::Skipped(skip_reasons);
     }
 
     let mut extracted: Vec<ExtractedContent> = Vec::new();
 
     // Extract inline scripts (-c/-e flags)
-    extract_inline_scripts(command, limits, &mut extracted);
+    extract_inline_scripts(command, limits, &mut extracted, &mut skip_reasons);
 
     // Extract here-strings (<<<)
-    extract_herestrings(command, limits, &mut extracted);
+    extract_herestrings(command, limits, &mut extracted, &mut skip_reasons);
 
     // Extract heredocs (<<, <<-, <<~)
-    extract_heredocs(command, limits, &mut extracted);
+    extract_heredocs(command, limits, &mut extracted, &mut skip_reasons);
 
-    if extracted.is_empty() {
-        ExtractionResult::NoContent
-    } else {
-        ExtractionResult::Extracted(extracted)
+    // Return based on what we found
+    match (extracted.is_empty(), skip_reasons.is_empty()) {
+        (true, true) => ExtractionResult::NoContent,
+        (true, false) => ExtractionResult::Skipped(skip_reasons),
+        (false, true) => ExtractionResult::Extracted(extracted),
+        (false, false) => {
+            // Partial extraction with some skips - return what we got
+            // The skips are logged but don't prevent returning extracted content
+            ExtractionResult::Extracted(extracted)
+        }
     }
 }
 
@@ -334,15 +685,21 @@ fn extract_inline_scripts(
     command: &str,
     limits: &ExtractionLimits,
     extracted: &mut Vec<ExtractedContent>,
+    skip_reasons: &mut Vec<SkipReason>,
 ) {
     if extracted.len() >= limits.max_heredocs {
+        skip_reasons.push(SkipReason::ExceededHeredocLimit {
+            limit: limits.max_heredocs,
+        });
         return;
     }
 
     // Helper to extract from a given regex pattern
+    let mut hit_limit = false;
     let mut extract_from_pattern = |pattern: &Regex| {
         for cap in pattern.captures_iter(command) {
             if extracted.len() >= limits.max_heredocs {
+                hit_limit = true;
                 break;
             }
 
@@ -352,6 +709,7 @@ fn extract_inline_scripts(
 
             // Enforce content size limit
             if content.len() > limits.max_body_bytes {
+                // Skip but don't add to skip_reasons (would be too noisy)
                 continue;
             }
 
@@ -370,6 +728,12 @@ fn extract_inline_scripts(
     // Extract from both single-quoted and double-quoted patterns
     extract_from_pattern(&INLINE_SCRIPT_SINGLE_QUOTE);
     extract_from_pattern(&INLINE_SCRIPT_DOUBLE_QUOTE);
+
+    if hit_limit {
+        skip_reasons.push(SkipReason::ExceededHeredocLimit {
+            limit: limits.max_heredocs,
+        });
+    }
 }
 
 /// Extract here-strings (<<<).
@@ -377,13 +741,16 @@ fn extract_herestrings(
     command: &str,
     limits: &ExtractionLimits,
     extracted: &mut Vec<ExtractedContent>,
+    skip_reasons: &mut Vec<SkipReason>,
 ) {
     if extracted.len() >= limits.max_heredocs {
-        return;
+        return; // Already hit limit, don't add another skip reason
     }
 
+    let mut hit_limit = false;
     for cap in HERESTRING_EXTRACTOR.captures_iter(command) {
         if extracted.len() >= limits.max_heredocs {
+            hit_limit = true;
             break;
         }
 
@@ -407,6 +774,12 @@ fn extract_herestrings(
             heredoc_type: Some(HeredocType::HereString),
         });
     }
+
+    if hit_limit {
+        skip_reasons.push(SkipReason::ExceededHeredocLimit {
+            limit: limits.max_heredocs,
+        });
+    }
 }
 
 /// Extract heredocs (<<, <<-, <<~).
@@ -414,13 +787,16 @@ fn extract_heredocs(
     command: &str,
     limits: &ExtractionLimits,
     extracted: &mut Vec<ExtractedContent>,
+    skip_reasons: &mut Vec<SkipReason>,
 ) {
     if extracted.len() >= limits.max_heredocs {
-        return;
+        return; // Already hit limit
     }
 
+    let mut hit_limit = false;
     for cap in HEREDOC_EXTRACTOR.captures_iter(command) {
         if extracted.len() >= limits.max_heredocs {
+            hit_limit = true;
             break;
         }
 
@@ -441,20 +817,32 @@ fn extract_heredocs(
         let start_pos = full_match.end();
 
         // Find the terminating delimiter
-        if let Some(content) =
-            extract_heredoc_body(command, start_pos, delimiter, heredoc_type, limits)
-        {
-            let end_pos = start_pos + content.len() + delimiter.len() + 1; // +1 for newline
+        match extract_heredoc_body(command, start_pos, delimiter, heredoc_type, limits) {
+            Some(content) => {
+                let end_pos = start_pos + content.len() + delimiter.len() + 1; // +1 for newline
 
-            extracted.push(ExtractedContent {
-                content,
-                language: ScriptLanguage::Bash, // Default to bash for heredocs
-                delimiter: Some(delimiter.to_string()),
-                byte_range: full_match.start()..end_pos.min(command.len()),
-                quoted,
-                heredoc_type: Some(heredoc_type),
-            });
+                extracted.push(ExtractedContent {
+                    content,
+                    language: ScriptLanguage::Bash, // Default to bash for heredocs
+                    delimiter: Some(delimiter.to_string()),
+                    byte_range: full_match.start()..end_pos.min(command.len()),
+                    quoted,
+                    heredoc_type: Some(heredoc_type),
+                });
+            }
+            None => {
+                // Unterminated heredoc - record skip reason but continue processing
+                skip_reasons.push(SkipReason::UnterminatedHeredoc {
+                    delimiter: delimiter.to_string(),
+                });
+            }
         }
+    }
+
+    if hit_limit {
+        skip_reasons.push(SkipReason::ExceededHeredocLimit {
+            limit: limits.max_heredocs,
+        });
     }
 }
 
@@ -869,6 +1257,206 @@ mod tests {
             );
         }
 
+        // =========================================================================
+        // Language detection tests (git_safety_guard-du4)
+        // =========================================================================
+
+        #[test]
+        fn from_shebang_detects_direct_path() {
+            assert_eq!(
+                ScriptLanguage::from_shebang("#!/bin/bash\necho hello"),
+                Some(ScriptLanguage::Bash)
+            );
+            assert_eq!(
+                ScriptLanguage::from_shebang("#!/usr/bin/python\nimport os"),
+                Some(ScriptLanguage::Python)
+            );
+            assert_eq!(
+                ScriptLanguage::from_shebang("#!/usr/bin/ruby\nputs 'hi'"),
+                Some(ScriptLanguage::Ruby)
+            );
+        }
+
+        #[test]
+        fn from_shebang_detects_env_path() {
+            assert_eq!(
+                ScriptLanguage::from_shebang("#!/usr/bin/env python3\nimport sys"),
+                Some(ScriptLanguage::Python)
+            );
+            assert_eq!(
+                ScriptLanguage::from_shebang("#!/usr/bin/env node\nconsole.log('hi')"),
+                Some(ScriptLanguage::JavaScript)
+            );
+            assert_eq!(
+                ScriptLanguage::from_shebang("#!/usr/bin/env perl\nprint 'hello'"),
+                Some(ScriptLanguage::Perl)
+            );
+        }
+
+        #[test]
+        fn from_shebang_returns_none_for_invalid() {
+            // No shebang
+            assert_eq!(ScriptLanguage::from_shebang("import os"), None);
+            // Empty shebang
+            assert_eq!(ScriptLanguage::from_shebang("#!\ncode"), None);
+            // Unknown interpreter
+            assert_eq!(
+                ScriptLanguage::from_shebang("#!/usr/bin/unknown\ncode"),
+                None
+            );
+        }
+
+        #[test]
+        fn from_content_detects_python() {
+            assert_eq!(
+                ScriptLanguage::from_content("import os\nos.remove('file')"),
+                Some(ScriptLanguage::Python)
+            );
+            assert_eq!(
+                ScriptLanguage::from_content("from pathlib import Path\nPath('x').unlink()"),
+                Some(ScriptLanguage::Python)
+            );
+        }
+
+        #[test]
+        fn from_content_detects_javascript() {
+            assert_eq!(
+                ScriptLanguage::from_content("const fs = require('fs');\nfs.rm('x');"),
+                Some(ScriptLanguage::JavaScript)
+            );
+            assert_eq!(
+                ScriptLanguage::from_content("let x = 5;\nconsole.log(x);"),
+                Some(ScriptLanguage::JavaScript)
+            );
+        }
+
+        #[test]
+        fn from_content_detects_typescript() {
+            assert_eq!(
+                ScriptLanguage::from_content("const x: string = 'hello';"),
+                Some(ScriptLanguage::TypeScript)
+            );
+            assert_eq!(
+                ScriptLanguage::from_content("interface User { name: string }"),
+                Some(ScriptLanguage::TypeScript)
+            );
+        }
+
+        #[test]
+        fn from_content_detects_ruby() {
+            // Ruby needs 'end' to reduce false positives
+            assert_eq!(
+                ScriptLanguage::from_content("def hello\n  puts 'hi'\nend"),
+                Some(ScriptLanguage::Ruby)
+            );
+            assert_eq!(
+                ScriptLanguage::from_content("require 'fileutils'\nFileUtils.rm_rf('x')\nend"),
+                Some(ScriptLanguage::Ruby)
+            );
+        }
+
+        #[test]
+        fn from_content_detects_perl() {
+            assert_eq!(
+                ScriptLanguage::from_content("use strict;\nmy $x = 5;"),
+                Some(ScriptLanguage::Perl)
+            );
+            assert_eq!(
+                ScriptLanguage::from_content("my @arr = (1,2,3);"),
+                Some(ScriptLanguage::Perl)
+            );
+        }
+
+        #[test]
+        fn from_content_detects_bash() {
+            assert_eq!(
+                ScriptLanguage::from_content("if [ -f file ]; then\n  echo 'exists'\nfi"),
+                Some(ScriptLanguage::Bash)
+            );
+            assert_eq!(
+                ScriptLanguage::from_content("x=$((1+2))\necho ${x}"),
+                Some(ScriptLanguage::Bash)
+            );
+        }
+
+        #[test]
+        fn from_content_returns_none_for_unknown() {
+            assert_eq!(ScriptLanguage::from_content("hello world"), None);
+            assert_eq!(ScriptLanguage::from_content(""), None);
+        }
+
+        #[test]
+        fn detect_uses_command_prefix_first() {
+            // Even with Python shebang, command should take precedence
+            let (lang, confidence) =
+                ScriptLanguage::detect("ruby -e 'code'", "#!/usr/bin/python\nimport os");
+            assert_eq!(lang, ScriptLanguage::Ruby);
+            assert_eq!(confidence, DetectionConfidence::CommandPrefix);
+        }
+
+        #[test]
+        fn detect_uses_shebang_second() {
+            // No command interpreter, but has shebang
+            let (lang, confidence) =
+                ScriptLanguage::detect("cat script.sh", "#!/bin/bash\necho hello");
+            assert_eq!(lang, ScriptLanguage::Bash);
+            assert_eq!(confidence, DetectionConfidence::Shebang);
+        }
+
+        #[test]
+        fn detect_uses_content_heuristics_third() {
+            // No command interpreter, no shebang, but has Python imports
+            let (lang, confidence) =
+                ScriptLanguage::detect("cat script", "import os\nos.remove('x')");
+            assert_eq!(lang, ScriptLanguage::Python);
+            assert_eq!(confidence, DetectionConfidence::ContentHeuristics);
+        }
+
+        #[test]
+        fn detect_returns_unknown_for_unrecognized() {
+            let (lang, confidence) = ScriptLanguage::detect("cat file.txt", "hello world");
+            assert_eq!(lang, ScriptLanguage::Unknown);
+            assert_eq!(confidence, DetectionConfidence::Unknown);
+        }
+
+        #[test]
+        fn detect_handles_env_prefix() {
+            let (lang, confidence) = ScriptLanguage::detect("env python3 -c 'code'", "");
+            assert_eq!(lang, ScriptLanguage::Python);
+            assert_eq!(confidence, DetectionConfidence::CommandPrefix);
+        }
+
+        #[test]
+        fn detect_handles_absolute_path() {
+            let (lang, confidence) =
+                ScriptLanguage::detect("/usr/bin/python3 -c 'code'", "");
+            assert_eq!(lang, ScriptLanguage::Python);
+            assert_eq!(confidence, DetectionConfidence::CommandPrefix);
+        }
+
+        #[test]
+        fn detection_confidence_labels() {
+            assert_eq!(DetectionConfidence::CommandPrefix.label(), "command-prefix");
+            assert_eq!(DetectionConfidence::Shebang.label(), "shebang");
+            assert_eq!(
+                DetectionConfidence::ContentHeuristics.label(),
+                "content-heuristics"
+            );
+            assert_eq!(DetectionConfidence::Unknown.label(), "unknown");
+        }
+
+        #[test]
+        fn detection_confidence_reasons() {
+            assert!(DetectionConfidence::CommandPrefix
+                .reason()
+                .contains("highest"));
+            assert!(DetectionConfidence::Shebang.reason().contains("high"));
+            assert!(DetectionConfidence::ContentHeuristics
+                .reason()
+                .contains("lower"));
+            assert!(DetectionConfidence::Unknown.reason().contains("could not"));
+        }
+
         #[test]
         fn enforces_max_body_bytes() {
             let large_content = "x".repeat(2_000_000); // 2MB
@@ -878,8 +1466,14 @@ mod tests {
                 ..Default::default()
             };
             let result = extract_content(&cmd, &limits);
-            // Should either return Failed or skip the too-large content
+            // Should return Skipped with size limit reason
             match result {
+                ExtractionResult::Skipped(reasons) => {
+                    assert!(reasons.iter().any(|r| matches!(
+                        r,
+                        SkipReason::ExceededSizeLimit { .. }
+                    )));
+                }
                 ExtractionResult::NoContent | ExtractionResult::Failed(_) => {}
                 ExtractionResult::Extracted(contents) => {
                     // If extracted, content should be within limits
@@ -901,6 +1495,99 @@ mod tests {
             } else {
                 panic!("Expected Extracted result");
             }
+        }
+
+        // ====================================================================
+        // Robustness Tests (git_safety_guard-rbst)
+        // ====================================================================
+
+        #[test]
+        fn skips_binary_content_with_null_bytes() {
+            // Content with null bytes should be detected as binary
+            let cmd = "python -c '\x00binary\x00content'";
+            if let Some(reason) = check_binary_content(cmd) {
+                assert!(matches!(reason, SkipReason::BinaryContent { null_bytes, .. } if null_bytes > 0));
+            } else {
+                panic!("Expected binary content detection");
+            }
+        }
+
+        #[test]
+        fn skips_binary_content_high_non_printable() {
+            // Content with high ratio of non-printable bytes
+            let binary_bytes: Vec<u8> = (0u8..50).chain(200u8..255).collect();
+            let binary_str = String::from_utf8_lossy(&binary_bytes);
+            if let Some(reason) = check_binary_content(&binary_str) {
+                assert!(matches!(reason, SkipReason::BinaryContent { .. }));
+            } else {
+                panic!("Expected binary content detection for high non-printable ratio");
+            }
+        }
+
+        #[test]
+        fn allows_normal_text_content() {
+            let normal_content = "import os\nprint('hello world')\nfor i in range(10): pass";
+            assert!(check_binary_content(normal_content).is_none());
+        }
+
+        #[test]
+        fn tracks_unterminated_heredoc() {
+            let cmd = "cat << EOF\nunterminated content without closing delimiter";
+            let result = extract_content(cmd, &ExtractionLimits::default());
+            match result {
+                ExtractionResult::Skipped(reasons) => {
+                    assert!(reasons.iter().any(|r| matches!(
+                        r,
+                        SkipReason::UnterminatedHeredoc { .. }
+                    )));
+                }
+                _ => panic!("Expected Skipped result for unterminated heredoc"),
+            }
+        }
+
+        #[test]
+        fn enforces_heredoc_limit() {
+            // Create a command with many heredocs
+            let cmd = "cmd1 << A\na\nA && cmd2 << B\nb\nB && cmd3 << C\nc\nC";
+            let limits = ExtractionLimits {
+                max_heredocs: 2, // Only allow 2
+                ..Default::default()
+            };
+            let result = extract_content(cmd, &limits);
+            if let ExtractionResult::Extracted(contents) = result {
+                assert!(contents.len() <= limits.max_heredocs);
+            }
+            // Otherwise, skip result is also acceptable
+        }
+
+        #[test]
+        fn skip_reason_display() {
+            // Test Display implementations
+            let reasons = vec![
+                SkipReason::ExceededSizeLimit { actual: 2000, limit: 1000 },
+                SkipReason::ExceededLineLimit { actual: 200, limit: 100 },
+                SkipReason::ExceededHeredocLimit { limit: 10 },
+                SkipReason::BinaryContent { null_bytes: 5, non_printable_ratio: 0.5 },
+                SkipReason::UnterminatedHeredoc { delimiter: "EOF".to_string() },
+                SkipReason::MalformedInput { reason: "test".to_string() },
+            ];
+
+            for reason in reasons {
+                let display = format!("{reason}");
+                assert!(!display.is_empty(), "Display should produce output");
+            }
+        }
+
+        #[test]
+        fn empty_command_returns_no_content() {
+            let result = extract_content("", &ExtractionLimits::default());
+            assert!(matches!(result, ExtractionResult::NoContent));
+        }
+
+        #[test]
+        fn whitespace_only_returns_no_content() {
+            let result = extract_content("   \t\n  ", &ExtractionLimits::default());
+            assert!(matches!(result, ExtractionResult::NoContent));
         }
     }
 }
