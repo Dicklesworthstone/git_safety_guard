@@ -56,8 +56,11 @@ pub struct DestructivePattern {
 macro_rules! safe_pattern {
     ($name:literal, $re:literal) => {
         $crate::packs::SafePattern {
-            regex: ::fancy_regex::Regex::new($re)
-                .expect(concat!("safe pattern '", $name, "' should compile")),
+            regex: ::fancy_regex::Regex::new($re).expect(concat!(
+                "safe pattern '",
+                $name,
+                "' should compile"
+            )),
             name: $name,
         }
     };
@@ -76,8 +79,11 @@ macro_rules! destructive_pattern {
     };
     ($name:literal, $re:literal, $reason:literal) => {
         $crate::packs::DestructivePattern {
-            regex: ::fancy_regex::Regex::new($re)
-                .expect(concat!("destructive pattern '", $name, "' should compile")),
+            regex: ::fancy_regex::Regex::new($re).expect(concat!(
+                "destructive pattern '",
+                $name,
+                "' should compile"
+            )),
             reason: $reason,
             name: Some($name),
         }
@@ -196,6 +202,29 @@ pub struct PackRegistry {
 }
 
 impl PackRegistry {
+    /// Collect all keywords from enabled packs.
+    ///
+    /// This returns a deduplicated list of keywords that can be used for
+    /// pack-aware quick rejection. If a command contains none of these keywords,
+    /// it can safely skip pack checking.
+    #[must_use]
+    pub fn collect_enabled_keywords(&self, enabled_packs: &HashSet<String>) -> Vec<&'static str> {
+        let expanded = self.expand_enabled(enabled_packs);
+        let mut keywords = Vec::new();
+
+        for pack_id in &expanded {
+            if let Some(pack) = self.packs.get(pack_id) {
+                keywords.extend(pack.keywords.iter().copied());
+            }
+        }
+
+        // Deduplicate while preserving order (first occurrence wins)
+        let mut seen = HashSet::new();
+        keywords.retain(|kw| seen.insert(*kw));
+
+        keywords
+    }
+
     /// Create a new registry with all built-in packs.
     pub fn new() -> Self {
         let mut registry = Self {
@@ -237,11 +266,7 @@ impl PackRegistry {
         let id = pack.id.clone();
 
         // Extract category from ID (e.g., "database" from "database.postgresql")
-        let category = id
-            .split('.')
-            .next()
-            .unwrap_or(&id)
-            .to_string();
+        let category = id.split('.').next().unwrap_or(&id).to_string();
 
         // Add to categories map
         self.categories
@@ -373,20 +398,60 @@ pub fn normalize_command(cmd: &str) -> Cow<'_, str> {
     PATH_NORMALIZER.replace(cmd, "$1")
 }
 
-/// Pre-compiled finders for global quick rejection.
+/// Pre-compiled finders for core quick rejection (git/rm).
 static GIT_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new("git"));
 static RM_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new("rm"));
 
-/// Global quick-reject filter.
-/// Returns true if command definitely doesn't need checking (no relevant keywords).
+/// Core quick-reject filter (legacy - only checks git/rm).
+/// Returns true if command definitely doesn't need core checking (no "git" or "rm").
+///
+/// NOTE: This only checks core keywords. Use `pack_aware_quick_reject` for
+/// commands that need to be checked against enabled packs.
 #[inline]
 pub fn global_quick_reject(cmd: &str) -> bool {
     let bytes = cmd.as_bytes();
-
-    // If command doesn't contain "git" or "rm", and doesn't contain any
-    // keywords from other common packs, we can skip checking.
-    // For now, we check the core keywords. Pack-specific keywords are
-    // checked within each pack.
     GIT_FINDER.find(bytes).is_none() && RM_FINDER.find(bytes).is_none()
 }
 
+/// Pack-aware quick-reject filter.
+///
+/// Returns true if the command can be safely skipped (contains none of the
+/// provided keywords from enabled packs).
+///
+/// This is the correct function to use when non-core packs are enabled.
+/// It checks all keywords from enabled packs, not just "git" and "rm".
+///
+/// # Performance
+///
+/// Uses SIMD-accelerated substring search via memchr for each keyword.
+/// For typical command lengths and keyword counts, this is sub-microsecond.
+///
+/// # Arguments
+///
+/// * `cmd` - The command string to check
+/// * `enabled_keywords` - Keywords from all enabled packs (from `PackRegistry::collect_enabled_keywords`)
+///
+/// # Returns
+///
+/// `true` if the command contains NO keywords (safe to skip pack checking)
+/// `false` if the command contains at least one keyword (must check packs)
+#[inline]
+#[must_use]
+pub fn pack_aware_quick_reject(cmd: &str, enabled_keywords: &[&str]) -> bool {
+    let bytes = cmd.as_bytes();
+
+    // Fast path: if no keywords are configured, nothing to check
+    if enabled_keywords.is_empty() {
+        return true;
+    }
+
+    // Check if any keyword appears in the command
+    // Using memchr::memmem::find for SIMD-accelerated search
+    for keyword in enabled_keywords {
+        if memmem::find(bytes, keyword.as_bytes()).is_some() {
+            return false; // Keyword found, must evaluate packs
+        }
+    }
+
+    true // No keywords found, safe to skip pack checking
+}

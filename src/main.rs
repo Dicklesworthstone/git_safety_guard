@@ -21,8 +21,9 @@ use colored::Colorize;
 use destructive_command_guard::cli::{self, Cli};
 use destructive_command_guard::config::Config;
 use destructive_command_guard::hook;
-use destructive_command_guard::packs::{global_quick_reject, REGISTRY};
+use destructive_command_guard::packs::{REGISTRY, pack_aware_quick_reject};
 use fancy_regex::Regex;
+#[cfg(test)]
 use memchr::memmem;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -304,7 +305,10 @@ static PATH_NORMALIZER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/(?:\S*/)*s?bin/(rm|git)(?=\s|$)").unwrap());
 
 /// Pre-compiled finders for quick rejection (SIMD-accelerated).
+/// Only used in tests - production code uses pack_aware_quick_reject from packs module.
+#[cfg(test)]
 static GIT_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new("git"));
+#[cfg(test)]
 static RM_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new("rm"));
 
 /// Normalize a command by stripping absolute paths from git/rm binaries.
@@ -331,6 +335,10 @@ fn normalize_command(cmd: &str) -> Cow<'_, str> {
 ///
 /// Returns `true` if the command can be immediately allowed (no "git" or "rm").
 /// This skips expensive regex matching for 99%+ of commands.
+///
+/// NOTE: This is only used in tests. Production code uses pack_aware_quick_reject
+/// from the packs module which checks all enabled pack keywords.
+#[cfg(test)]
 #[inline]
 fn quick_reject(cmd: &str) -> bool {
     let bytes = cmd.as_bytes();
@@ -463,11 +471,7 @@ fn deny(original_command: &str, reason: &str) {
 
 /// Print version information and exit.
 fn print_version() {
-    let version_line = format!(
-        "{} {}",
-        "dcg".green().bold(),
-        PKG_VERSION.cyan()
-    );
+    let version_line = format!("{} {}", "dcg".green().bold(), PKG_VERSION.cyan());
     eprintln!("{version_line}");
 
     if let Some(ts) = BUILD_TIMESTAMP {
@@ -523,6 +527,11 @@ fn main() {
     if Config::is_bypassed() {
         return;
     }
+
+    // Get enabled pack IDs early for pack-aware quick reject.
+    // This is done before stdin read to minimize latency on the critical path.
+    let enabled_packs: HashSet<String> = config.enabled_pack_ids();
+    let enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
 
     // Read stdin with a reasonable capacity hint for typical hook input.
     // Hook input is typically ~100-200 bytes of JSON.
@@ -582,9 +591,12 @@ fn main() {
         }
     }
 
-    // Quick rejection: if command doesn't contain "git" or "rm", allow immediately.
-    // This is the hot path for 99%+ of commands.
-    if quick_reject(&command) && global_quick_reject(&command) {
+    // Quick rejection: if command doesn't contain any keywords from enabled packs,
+    // allow immediately. This is the hot path for 99%+ of commands.
+    //
+    // This uses pack_aware_quick_reject which checks keywords from ALL enabled packs
+    // (not just core git/rm), ensuring non-core packs like docker/kubectl are reachable.
+    if pack_aware_quick_reject(&command, &enabled_keywords) {
         return;
     }
 
@@ -609,7 +621,7 @@ fn main() {
     }
 
     // NEW: Check against enabled packs from configuration
-    let enabled_packs: HashSet<String> = config.enabled_pack_ids();
+    // (enabled_packs was computed earlier for pack-aware quick reject)
     let result = REGISTRY.check_command(&normalized, &enabled_packs);
 
     if result.blocked {
@@ -1485,6 +1497,253 @@ mod tests {
                     "Safe command incorrectly marked destructive: {cmd}"
                 );
             }
+        }
+    }
+
+    /// Regression tests for git_safety_guard-99e.1 (BUG: Non-core packs unreachable)
+    ///
+    /// These tests verify that when non-core packs (docker, kubectl, etc.) are enabled,
+    /// their commands actually reach the pack checking logic and get blocked appropriately.
+    ///
+    /// The bug was that `global_quick_reject` only checked for "git" and "rm" keywords,
+    /// causing all non-git/rm commands to be allowed before reaching pack checks.
+    mod pack_reachability_tests {
+        use super::*;
+        use std::collections::HashSet;
+
+        /// Test that pack_aware_quick_reject does NOT reject docker commands
+        /// when docker keywords are in the enabled keywords list.
+        #[test]
+        fn pack_aware_quick_reject_allows_docker_when_enabled() {
+            // Docker pack keywords
+            let docker_keywords: Vec<&str> = vec!["docker", "prune", "rmi", "volume"];
+
+            // Commands that should NOT be rejected (contain docker keywords)
+            assert!(
+                !pack_aware_quick_reject("docker system prune", &docker_keywords),
+                "docker system prune should NOT be quick-rejected when docker pack enabled"
+            );
+            assert!(
+                !pack_aware_quick_reject("docker volume prune", &docker_keywords),
+                "docker volume prune should NOT be quick-rejected when docker pack enabled"
+            );
+            assert!(
+                !pack_aware_quick_reject("docker ps", &docker_keywords),
+                "docker ps should NOT be quick-rejected when docker pack enabled"
+            );
+            assert!(
+                !pack_aware_quick_reject("docker rmi -f myimage", &docker_keywords),
+                "docker rmi should NOT be quick-rejected when docker pack enabled"
+            );
+
+            // Commands that SHOULD be rejected (no docker keywords)
+            assert!(
+                pack_aware_quick_reject("ls -la", &docker_keywords),
+                "ls should be quick-rejected (no docker keywords)"
+            );
+            assert!(
+                pack_aware_quick_reject("cargo build", &docker_keywords),
+                "cargo should be quick-rejected (no docker keywords)"
+            );
+        }
+
+        /// Test that pack_aware_quick_reject does NOT reject kubectl commands
+        /// when kubectl keywords are in the enabled keywords list.
+        #[test]
+        fn pack_aware_quick_reject_allows_kubectl_when_enabled() {
+            // kubectl pack keywords (from kubernetes/kubectl.rs)
+            let kubectl_keywords: Vec<&str> = vec!["kubectl", "delete", "drain", "cordon", "taint"];
+
+            // Commands that should NOT be rejected
+            assert!(
+                !pack_aware_quick_reject("kubectl delete namespace foo", &kubectl_keywords),
+                "kubectl delete should NOT be quick-rejected when kubectl pack enabled"
+            );
+            assert!(
+                !pack_aware_quick_reject("kubectl get pods", &kubectl_keywords),
+                "kubectl get should NOT be quick-rejected when kubectl pack enabled"
+            );
+
+            // Commands that SHOULD be rejected
+            assert!(
+                pack_aware_quick_reject("ls -la", &kubectl_keywords),
+                "ls should be quick-rejected (no kubectl keywords)"
+            );
+        }
+
+        /// Test that the pack registry correctly blocks docker system prune
+        /// when the containers.docker pack is enabled.
+        #[test]
+        fn registry_blocks_docker_prune_when_pack_enabled() {
+            let mut enabled = HashSet::new();
+            enabled.insert("containers.docker".to_string());
+
+            let result = REGISTRY.check_command("docker system prune", &enabled);
+            assert!(
+                result.blocked,
+                "docker system prune should be blocked when containers.docker pack is enabled"
+            );
+            assert_eq!(
+                result.pack_id.as_deref(),
+                Some("containers.docker"),
+                "Block should be attributed to containers.docker pack"
+            );
+        }
+
+        /// Test that docker ps is allowed (safe pattern) even when docker pack enabled.
+        #[test]
+        fn registry_allows_docker_ps_when_pack_enabled() {
+            let mut enabled = HashSet::new();
+            enabled.insert("containers.docker".to_string());
+
+            let result = REGISTRY.check_command("docker ps", &enabled);
+            assert!(
+                !result.blocked,
+                "docker ps should be allowed (safe pattern) even when containers.docker pack enabled"
+            );
+        }
+
+        /// Test that docker system prune is NOT blocked when docker pack is disabled.
+        #[test]
+        fn registry_allows_docker_prune_when_pack_disabled() {
+            // Only core pack enabled (default)
+            let mut enabled = HashSet::new();
+            enabled.insert("core".to_string());
+
+            let result = REGISTRY.check_command("docker system prune", &enabled);
+            assert!(
+                !result.blocked,
+                "docker system prune should be allowed when containers.docker pack is NOT enabled"
+            );
+        }
+
+        /// Test that kubectl delete namespace is blocked when kubectl pack enabled.
+        #[test]
+        fn registry_blocks_kubectl_delete_namespace_when_pack_enabled() {
+            let mut enabled = HashSet::new();
+            enabled.insert("kubernetes.kubectl".to_string());
+
+            let result = REGISTRY.check_command("kubectl delete namespace production", &enabled);
+            assert!(
+                result.blocked,
+                "kubectl delete namespace should be blocked when kubernetes.kubectl pack is enabled"
+            );
+            assert_eq!(
+                result.pack_id.as_deref(),
+                Some("kubernetes.kubectl"),
+                "Block should be attributed to kubernetes.kubectl pack"
+            );
+        }
+
+        /// Test that enabling a category enables all sub-packs.
+        #[test]
+        fn registry_expands_category_to_subpacks() {
+            let mut enabled = HashSet::new();
+            enabled.insert("containers".to_string()); // Category, not specific pack
+
+            let result = REGISTRY.check_command("docker system prune", &enabled);
+            assert!(
+                result.blocked,
+                "docker system prune should be blocked when 'containers' category is enabled"
+            );
+        }
+
+        /// Test that collect_enabled_keywords includes docker keywords when docker pack enabled.
+        #[test]
+        fn collect_enabled_keywords_includes_docker() {
+            let mut enabled = HashSet::new();
+            enabled.insert("containers.docker".to_string());
+
+            let keywords = REGISTRY.collect_enabled_keywords(&enabled);
+
+            assert!(
+                keywords.contains(&"docker"),
+                "Enabled keywords should include 'docker' when containers.docker pack is enabled"
+            );
+            assert!(
+                keywords.contains(&"prune"),
+                "Enabled keywords should include 'prune' when containers.docker pack is enabled"
+            );
+        }
+
+        /// Integration test: full pipeline blocks docker prune with pack enabled.
+        /// This simulates what happens in hook mode when docker pack is enabled.
+        #[test]
+        fn full_pipeline_blocks_docker_prune_with_pack_enabled() {
+            let command = "docker system prune";
+
+            // Simulate config with docker pack enabled
+            let mut enabled_packs = HashSet::new();
+            enabled_packs.insert("core".to_string());
+            enabled_packs.insert("containers.docker".to_string());
+
+            // Collect keywords from enabled packs
+            let enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
+
+            // Step 1: pack_aware_quick_reject should NOT reject this command
+            assert!(
+                !pack_aware_quick_reject(command, &enabled_keywords),
+                "docker system prune should NOT be quick-rejected with docker pack enabled"
+            );
+
+            // Step 2: Normalize command
+            let normalized = normalize_command(command);
+
+            // Step 3: Check against legacy patterns (should not match)
+            let legacy_safe = SAFE_PATTERNS
+                .iter()
+                .any(|p| p.regex.is_match(&normalized).unwrap_or(false));
+            let legacy_destructive = DESTRUCTIVE_PATTERNS
+                .iter()
+                .any(|p| p.regex.is_match(&normalized).unwrap_or(false));
+
+            // Docker commands should not match legacy git/rm patterns
+            assert!(
+                !legacy_safe,
+                "docker command should not match legacy safe patterns"
+            );
+            assert!(
+                !legacy_destructive,
+                "docker command should not match legacy destructive patterns"
+            );
+
+            // Step 4: Check against pack registry (should block)
+            let result = REGISTRY.check_command(&normalized, &enabled_packs);
+            assert!(
+                result.blocked,
+                "docker system prune should be blocked by pack registry"
+            );
+            assert_eq!(
+                result.pack_id.as_deref(),
+                Some("containers.docker"),
+                "Block should be from containers.docker pack"
+            );
+        }
+
+        /// Integration test: full pipeline allows docker ps with pack enabled.
+        #[test]
+        fn full_pipeline_allows_docker_ps_with_pack_enabled() {
+            let command = "docker ps";
+
+            let mut enabled_packs = HashSet::new();
+            enabled_packs.insert("core".to_string());
+            enabled_packs.insert("containers.docker".to_string());
+
+            let enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
+
+            // Should NOT be quick-rejected
+            assert!(
+                !pack_aware_quick_reject(command, &enabled_keywords),
+                "docker ps should NOT be quick-rejected"
+            );
+
+            let normalized = normalize_command(command);
+            let result = REGISTRY.check_command(&normalized, &enabled_packs);
+
+            assert!(
+                !result.blocked,
+                "docker ps should be allowed (matches safe pattern)"
+            );
         }
     }
 }

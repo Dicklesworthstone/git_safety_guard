@@ -14,6 +14,12 @@
 //!                                  │
 //!                                  ▼
 //! ┌─────────────────────────────────────────────────────────────────┐
+//! │                         Evaluator                                │
+//! │  (unified entry point for hook mode and CLI)                    │
+//! └─────────────────────────────────────────────────────────────────┘
+//!                                  │
+//!                                  ▼
+//! ┌─────────────────────────────────────────────────────────────────┐
 //! │                         Pack Registry                            │
 //! │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐           │
 //! │  │   Core   │ │ Database │ │  K8s     │ │  Cloud   │  ...      │
@@ -26,13 +32,35 @@
 //! │  Quick Reject (memchr) → Safe Patterns → Destructive Patterns   │
 //! └─────────────────────────────────────────────────────────────────┘
 //! ```
+//!
+//! # Usage
+//!
+//! The main entry point for command evaluation is the [`evaluator`] module:
+//!
+//! ```ignore
+//! use destructive_command_guard::config::Config;
+//! use destructive_command_guard::evaluator::{evaluate_command, EvaluationDecision};
+//!
+//! let config = Config::load();
+//! let enabled_keywords = vec!["git", "rm"];
+//! let result = evaluate_command("git status", &config, &enabled_keywords);
+//!
+//! if result.is_denied() {
+//!     println!("Blocked: {}", result.reason().unwrap_or("unknown"));
+//! }
+//! ```
 
 pub mod cli;
 pub mod config;
+pub mod evaluator;
 pub mod hook;
 pub mod packs;
 
 // Re-export commonly used types
 pub use config::Config;
+pub use evaluator::{
+    EvaluationDecision, EvaluationResult, LegacyDestructivePattern, LegacySafePattern, MatchSource,
+    PatternMatch, evaluate_command, evaluate_command_with_legacy,
+};
 pub use hook::{HookInput, HookOutput, HookResult};
 pub use packs::{Pack, PackId, PackRegistry};
