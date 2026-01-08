@@ -1338,21 +1338,51 @@ mod tests {
         #[test]
         fn from_command_does_not_false_positive() {
             // These should NOT be detected as interpreters
-            assert_eq!(ScriptLanguage::from_command("shebang"), ScriptLanguage::Unknown);
-            assert_eq!(ScriptLanguage::from_command("shell"), ScriptLanguage::Unknown);
-            assert_eq!(ScriptLanguage::from_command("pythonic"), ScriptLanguage::Unknown);
-            assert_eq!(ScriptLanguage::from_command("nodemon"), ScriptLanguage::Unknown);
-            assert_eq!(ScriptLanguage::from_command("perldoc"), ScriptLanguage::Unknown);
-            assert_eq!(ScriptLanguage::from_command("bashful"), ScriptLanguage::Unknown);
+            assert_eq!(
+                ScriptLanguage::from_command("shebang"),
+                ScriptLanguage::Unknown
+            );
+            assert_eq!(
+                ScriptLanguage::from_command("shell"),
+                ScriptLanguage::Unknown
+            );
+            assert_eq!(
+                ScriptLanguage::from_command("pythonic"),
+                ScriptLanguage::Unknown
+            );
+            assert_eq!(
+                ScriptLanguage::from_command("nodemon"),
+                ScriptLanguage::Unknown
+            );
+            assert_eq!(
+                ScriptLanguage::from_command("perldoc"),
+                ScriptLanguage::Unknown
+            );
+            assert_eq!(
+                ScriptLanguage::from_command("bashful"),
+                ScriptLanguage::Unknown
+            );
         }
 
         #[test]
         fn from_command_matches_versioned_interpreters() {
             // These SHOULD be detected with version suffixes
-            assert_eq!(ScriptLanguage::from_command("python3"), ScriptLanguage::Python);
-            assert_eq!(ScriptLanguage::from_command("python3.11"), ScriptLanguage::Python);
-            assert_eq!(ScriptLanguage::from_command("python3.11.4"), ScriptLanguage::Python);
-            assert_eq!(ScriptLanguage::from_command("node18"), ScriptLanguage::JavaScript);
+            assert_eq!(
+                ScriptLanguage::from_command("python3"),
+                ScriptLanguage::Python
+            );
+            assert_eq!(
+                ScriptLanguage::from_command("python3.11"),
+                ScriptLanguage::Python
+            );
+            assert_eq!(
+                ScriptLanguage::from_command("python3.11.4"),
+                ScriptLanguage::Python
+            );
+            assert_eq!(
+                ScriptLanguage::from_command("node18"),
+                ScriptLanguage::JavaScript
+            );
             assert_eq!(ScriptLanguage::from_command("perl5"), ScriptLanguage::Perl);
         }
 
