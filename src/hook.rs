@@ -193,7 +193,12 @@ pub fn print_colorful_warning(command: &str, reason: &str, pack: Option<&str>) {
         let _ = write!(handle, "{}", "│".red());
         let _ = write!(handle, "  {} ", "Pack:".bright_black());
         let _ = write!(handle, "{}", pack_name.cyan());
-        let _ = writeln!(handle, "{}{}", " ".repeat(padding - 2), "│".red());
+        let _ = writeln!(
+            handle,
+            "{}{}",
+            " ".repeat(padding.saturating_sub(2)),
+            "│".red()
+        );
     }
 
     // Empty line
