@@ -259,40 +259,28 @@ fn register_core_git_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>)
 
 /// Register suggestions for core.filesystem pack rules.
 fn register_core_filesystem_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>) {
-    m.insert(
-        "core.filesystem:rm-rf",
-        vec![
-            Suggestion::new(
-                SuggestionKind::PreviewFirst,
-                "List contents first with `ls -la` to verify target",
-            ),
-            Suggestion::new(
-                SuggestionKind::SaferAlternative,
-                "Use `rm -ri` for interactive confirmation of each file",
-            )
-            .with_command("rm -ri path/"),
-            Suggestion::new(
-                SuggestionKind::WorkflowFix,
-                "Move to trash instead: `mv path ~/.local/share/Trash/`",
-            ),
-        ],
-    );
+    // Shared suggestions for all recursive force-delete variants
+    let rm_rf_suggestions = vec![
+        Suggestion::new(
+            SuggestionKind::PreviewFirst,
+            "List contents first with `ls -la` to verify target",
+        ),
+        Suggestion::new(
+            SuggestionKind::SaferAlternative,
+            "Use `rm -ri` for interactive confirmation of each file",
+        )
+        .with_command("rm -ri path/"),
+        Suggestion::new(
+            SuggestionKind::WorkflowFix,
+            "Move to trash instead: `mv path ~/.local/share/Trash/`",
+        ),
+    ];
 
-    m.insert(
-        "core.filesystem:rm-recursive",
-        vec![
-            Suggestion::new(
-                SuggestionKind::PreviewFirst,
-                "Preview with `find path -type f` to see what would be deleted",
-            )
-            .with_command("find path -type f"),
-            Suggestion::new(
-                SuggestionKind::SaferAlternative,
-                "Use `rm -ri` for interactive confirmation",
-            )
-            .with_command("rm -ri path/"),
-        ],
-    );
+    // Register for all actual pattern names from filesystem.rs
+    m.insert("core.filesystem:rm-rf-root-home", rm_rf_suggestions.clone());
+    m.insert("core.filesystem:rm-rf-general", rm_rf_suggestions.clone());
+    m.insert("core.filesystem:rm-r-f-separate", rm_rf_suggestions.clone());
+    m.insert("core.filesystem:rm-recursive-force-long", rm_rf_suggestions);
 }
 
 /// Register suggestions for heredoc pattern rules (placeholder for expansion).
@@ -411,12 +399,15 @@ mod tests {
     #[test]
     fn registry_has_core_git_rules() {
         // Verify expected core.git rules have suggestions
+        // These must match actual pattern names from src/packs/core/git.rs
         let expected_rules = [
             "core.git:reset-hard",
-            "core.git:clean-fd",
-            "core.git:push-force",
-            "core.git:checkout-force",
-            "core.git:branch-delete-force",
+            "core.git:clean-force",
+            "core.git:push-force-long",
+            "core.git:push-force-short",
+            "core.git:checkout-discard",
+            "core.git:checkout-ref-discard",
+            "core.git:branch-force-delete",
         ];
 
         for rule in expected_rules {
@@ -430,7 +421,13 @@ mod tests {
     #[test]
     fn registry_has_core_filesystem_rules() {
         // Verify expected core.filesystem rules have suggestions
-        let expected_rules = ["core.filesystem:rm-rf", "core.filesystem:rm-recursive"];
+        // These must match actual pattern names from src/packs/core/filesystem.rs
+        let expected_rules = [
+            "core.filesystem:rm-rf-root-home",
+            "core.filesystem:rm-rf-general",
+            "core.filesystem:rm-r-f-separate",
+            "core.filesystem:rm-recursive-force-long",
+        ];
 
         for rule in expected_rules {
             assert!(
