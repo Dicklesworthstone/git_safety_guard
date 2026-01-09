@@ -412,6 +412,10 @@ impl HeredocAllowlistConfig {
     #[must_use]
     pub fn is_command_allowlisted(&self, command: &str) -> Option<&str> {
         for cmd in &self.commands {
+            // Skip empty prefixes to prevent accidental allow-all
+            if cmd.is_empty() {
+                continue;
+            }
             if command.starts_with(cmd.as_str()) {
                 return Some(cmd.as_str());
             }
@@ -556,6 +560,10 @@ fn pattern_matches(
     content: &str,
     language: crate::heredoc::ScriptLanguage,
 ) -> bool {
+    // Empty patterns are invalid and should never match (prevents accidental allow-all)
+    if pattern.pattern.is_empty() {
+        return false;
+    }
     // Check language filter
     if let Some(lang_filter) = &pattern.language {
         if !language_filter_matches(lang_filter, language) {
@@ -2881,5 +2889,54 @@ allow = false
             None,
         );
         assert!(hit.is_none(), "js alias should not match Python");
+    }
+
+    #[test]
+    fn test_heredoc_allowlist_empty_pattern_does_not_match() {
+        // Empty patterns should never match (security: prevents accidental allow-all)
+        let allowlist = HeredocAllowlistConfig {
+            patterns: vec![AllowedHeredocPattern {
+                language: None,
+                pattern: String::new(), // Empty pattern
+                reason: "Empty pattern should not match".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        // Empty pattern should NOT match any content
+        let hit = allowlist.is_content_allowlisted(
+            "rm -rf /",
+            crate::heredoc::ScriptLanguage::Bash,
+            None,
+        );
+        assert!(hit.is_none(), "Empty pattern should not match any content");
+
+        // Even empty content should not match empty pattern
+        let hit = allowlist.is_content_allowlisted("", crate::heredoc::ScriptLanguage::Bash, None);
+        assert!(
+            hit.is_none(),
+            "Empty pattern should not match empty content"
+        );
+    }
+
+    #[test]
+    fn test_heredoc_allowlist_empty_command_prefix_does_not_match() {
+        // Empty command prefixes should never match (security: prevents accidental allow-all)
+        let allowlist = HeredocAllowlistConfig {
+            commands: vec![String::new()], // Empty command prefix
+            ..Default::default()
+        };
+
+        // Empty prefix should NOT match any command
+        assert!(
+            allowlist.is_command_allowlisted("rm -rf /").is_none(),
+            "Empty command prefix should not match any command"
+        );
+
+        // Even empty command should not match empty prefix
+        assert!(
+            allowlist.is_command_allowlisted("").is_none(),
+            "Empty command prefix should not match empty command"
+        );
     }
 }
