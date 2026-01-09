@@ -2220,6 +2220,76 @@ fn doctor(fix: bool) {
         println!("  → This may indicate a bug; please report it");
     }
 
+    // Check 7: Observe mode status
+    print!("Checking observe mode... ");
+    if let Some(observe_until) = config.policy().observe_until.as_ref() {
+        let now = chrono::Utc::now();
+        if let Some(until) = observe_until.parsed_utc() {
+            if &now < until {
+                // Observe window is active
+                let remaining = *until - now;
+                let days = remaining.num_days();
+                println!("{}", "ACTIVE".yellow());
+                println!(
+                    "  Observe mode enabled until: {}",
+                    until.format("%Y-%m-%d %H:%M UTC")
+                );
+                if days > 0 {
+                    println!("  {} days remaining", days);
+                } else {
+                    let hours = remaining.num_hours();
+                    println!("  {} hours remaining", hours);
+                }
+                println!("  Non-critical rules are using WARN instead of DENY");
+                println!("  → This is expected during rollout");
+            } else {
+                // Observe window has expired
+                println!("{}", "EXPIRED".yellow().bold());
+                issues += 1;
+                println!(
+                    "  Observe mode expired: {}",
+                    until.format("%Y-%m-%d %H:%M UTC")
+                );
+                println!("  {} DCG is now enforcing normal severity defaults", "→".bold());
+                println!("  To acknowledge and remove the expired setting:");
+                println!("    1. Edit your config file");
+                println!("    2. Remove or update the 'observe_until' line in [policy]");
+                println!();
+                println!("  Or to extend the observe window:");
+                println!(
+                    "    observe_until = \"{}\"",
+                    (now + chrono::Duration::days(30)).format("%Y-%m-%dT%H:%M:%SZ")
+                );
+            }
+        } else {
+            // observe_until set but couldn't parse timestamp
+            println!("{}", "INVALID".red());
+            issues += 1;
+            println!(
+                "  observe_until value could not be parsed: {}",
+                &**observe_until
+            );
+            println!("  → Use ISO 8601 format: YYYY-MM-DDTHH:MM:SSZ");
+        }
+    } else if config.policy().default_mode.is_some() {
+        // No observe_until but default_mode is set (permanent warn/log mode)
+        let mode = config.policy().default_mode.unwrap();
+        if matches!(
+            mode,
+            crate::config::PolicyMode::Warn | crate::config::PolicyMode::Log
+        ) {
+            println!("{}", "PERMANENT".yellow());
+            println!("  policy.default_mode = {:?} (no expiration set)", mode);
+            println!("  Non-critical rules will always use {:?} mode", mode);
+            println!("  → Consider adding observe_until for time-limited rollout");
+        } else {
+            println!("{}", "OK".green());
+            println!("  Enforcing normal policy (default_mode = {:?})", mode);
+        }
+    } else {
+        println!("{}", "OK".green());
+    }
+
     println!();
     if issues == 0 {
         println!("{}", "All checks passed!".green().bold());
