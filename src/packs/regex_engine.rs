@@ -40,8 +40,11 @@ pub enum CompiledRegex {
 impl CompiledRegex {
     /// Compile a pattern, auto-selecting the appropriate engine.
     ///
-    /// Uses linear-time `regex` crate unless the pattern contains
-    /// lookahead (`(?=`, `(?!`) or lookbehind (`(?<=`, `(?<!`).
+    /// Uses linear-time `regex` crate unless the pattern contains features
+    /// that require backtracking:
+    /// - Lookahead: `(?=...)`, `(?!...)`
+    /// - Lookbehind: `(?<=...)`, `(?<!...)`
+    /// - Backreferences: `\1`, `\2`, etc.
     ///
     /// # Errors
     /// Returns an error if the pattern fails to compile.
@@ -224,6 +227,12 @@ mod tests {
         assert!(needs_backtracking_engine(r"(foo)\1"));
         assert!(needs_backtracking_engine(r"(\w+)\s+\1"));
         assert!(needs_backtracking_engine(r"(a)(b)\2\1"));
+
+        // Two-digit backreferences (detected by first digit)
+        // \10 starts with \1 which triggers detection
+        assert!(needs_backtracking_engine(
+            r"(.)(.)(.)(.)(.)(.)(.)(.)(.)(.).\10"
+        ));
     }
 
     #[test]
@@ -355,5 +364,40 @@ mod tests {
         let pattern = r"test\s+pattern";
         let re = CompiledRegex::new(pattern).unwrap();
         assert_eq!(re.as_str(), pattern);
+    }
+
+    #[test]
+    fn test_as_str_backtracking() {
+        // Verify as_str works with backtracking engine too
+        let pattern = r"foo(?=bar)";
+        let re = CompiledRegex::new(pattern).unwrap();
+        assert!(re.uses_backtracking());
+        assert_eq!(re.as_str(), pattern);
+    }
+
+    #[test]
+    fn test_empty_pattern() {
+        // Empty pattern should work (matches empty string at every position)
+        let re = CompiledRegex::new("").unwrap();
+        assert!(!re.uses_backtracking()); // No backtracking features
+        assert!(re.is_match("")); // Matches empty string
+        assert!(re.is_match("anything")); // Matches at start of any string
+        assert_eq!(re.find("test"), Some((0, 0))); // Zero-width match at position 0
+    }
+
+    #[test]
+    fn test_compile_error_linear() {
+        // Invalid regex should return error
+        let result = CompiledRegex::new_linear(r"(unclosed");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("regex compile error"));
+    }
+
+    #[test]
+    fn test_compile_error_backtracking() {
+        // Invalid regex should return error
+        let result = CompiledRegex::new_backtracking(r"(unclosed");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("fancy_regex compile error"));
     }
 }
