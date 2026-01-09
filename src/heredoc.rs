@@ -170,6 +170,7 @@ impl Default for ExtractionLimits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ScriptLanguage {
     Bash,
+    Go,
     Python,
     Ruby,
     Perl,
@@ -212,6 +213,9 @@ impl ScriptLanguage {
             Self::JavaScript
         } else if matches_interpreter("deno") || matches_interpreter("bun") {
             Self::TypeScript
+        } else if matches_interpreter("go") {
+            // Note: Go doesn't typically use version suffixes in command names
+            Self::Go
         } else if matches_interpreter("sh")
             || matches_interpreter("bash")
             || matches_interpreter("zsh")
@@ -339,6 +343,20 @@ impl ScriptLanguage {
         let has_end = content.contains("\nend") || content.ends_with("end");
         if has_ruby_patterns && has_end {
             return Some(Self::Ruby);
+        }
+
+        // Go indicators (high confidence)
+        // Go has distinctive patterns: package declaration, func, :=, import with quotes
+        let has_go_patterns = lines.iter().any(|l| {
+            let trimmed = l.trim();
+            trimmed.starts_with("package ")
+                || trimmed.starts_with("func ")
+                || trimmed.contains(":=")
+                || (trimmed.starts_with("import ") && trimmed.contains('"'))
+                || trimmed == "import ("
+        });
+        if has_go_patterns {
+            return Some(Self::Go);
         }
 
         // Perl indicators
