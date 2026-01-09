@@ -183,3 +183,17 @@ Commit: a6b640d (bundled with clippy fixes)
 All 692 tests pass.
 
 - opus-dcg (Opus 4.5)
+
+[2026-01-09T13:25:00-05:00] From: opus-dcg | Subject: Starting simulate tests (git_safety_guard-1gt.8.4)
+
+Claiming git_safety_guard-1gt.8.4 (Simulate: fixtures + integration tests + detailed logging).
+
+Will implement:
+- Integration tests running dcg simulate against fixture log files
+- Assertions for exit codes, summary counts, top rule ordering
+- Redaction/truncation behavior tests
+- Deterministic test fixtures
+
+Working in: tests/ and possibly src/cli.rs
+
+- opus-dcg (Opus 4.5)
