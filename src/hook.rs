@@ -139,7 +139,12 @@ pub fn format_denial_message(command: &str, reason: &str) -> String {
 
 /// Print a colorful warning to stderr for human visibility.
 #[allow(clippy::too_many_lines)]
-pub fn print_colorful_warning(command: &str, reason: &str, pack: Option<&str>, pattern: Option<&str>) {
+pub fn print_colorful_warning(
+    command: &str,
+    reason: &str,
+    pack: Option<&str>,
+    pattern: Option<&str>,
+) {
     // Box width (content area, excluding border characters)
     const WIDTH: usize = 70;
 
@@ -349,7 +354,7 @@ pub fn print_colorful_warning(command: &str, reason: &str, pack: Option<&str>, p
 
     // dcg allowlist add command (if we have a rule_id)
     if let Some(ref rule) = rule_id {
-        let allowlist_cmd = format!("dcg allowlist add {} --project", rule);
+        let allowlist_cmd = format!("dcg allowlist add {rule} --project");
         let _ = write!(handle, "{}", "│".red());
         let _ = write!(handle, "     {} ", "$".bright_black());
         let _ = write!(handle, "{}", allowlist_cmd.cyan());
@@ -384,8 +389,7 @@ fn truncate_for_display(s: &str, max_len: usize) -> String {
             .char_indices()
             .take_while(|(i, _)| *i < target)
             .last()
-            .map(|(i, c)| i + c.len_utf8())
-            .unwrap_or(0);
+            .map_or(0, |(i, c)| i + c.len_utf8());
         format!("{}...", &s[..boundary])
     }
 }

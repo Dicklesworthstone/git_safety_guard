@@ -157,7 +157,9 @@ pub struct AllowedHeredocPattern {
 /// A content-hash based heredoc allowlist entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentHashEntry {
-    /// Hash of the heredoc content (currently using simple hash, not cryptographic).
+    /// Hash of the exact heredoc content.
+    ///
+    /// This is a stable, deterministic SHA-256 hash (lowercase hex).
     pub hash: String,
     /// Human-readable reason for allowlisting.
     pub reason: String,
@@ -291,9 +293,10 @@ impl HeredocAllowlistConfig {
         project_path: Option<&std::path::Path>,
     ) -> Option<HeredocAllowlistHit<'_>> {
         // Check global content hashes first
-        let hash = content_hash(content);
+        let mut hash: Option<String> = None;
         for entry in &self.content_hashes {
-            if entry.hash == hash {
+            let computed = hash.get_or_insert_with(|| content_hash(content));
+            if entry.hash == *computed {
                 return Some(HeredocAllowlistHit {
                     kind: HeredocAllowlistHitKind::ContentHash,
                     reason: &entry.reason,
@@ -316,16 +319,13 @@ impl HeredocAllowlistConfig {
         // Check project-specific entries
         if let Some(path) = project_path {
             for project in &self.projects {
-                let project_path_str = path.to_string_lossy();
-                // Match exact path or path with separator to avoid false positives
-                // e.g., "/home/user/project" should not match "/home/user/project-other"
-                let is_match = project_path_str == project.path
-                    || project_path_str.starts_with(&format!("{}/", project.path))
-                    || project_path_str.starts_with(&format!("{}\\", project.path));
-                if is_match {
+                // Match by path components to avoid false positives
+                // e.g., "/home/user/project" should NOT match "/home/user/project-other".
+                if path.starts_with(std::path::Path::new(&project.path)) {
                     // Check project content hashes
                     for entry in &project.content_hashes {
-                        if entry.hash == hash {
+                        let computed = hash.get_or_insert_with(|| content_hash(content));
+                        if entry.hash == *computed {
                             return Some(HeredocAllowlistHit {
                                 kind: HeredocAllowlistHitKind::ProjectContentHash,
                                 reason: &entry.reason,
@@ -379,7 +379,11 @@ impl HeredocAllowlistConfig {
             if let Some(existing) = self.projects.iter_mut().find(|p| p.path == project.path) {
                 // Merge patterns into existing project
                 for pattern in &project.patterns {
-                    if !existing.patterns.iter().any(|p| p.pattern == pattern.pattern) {
+                    if !existing
+                        .patterns
+                        .iter()
+                        .any(|p| p.pattern == pattern.pattern)
+                    {
                         existing.patterns.push(pattern.clone());
                     }
                 }
@@ -428,7 +432,9 @@ fn pattern_matches(
 /// Check if a language filter string matches the given language.
 /// Supports both full names (e.g., "javascript") and common aliases (e.g., "js").
 fn language_filter_matches(filter: &str, language: crate::heredoc::ScriptLanguage) -> bool {
-    use crate::heredoc::ScriptLanguage::*;
+    use crate::heredoc::ScriptLanguage::{
+        Bash, Go, JavaScript, Perl, Php, Python, Ruby, TypeScript, Unknown,
+    };
     let filter_lower = filter.to_ascii_lowercase();
 
     match language {
@@ -444,27 +450,24 @@ fn language_filter_matches(filter: &str, language: crate::heredoc::ScriptLanguag
     }
 }
 
-/// Compute a content hash for allowlisting.
+/// Compute a stable content hash for heredoc allowlisting.
 ///
-/// # Stability Warning
-///
-/// This uses Rust's `DefaultHasher` (SipHash-1-3) which is:
-/// - **Deterministic** within the same Rust version and platform
-/// - **NOT guaranteed stable** across different Rust versions
-///
-/// If you update the Rust compiler, previously configured content hashes may
-/// stop matching. For production use with long-term stability requirements,
-/// consider a stable hash algorithm like SHA-256 or xxHash.
+/// This uses SHA-256 and returns lowercase hex. Allowlisting still requires
+/// explicit user configuration; the hash is for stable identification, not as a
+/// security boundary.
 ///
 /// # Returns
 ///
-/// A 16-character hex string representing the 64-bit hash.
+/// A 64-character hex string representing the 256-bit hash.
 fn content_hash(content: &str) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = DefaultHasher::new();
-    content.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(content.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write as _;
+        let _ = write!(&mut out, "{b:02x}");
+    }
+    out
 }
 
 /// General configuration options.
@@ -1119,6 +1122,44 @@ impl Config {
             self.heredoc.fallback_on_timeout = other.heredoc.fallback_on_timeout;
         }
 
+        // Merge heredoc allowlist (additive).
+        if let Some(other_allowlist) = other.heredoc.allowlist {
+            if let Some(existing) = self.heredoc.allowlist.as_mut() {
+                existing.merge(&other_allowlist);
+            } else {
+                self.heredoc.allowlist = Some(other_allowlist);
+            }
+        }
+
+        // Merge structured logging config (best-effort field-wise).
+        if other.logging.enabled {
+            self.logging.enabled = true;
+        }
+        if other.logging.file.is_some() {
+            self.logging.file = other.logging.file.clone();
+        }
+        if other.logging.format != crate::logging::LogFormat::Text {
+            self.logging.format = other.logging.format;
+        }
+        if other.logging.redaction.enabled {
+            self.logging.redaction.enabled = true;
+        }
+        if other.logging.redaction.mode != crate::logging::RedactionMode::Arguments {
+            self.logging.redaction.mode = other.logging.redaction.mode;
+        }
+        if other.logging.redaction.max_argument_len != 50 {
+            self.logging.redaction.max_argument_len = other.logging.redaction.max_argument_len;
+        }
+        if !other.logging.events.deny {
+            self.logging.events.deny = false;
+        }
+        if !other.logging.events.warn {
+            self.logging.events.warn = false;
+        }
+        if other.logging.events.allow {
+            self.logging.events.allow = true;
+        }
+
         // Merge project configs
         self.projects.extend(other.projects);
     }
@@ -1644,6 +1685,32 @@ mod tests {
                 .enabled
                 .contains(&"database.postgresql".to_string())
         );
+    }
+
+    #[test]
+    fn test_config_merge_merges_heredoc_allowlist() {
+        let mut base = Config::default();
+        base.heredoc.allowlist = Some(HeredocAllowlistConfig {
+            commands: vec!["cmd1".to_string()],
+            ..Default::default()
+        });
+
+        let other = Config {
+            heredoc: HeredocConfig {
+                allowlist: Some(HeredocAllowlistConfig {
+                    commands: vec!["cmd2".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        base.merge(other);
+
+        let allowlist = base.heredoc.allowlist.as_ref().expect("allowlist merged");
+        assert!(allowlist.commands.contains(&"cmd1".to_string()));
+        assert!(allowlist.commands.contains(&"cmd2".to_string()));
     }
 
     #[test]
@@ -2275,6 +2342,10 @@ mod tests {
     fn test_heredoc_allowlist_hash_match() {
         let content = "specific content to hash";
         let hash = super::content_hash(content);
+        assert_eq!(
+            hash,
+            "71bc8277a3e8d59ec84d4fb69364fcb43805a24d451705e1d5a6d826d1dc644b"
+        );
 
         let allowlist = HeredocAllowlistConfig {
             content_hashes: vec![ContentHashEntry {
@@ -2284,11 +2355,8 @@ mod tests {
             ..Default::default()
         };
 
-        let hit = allowlist.is_content_allowlisted(
-            content,
-            crate::heredoc::ScriptLanguage::Bash,
-            None,
-        );
+        let hit =
+            allowlist.is_content_allowlisted(content, crate::heredoc::ScriptLanguage::Bash, None);
         assert!(hit.is_some());
         let hit = hit.unwrap();
         assert_eq!(hit.kind, HeredocAllowlistHitKind::ContentHash);

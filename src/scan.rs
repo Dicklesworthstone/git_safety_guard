@@ -575,7 +575,10 @@ fn redact_token(token: &str) -> String {
 /// - GitLab CI extractor (`.gitlab-ci.yml`, `*.gitlab-ci.yml`)
 /// - Makefile extractor (`Makefile`)
 /// - package.json extractor (`package.json` - scripts only)
+/// - Terraform extractor (`*.tf` - provisioner blocks)
+/// - docker-compose extractor (`docker-compose.yml`, `compose.yml` - command/entrypoint)
 #[allow(clippy::missing_errors_doc)]
+#[allow(clippy::too_many_lines)]
 pub fn scan_paths(
     paths: &[PathBuf],
     options: &ScanOptions,
@@ -626,8 +629,17 @@ pub fn scan_paths(
         let is_gitlab = is_gitlab_ci_path(file);
         let is_makefile = is_makefile_path(file);
         let is_package_json = is_package_json_path(file);
+        let is_terraform = is_terraform_path(file);
+        let is_compose = is_docker_compose_path(file);
 
-        if !is_shell && !is_docker && !is_actions && !is_gitlab && !is_makefile && !is_package_json
+        if !is_shell
+            && !is_docker
+            && !is_actions
+            && !is_gitlab
+            && !is_makefile
+            && !is_package_json
+            && !is_terraform
+            && !is_compose
         {
             files_skipped += 1;
             continue;
@@ -687,6 +699,22 @@ pub fn scan_paths(
 
         if is_package_json {
             extracted.extend(extract_package_json_from_str(
+                &file_label,
+                &content,
+                &ctx.enabled_keywords,
+            ));
+        }
+
+        if is_terraform {
+            extracted.extend(extract_terraform_from_str(
+                &file_label,
+                &content,
+                &ctx.enabled_keywords,
+            ));
+        }
+
+        if is_compose {
+            extracted.extend(extract_docker_compose_from_str(
                 &file_label,
                 &content,
                 &ctx.enabled_keywords,
@@ -1343,6 +1371,7 @@ fn is_gitlab_ci_path(path: &Path) -> bool {
     lower == ".gitlab-ci.yml" || lower.ends_with(".gitlab-ci.yml")
 }
 
+#[allow(clippy::too_many_lines)]
 fn extract_gitlab_ci_from_str(
     file: &str,
     content: &str,
@@ -1494,9 +1523,7 @@ fn extract_gitlab_ci_from_str(
 }
 
 fn gitlab_anchor_definition(line: &str) -> Option<String> {
-    let Some((_, rest)) = line.split_once(':') else {
-        return None;
-    };
+    let (_, rest) = line.split_once(':')?;
     let rest = rest.trim_start();
     let (anchor_name, remainder) = parse_yaml_anchor(rest, '&')?;
     if remainder.is_empty() || remainder.starts_with('#') {
@@ -1555,11 +1582,7 @@ fn extract_gitlab_sequence_items(
         }
 
         if item_value.starts_with('|') || item_value.starts_with('>') {
-            let (block, block_start_line, next_idx) = parse_yaml_block(
-                lines,
-                idx + 1,
-                item_indent,
-            );
+            let (block, block_start_line, next_idx) = parse_yaml_block(lines, idx + 1, item_indent);
             let extracted = extract_shell_script_with_offset_and_id(
                 file,
                 block_start_line,
@@ -1651,9 +1674,8 @@ fn parse_yaml_anchor(value: &str, prefix: char) -> Option<(String, &str)> {
     let trimmed = value.trim_start();
     let rest = trimmed.strip_prefix(prefix)?;
     let mut name = String::new();
-    let mut chars = rest.chars();
 
-    while let Some(ch) = chars.next() {
+    for ch in rest.chars() {
         if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.' {
             name.push(ch);
         } else {
@@ -1792,9 +1814,7 @@ fn extract_package_json_from_str(
         let line_no = find_json_key_line(&line_map, script_name, "scripts");
 
         // Check if the command contains any enabled keywords
-        let has_keyword = enabled_keywords
-            .iter()
-            .any(|kw| script_cmd.contains(kw));
+        let has_keyword = enabled_keywords.iter().any(|kw| script_cmd.contains(kw));
 
         if has_keyword {
             out.push(ExtractedCommand {
@@ -1826,6 +1846,514 @@ fn find_json_key_line(lines: &[&str], key: &str, _parent: &str) -> usize {
         }
     }
     1 // Default to line 1 if not found
+}
+
+// ============================================================================
+// Terraform extractor (*.tf) - provisioner blocks
+// ============================================================================
+
+fn is_terraform_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("tf"))
+}
+
+/// Extract commands from Terraform provisioner blocks.
+///
+/// Extracts:
+/// - `local-exec` provisioner `command` values
+/// - `remote-exec` provisioner `inline` array entries
+///
+/// Does NOT extract:
+/// - Variable definitions
+/// - Output values
+/// - Resource attributes (non-provisioner)
+/// - Comments
+#[allow(clippy::too_many_lines)]
+fn extract_terraform_from_str(
+    file: &str,
+    content: &str,
+    enabled_keywords: &[&'static str],
+) -> Vec<ExtractedCommand> {
+    const EXTRACTOR_ID_LOCAL: &str = "terraform.provisioner.local_exec";
+    const EXTRACTOR_ID_REMOTE: &str = "terraform.provisioner.remote_exec";
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = Vec::new();
+    let mut idx = 0usize;
+
+    while idx < lines.len() {
+        let raw_line = lines[idx];
+        let trimmed = raw_line.trim();
+
+        // Skip empty lines and comments
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+            idx += 1;
+            continue;
+        }
+
+        // Look for provisioner blocks
+        if let Some(prov_type) = detect_provisioner_block(trimmed) {
+            let block_indent = raw_line.len() - trimmed.len();
+            idx += 1;
+
+            // Parse the provisioner block
+            match prov_type {
+                ProvisionerType::LocalExec => {
+                    while idx < lines.len() {
+                        let inner_line = lines[idx];
+                        let inner_trimmed = inner_line.trim();
+
+                        if inner_trimmed == "}" {
+                            let inner_indent = inner_line.len() - inner_trimmed.len();
+                            if inner_indent <= block_indent {
+                                break;
+                            }
+                        }
+
+                        if let Some(cmd) = extract_hcl_string_value(inner_trimmed, "command") {
+                            let has_keyword = enabled_keywords.iter().any(|kw| cmd.contains(kw));
+                            if has_keyword {
+                                out.push(ExtractedCommand {
+                                    file: file.to_string(),
+                                    line: idx + 1,
+                                    col: None,
+                                    extractor_id: EXTRACTOR_ID_LOCAL.to_string(),
+                                    command: cmd,
+                                    metadata: Some(serde_json::Value::String(
+                                        "provisioner: local-exec".to_string(),
+                                    )),
+                                });
+                            }
+                        }
+
+                        if let Some(heredoc_marker) = detect_heredoc_start(inner_trimmed, "command")
+                        {
+                            let heredoc_start = idx + 1;
+                            idx += 1;
+                            let mut heredoc_content = String::new();
+
+                            while idx < lines.len() {
+                                let heredoc_line = lines[idx].trim();
+                                if heredoc_line == heredoc_marker {
+                                    break;
+                                }
+                                if !heredoc_content.is_empty() {
+                                    heredoc_content.push('\n');
+                                }
+                                heredoc_content.push_str(lines[idx]);
+                                idx += 1;
+                            }
+
+                            out.extend(extract_shell_script_with_offset_and_id(
+                                file,
+                                heredoc_start + 1,
+                                &heredoc_content,
+                                enabled_keywords,
+                                EXTRACTOR_ID_LOCAL,
+                            ));
+                        }
+
+                        idx += 1;
+                    }
+                }
+                ProvisionerType::RemoteExec => {
+                    while idx < lines.len() {
+                        let inner_line = lines[idx];
+                        let inner_trimmed = inner_line.trim();
+
+                        if inner_trimmed == "}" {
+                            let inner_indent = inner_line.len() - inner_trimmed.len();
+                            if inner_indent <= block_indent {
+                                break;
+                            }
+                        }
+
+                        if inner_trimmed.starts_with("inline") && inner_trimmed.contains('=') {
+                            let array_start = idx + 1;
+                            if inner_trimmed.contains('[') && inner_trimmed.contains(']') {
+                                for cmd in extract_hcl_array_items(inner_trimmed) {
+                                    let has_keyword =
+                                        enabled_keywords.iter().any(|kw| cmd.contains(kw));
+                                    if has_keyword {
+                                        out.push(ExtractedCommand {
+                                            file: file.to_string(),
+                                            line: array_start,
+                                            col: None,
+                                            extractor_id: EXTRACTOR_ID_REMOTE.to_string(),
+                                            command: cmd,
+                                            metadata: Some(serde_json::Value::String(
+                                                "provisioner: remote-exec".to_string(),
+                                            )),
+                                        });
+                                    }
+                                }
+                            } else if inner_trimmed.contains('[') {
+                                idx += 1;
+                                while idx < lines.len() {
+                                    let arr_line = lines[idx].trim();
+                                    if arr_line.starts_with(']') {
+                                        break;
+                                    }
+                                    if let Some(cmd) = extract_quoted_string(arr_line) {
+                                        let has_keyword =
+                                            enabled_keywords.iter().any(|kw| cmd.contains(kw));
+                                        if has_keyword {
+                                            out.push(ExtractedCommand {
+                                                file: file.to_string(),
+                                                line: idx + 1,
+                                                col: None,
+                                                extractor_id: EXTRACTOR_ID_REMOTE.to_string(),
+                                                command: cmd,
+                                                metadata: Some(serde_json::Value::String(
+                                                    "provisioner: remote-exec".to_string(),
+                                                )),
+                                            });
+                                        }
+                                    }
+                                    idx += 1;
+                                }
+                            }
+                        }
+
+                        idx += 1;
+                    }
+                }
+            }
+        }
+
+        idx += 1;
+    }
+
+    out
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ProvisionerType {
+    LocalExec,
+    RemoteExec,
+}
+
+fn detect_provisioner_block(line: &str) -> Option<ProvisionerType> {
+    if !line.starts_with("provisioner") {
+        return None;
+    }
+
+    if line.contains("\"local-exec\"") || line.contains("'local-exec'") {
+        Some(ProvisionerType::LocalExec)
+    } else if line.contains("\"remote-exec\"") || line.contains("'remote-exec'") {
+        Some(ProvisionerType::RemoteExec)
+    } else {
+        None
+    }
+}
+
+fn extract_hcl_string_value(line: &str, key: &str) -> Option<String> {
+    if !line.starts_with(key) {
+        return None;
+    }
+
+    let after_key = line[key.len()..].trim_start();
+    if !after_key.starts_with('=') {
+        return None;
+    }
+
+    let after_eq = after_key[1..].trim_start();
+    extract_quoted_string(after_eq)
+}
+
+fn extract_quoted_string(s: &str) -> Option<String> {
+    let s = s.trim();
+    let s = s.trim_end_matches(',');
+
+    if s.len() >= 2
+        && ((s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')))
+    {
+        return Some(s[1..s.len() - 1].to_string());
+    }
+    None
+}
+
+fn detect_heredoc_start(line: &str, key: &str) -> Option<String> {
+    if !line.starts_with(key) {
+        return None;
+    }
+
+    let after_key = line[key.len()..].trim_start();
+    if !after_key.starts_with('=') {
+        return None;
+    }
+
+    let after_eq = after_key[1..].trim_start();
+    if let Some(marker) = after_eq.strip_prefix("<<-") {
+        let marker = marker.trim();
+        if !marker.is_empty() {
+            return Some(marker.to_string());
+        }
+    } else if let Some(marker) = after_eq.strip_prefix("<<") {
+        let marker = marker.trim();
+        if !marker.is_empty() {
+            return Some(marker.to_string());
+        }
+    }
+    None
+}
+
+fn extract_hcl_array_items(line: &str) -> Vec<String> {
+    let mut items = Vec::new();
+
+    let Some(start) = line.find('[') else {
+        return items;
+    };
+    let Some(end) = line.rfind(']') else {
+        return items;
+    };
+
+    if start >= end {
+        return items;
+    }
+
+    let array_content = &line[start + 1..end];
+
+    for part in array_content.split(',') {
+        if let Some(s) = extract_quoted_string(part) {
+            items.push(s);
+        }
+    }
+
+    items
+}
+
+// ============================================================================
+// docker-compose extractor
+// ============================================================================
+
+fn is_docker_compose_path(path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    let lower = file_name.to_ascii_lowercase();
+    matches!(
+        lower.as_str(),
+        "docker-compose.yml" | "docker-compose.yaml" | "compose.yml" | "compose.yaml"
+    )
+}
+
+/// Extract executable commands from docker-compose files.
+///
+/// Extracts:
+/// - `command:` values (service command)
+/// - `entrypoint:` values (service entrypoint)
+/// - `healthcheck.test:` commands
+///
+/// Does NOT extract:
+/// - `environment:` values (data only)
+/// - `labels:` values (metadata only)
+/// - Comments
+fn extract_docker_compose_from_str(
+    file: &str,
+    content: &str,
+    enabled_keywords: &[&'static str],
+) -> Vec<ExtractedCommand> {
+    const EXTRACTOR_ID: &str = "docker_compose.command";
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = Vec::new();
+    let mut skip_indent: Option<usize> = None;
+
+    let mut idx = 0usize;
+    while idx < lines.len() {
+        let raw_line = lines[idx];
+        let trimmed_start = raw_line.trim_start();
+
+        // Skip empty lines and comments
+        if trimmed_start.is_empty() || trimmed_start.starts_with('#') {
+            idx += 1;
+            continue;
+        }
+
+        let indent = raw_line.len() - trimmed_start.len();
+
+        // Handle skip regions (environment, labels, etc.)
+        if let Some(skip) = skip_indent {
+            if indent <= skip {
+                skip_indent = None;
+            } else {
+                idx += 1;
+                continue;
+            }
+        }
+
+        // Skip environment and labels blocks (these are data, not commands)
+        if yaml_key_value(trimmed_start, "environment").is_some()
+            || yaml_key_value(trimmed_start, "labels").is_some()
+            || yaml_key_value(trimmed_start, "volumes").is_some()
+            || yaml_key_value(trimmed_start, "ports").is_some()
+            || yaml_key_value(trimmed_start, "networks").is_some()
+            || yaml_key_value(trimmed_start, "depends_on").is_some()
+        {
+            skip_indent = Some(indent);
+            idx += 1;
+            continue;
+        }
+
+        // Extract command: values
+        if let Some(value) = yaml_key_value(trimmed_start, "command") {
+            out.extend(extract_docker_compose_command(
+                file,
+                &lines,
+                idx,
+                indent,
+                value,
+                enabled_keywords,
+                EXTRACTOR_ID,
+            ));
+            idx += 1;
+            continue;
+        }
+
+        // Extract entrypoint: values
+        if let Some(value) = yaml_key_value(trimmed_start, "entrypoint") {
+            out.extend(extract_docker_compose_command(
+                file,
+                &lines,
+                idx,
+                indent,
+                value,
+                enabled_keywords,
+                EXTRACTOR_ID,
+            ));
+            idx += 1;
+            continue;
+        }
+
+        // Extract healthcheck.test: values
+        if let Some(value) = yaml_key_value(trimmed_start, "test") {
+            // Only extract if we're likely in a healthcheck context
+            // (simple heuristic: check if "healthcheck" appeared recently)
+            let in_healthcheck = (idx.saturating_sub(5)..idx)
+                .any(|i| lines.get(i).is_some_and(|l| l.contains("healthcheck")));
+            if in_healthcheck {
+                out.extend(extract_docker_compose_command(
+                    file,
+                    &lines,
+                    idx,
+                    indent,
+                    value,
+                    enabled_keywords,
+                    EXTRACTOR_ID,
+                ));
+            }
+            idx += 1;
+            continue;
+        }
+
+        idx += 1;
+    }
+
+    out
+}
+
+/// Extract a command value from docker-compose (handles string, array, and block formats).
+fn extract_docker_compose_command(
+    file: &str,
+    lines: &[&str],
+    idx: usize,
+    indent: usize,
+    value: &str,
+    enabled_keywords: &[&'static str],
+    extractor_id: &'static str,
+) -> Vec<ExtractedCommand> {
+    let line_no = idx + 1;
+    let mut out = Vec::new();
+
+    // Handle inline sequence: command: ["sh", "-c", "rm -rf /"]
+    if let Some(items) = parse_inline_yaml_sequence(value) {
+        // Join array elements to form the command
+        let cmd = items.join(" ");
+        if enabled_keywords.iter().any(|kw| cmd.contains(kw)) {
+            out.push(ExtractedCommand {
+                file: file.to_string(),
+                line: line_no,
+                col: None,
+                extractor_id: extractor_id.to_string(),
+                command: cmd,
+                metadata: None,
+            });
+        }
+        return out;
+    }
+
+    // Handle block scalar: command: |
+    if value.starts_with('|') || value.starts_with('>') {
+        let (block, block_start_line, _next_idx) = parse_yaml_block(lines, idx + 1, indent);
+        out.extend(extract_shell_script_with_offset_and_id(
+            file,
+            block_start_line,
+            &block,
+            enabled_keywords,
+            extractor_id,
+        ));
+        return out;
+    }
+
+    // Handle empty value followed by sequence
+    if value.is_empty() || value.starts_with('#') {
+        // Look for sequence items on following lines
+        let mut seq_idx = idx + 1;
+        let mut cmd_parts = Vec::new();
+        while seq_idx < lines.len() {
+            let seq_line = lines[seq_idx];
+            let seq_trimmed = seq_line.trim_start();
+            let seq_indent = seq_line.len() - seq_trimmed.len();
+
+            if seq_indent <= indent && !seq_trimmed.is_empty() {
+                break;
+            }
+
+            if seq_trimmed.starts_with("- ") {
+                let item = seq_trimmed.strip_prefix("- ").unwrap_or("").trim();
+                // Strip quotes if present
+                let item = item.trim_matches('"').trim_matches('\'');
+                cmd_parts.push(item.to_string());
+            } else if !seq_trimmed.is_empty() && !seq_trimmed.starts_with('#') {
+                break;
+            }
+
+            seq_idx += 1;
+        }
+
+        if !cmd_parts.is_empty() {
+            let cmd = cmd_parts.join(" ");
+            if enabled_keywords.iter().any(|kw| cmd.contains(kw)) {
+                out.push(ExtractedCommand {
+                    file: file.to_string(),
+                    line: line_no,
+                    col: None,
+                    extractor_id: extractor_id.to_string(),
+                    command: cmd,
+                    metadata: None,
+                });
+            }
+        }
+        return out;
+    }
+
+    // Handle inline string: command: /bin/sh -c "rm -rf /"
+    // Strip quotes if present
+    let cmd = value.trim_matches('"').trim_matches('\'').to_string();
+    if enabled_keywords.iter().any(|kw| cmd.contains(kw)) {
+        out.push(ExtractedCommand {
+            file: file.to_string(),
+            line: line_no,
+            col: None,
+            extractor_id: extractor_id.to_string(),
+            command: cmd,
+            metadata: None,
+        });
+    }
+
+    out
 }
 
 #[must_use]
@@ -3079,5 +3607,112 @@ all:\n\
         assert_eq!(extracted.len(), 1);
         // "clean" appears on line 4
         assert_eq!(extracted[0].line, 4);
+    }
+
+    // =========================================================================
+    // Terraform extractor tests (git_safety_guard-p9e)
+    // =========================================================================
+
+    #[test]
+    fn terraform_path_detection() {
+        use std::path::Path;
+        assert!(is_terraform_path(Path::new("main.tf")));
+        assert!(is_terraform_path(Path::new("outputs.tf")));
+        assert!(is_terraform_path(Path::new("path/to/resource.TF")));
+        assert!(!is_terraform_path(Path::new("main.tf.bak")));
+        assert!(!is_terraform_path(Path::new("terraform.tfstate")));
+        assert!(!is_terraform_path(Path::new("README.md")));
+    }
+
+    #[test]
+    fn terraform_local_exec_simple_command() {
+        let content = r#"
+resource "null_resource" "cleanup" {
+  provisioner "local-exec" {
+    command = "rm -rf /tmp/*"
+  }
+}
+"#;
+        let extracted = extract_terraform_from_str("main.tf", content, &["rm"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "rm -rf /tmp/*");
+        assert_eq!(
+            extracted[0].extractor_id,
+            "terraform.provisioner.local_exec"
+        );
+    }
+
+    #[test]
+    fn terraform_remote_exec_inline_array() {
+        let content = r#"
+resource "aws_instance" "web" {
+  provisioner "remote-exec" {
+    inline = [
+      "echo hello",
+      "rm -rf /tmp/*",
+      "echo done"
+    ]
+  }
+}
+"#;
+        let extracted = extract_terraform_from_str("main.tf", content, &["rm", "echo"]);
+        assert_eq!(extracted.len(), 3);
+        assert!(extracted.iter().any(|c| c.command == "rm -rf /tmp/*"));
+        assert!(extracted.iter().any(|c| c.command == "echo hello"));
+        assert!(extracted.iter().any(|c| c.command == "echo done"));
+        assert!(
+            extracted
+                .iter()
+                .all(|c| c.extractor_id == "terraform.provisioner.remote_exec")
+        );
+    }
+
+    #[test]
+    fn terraform_ignores_non_provisioner_blocks() {
+        // Dangerous strings in variable defaults should NOT be extracted
+        let content = r#"
+variable "dangerous" {
+  default = "rm -rf /"
+}
+
+output "msg" {
+  value = "rm -rf everything"
+}
+"#;
+        let extracted = extract_terraform_from_str("variables.tf", content, &["rm"]);
+        assert!(
+            extracted.is_empty(),
+            "Should not extract from variable/output blocks"
+        );
+    }
+
+    #[test]
+    fn terraform_inline_single_line_array() {
+        let content = r#"
+resource "null_resource" "test" {
+  provisioner "remote-exec" {
+    inline = ["rm -rf /tmp", "echo done"]
+  }
+}
+"#;
+        let extracted = extract_terraform_from_str("main.tf", content, &["rm", "echo"]);
+        assert_eq!(extracted.len(), 2);
+    }
+
+    #[test]
+    fn terraform_ignores_comments() {
+        let content = r#"
+# This is a comment with rm -rf /
+// This is also a comment with rm -rf
+resource "null_resource" "test" {
+  # provisioner "local-exec" { command = "rm -rf" }
+  provisioner "local-exec" {
+    command = "rm -rf /actual"
+  }
+}
+"#;
+        let extracted = extract_terraform_from_str("main.tf", content, &["rm"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "rm -rf /actual");
     }
 }

@@ -46,17 +46,12 @@ impl Default for LoggingConfig {
 }
 
 /// Log output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum LogFormat {
+    #[default]
     Text,
     Json,
-}
-
-impl Default for LogFormat {
-    fn default() -> Self {
-        Self::Text
-    }
 }
 
 /// Redaction configuration.
@@ -79,18 +74,13 @@ impl Default for RedactionConfig {
 }
 
 /// Redaction mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RedactionMode {
     None,
+    #[default]
     Arguments,
     Full,
-}
-
-impl Default for RedactionMode {
-    fn default() -> Self {
-        Self::Arguments
-    }
 }
 
 /// Filter for which events to log.
@@ -143,6 +133,7 @@ pub struct LogEntry {
 
 impl LogEntry {
     /// Create a new log entry from an evaluation result.
+    #[must_use]
     pub fn from_result(
         result: &EvaluationResult,
         command: &str,
@@ -153,8 +144,10 @@ impl LogEntry {
     ) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
-            .map(|d| time_to_iso8601(d.as_secs()))
-            .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
+            .map_or_else(
+                |_| "1970-01-01T00:00:00Z".to_string(),
+                |d| time_to_iso8601(d.as_secs()),
+            );
 
         let decision_str = match result.decision {
             EvaluationDecision::Allow => "allow",
@@ -229,7 +222,7 @@ impl LogEntry {
             parts.push(format!("-- {reason}"));
         }
         if let Some(us) = self.elapsed_us {
-            parts.push(format!("({}us)", us));
+            parts.push(format!("({us}us)"));
         }
         if self.budget_skip.unwrap_or(false) {
             parts.push("[budget-skip]".to_string());
@@ -259,6 +252,7 @@ pub struct DecisionLogger {
 
 impl DecisionLogger {
     /// Create a new logger from configuration.
+    #[must_use]
     pub fn new(config: &LoggingConfig) -> Option<Self> {
         if !config.enabled {
             return None;
@@ -312,15 +306,14 @@ impl DecisionLogger {
     /// When a command matches a destructive pattern (Deny decision), we use the deny
     /// filter regardless of mode. Log mode means "don't block, just observe" - but
     /// the pattern still matched, so users who enable deny logging should see it.
-    fn should_log(&self, result: &EvaluationResult, mode: DecisionMode) -> bool {
+    const fn should_log(&self, result: &EvaluationResult, mode: DecisionMode) -> bool {
         match result.decision {
             EvaluationDecision::Allow => self.config.events.allow,
             EvaluationDecision::Deny => match mode {
-                DecisionMode::Deny => self.config.events.deny,
                 DecisionMode::Warn => self.config.events.warn,
                 // Log mode: pattern matched but we're just observing. Use deny filter
                 // since a destructive pattern did match, even if we're not blocking.
-                DecisionMode::Log => self.config.events.deny,
+                DecisionMode::Deny | DecisionMode::Log => self.config.events.deny,
             },
         }
     }
@@ -415,7 +408,7 @@ fn time_to_iso8601(secs: u64) -> String {
     const DAYS_PER_YEAR: u64 = 365;
     const DAYS_PER_4YEARS: u64 = 1461;
     const DAYS_PER_100YEARS: u64 = 36524;
-    const DAYS_PER_400YEARS: u64 = 146097;
+    const DAYS_PER_400YEARS: u64 = 146_097;
 
     let mut days = secs / SECS_PER_DAY;
     let time_of_day = secs % SECS_PER_DAY;
@@ -423,7 +416,7 @@ fn time_to_iso8601(secs: u64) -> String {
     let minutes = (time_of_day % 3600) / 60;
     let seconds = time_of_day % 60;
 
-    days += 719468;
+    days += 719_468;
     let era = days / DAYS_PER_400YEARS;
     let doe = days % DAYS_PER_400YEARS;
     let yoe = (doe - doe / DAYS_PER_4YEARS + doe / DAYS_PER_100YEARS - doe / DAYS_PER_400YEARS)
@@ -435,10 +428,7 @@ fn time_to_iso8601(secs: u64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { year + 1 } else { year };
 
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        year, month, day, hours, minutes, seconds
-    )
+    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}Z")
 }
 
 #[cfg(test)]

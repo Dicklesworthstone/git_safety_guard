@@ -894,22 +894,18 @@ fn register_database_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>)
 
     m.insert(
         "database.redis:debug-crash",
-        vec![
-            Suggestion::new(
-                SuggestionKind::Documentation,
-                "DEBUG SEGFAULT/CRASH will crash the Redis server; only use for testing",
-            ),
-        ],
+        vec![Suggestion::new(
+            SuggestionKind::Documentation,
+            "DEBUG SEGFAULT/CRASH will crash the Redis server; only use for testing",
+        )],
     );
 
     m.insert(
         "database.redis:debug-sleep",
-        vec![
-            Suggestion::new(
-                SuggestionKind::Documentation,
-                "DEBUG SLEEP blocks the server; avoid in production",
-            ),
-        ],
+        vec![Suggestion::new(
+            SuggestionKind::Documentation,
+            "DEBUG SLEEP blocks the server; avoid in production",
+        )],
     );
 
     m.insert(
@@ -930,12 +926,10 @@ fn register_database_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>)
 
     m.insert(
         "database.redis:config-dangerous",
-        vec![
-            Suggestion::new(
-                SuggestionKind::Documentation,
-                "CONFIG SET for dir/dbfilename can be exploited for arbitrary file writes",
-            ),
-        ],
+        vec![Suggestion::new(
+            SuggestionKind::Documentation,
+            "CONFIG SET for dir/dbfilename can be exploited for arbitrary file writes",
+        )],
     );
 
     // SQLite suggestions
@@ -1262,38 +1256,71 @@ mod tests {
 
     #[test]
     fn registry_has_docker_rules() {
-        let expected = ["containers.docker:system-prune", "containers.docker:volume-prune",
-            "containers.docker:network-prune", "containers.docker:image-prune",
-            "containers.docker:container-prune", "containers.docker:rm-force",
-            "containers.docker:rmi-force", "containers.docker:volume-rm",
-            "containers.docker:stop-all"];
-        for rule in expected { assert!(get_suggestions(rule).is_some(), "Missing: {rule}"); }
+        let expected = [
+            "containers.docker:system-prune",
+            "containers.docker:volume-prune",
+            "containers.docker:network-prune",
+            "containers.docker:image-prune",
+            "containers.docker:container-prune",
+            "containers.docker:rm-force",
+            "containers.docker:rmi-force",
+            "containers.docker:volume-rm",
+            "containers.docker:stop-all",
+        ];
+        for rule in expected {
+            assert!(get_suggestions(rule).is_some(), "Missing: {rule}");
+        }
     }
 
     #[test]
     fn registry_has_kubernetes_rules() {
-        let expected = ["kubernetes.kubectl:delete-namespace", "kubernetes.kubectl:delete-all",
-            "kubernetes.kubectl:delete-all-namespaces", "kubernetes.kubectl:drain-node",
-            "kubernetes.kubectl:cordon-node", "kubernetes.kubectl:taint-noexecute",
-            "kubernetes.kubectl:delete-workload", "kubernetes.kubectl:delete-pvc",
-            "kubernetes.kubectl:delete-pv", "kubernetes.kubectl:scale-to-zero",
-            "kubernetes.kubectl:delete-force"];
-        for rule in expected { assert!(get_suggestions(rule).is_some(), "Missing: {rule}"); }
+        let expected = [
+            "kubernetes.kubectl:delete-namespace",
+            "kubernetes.kubectl:delete-all",
+            "kubernetes.kubectl:delete-all-namespaces",
+            "kubernetes.kubectl:drain-node",
+            "kubernetes.kubectl:cordon-node",
+            "kubernetes.kubectl:taint-noexecute",
+            "kubernetes.kubectl:delete-workload",
+            "kubernetes.kubectl:delete-pvc",
+            "kubernetes.kubectl:delete-pv",
+            "kubernetes.kubectl:scale-to-zero",
+            "kubernetes.kubectl:delete-force",
+        ];
+        for rule in expected {
+            assert!(get_suggestions(rule).is_some(), "Missing: {rule}");
+        }
     }
 
     #[test]
     fn registry_has_database_rules() {
-        let expected = ["database.postgresql:drop-database", "database.postgresql:drop-table",
-            "database.postgresql:drop-schema", "database.postgresql:truncate-table",
-            "database.postgresql:delete-without-where", "database.postgresql:dropdb-cli",
-            "database.postgresql:pg-dump-clean", "database.mongodb:drop-database",
-            "database.mongodb:drop-collection", "database.mongodb:delete-all",
-            "database.mongodb:mongorestore-drop", "database.mongodb:collection-drop",
-            "database.redis:flushall", "database.redis:flushdb", "database.redis:debug-crash",
-            "database.redis:debug-sleep", "database.redis:shutdown", "database.redis:config-dangerous",
-            "database.sqlite:drop-table", "database.sqlite:delete-without-where",
-            "database.sqlite:vacuum-into", "database.sqlite:sqlite3-stdin"];
-        for rule in expected { assert!(get_suggestions(rule).is_some(), "Missing: {rule}"); }
+        let expected = [
+            "database.postgresql:drop-database",
+            "database.postgresql:drop-table",
+            "database.postgresql:drop-schema",
+            "database.postgresql:truncate-table",
+            "database.postgresql:delete-without-where",
+            "database.postgresql:dropdb-cli",
+            "database.postgresql:pg-dump-clean",
+            "database.mongodb:drop-database",
+            "database.mongodb:drop-collection",
+            "database.mongodb:delete-all",
+            "database.mongodb:mongorestore-drop",
+            "database.mongodb:collection-drop",
+            "database.redis:flushall",
+            "database.redis:flushdb",
+            "database.redis:debug-crash",
+            "database.redis:debug-sleep",
+            "database.redis:shutdown",
+            "database.redis:config-dangerous",
+            "database.sqlite:drop-table",
+            "database.sqlite:delete-without-where",
+            "database.sqlite:vacuum-into",
+            "database.sqlite:sqlite3-stdin",
+        ];
+        for rule in expected {
+            assert!(get_suggestions(rule).is_some(), "Missing: {rule}");
+        }
     }
 
     // === Correctness & Coverage Tests (git_safety_guard-1gt.5.5) ===
@@ -1305,35 +1332,59 @@ mod tests {
         let mut invalid = Vec::new();
         for rule_id in SUGGESTION_REGISTRY.keys() {
             let parts: Vec<&str> = rule_id.split(':').collect();
-            if parts.len() != 2 { invalid.push(format!("{rule_id} (bad format)")); continue; }
+            if parts.len() != 2 {
+                invalid.push(format!("{rule_id} (bad format)"));
+                continue;
+            }
             let (pack_id, pattern_name) = (parts[0], parts[1]);
-            if pack_id.starts_with("heredoc.") { continue; } // Different namespace
+            if pack_id.starts_with("heredoc.") {
+                continue;
+            } // Different namespace
             let Some(pack) = REGISTRY.get(pack_id) else {
-                invalid.push(format!("{rule_id} (pack not found)")); continue;
+                invalid.push(format!("{rule_id} (pack not found)"));
+                continue;
             };
-            if !pack.destructive_patterns.iter().any(|p| p.name == Some(pattern_name)) {
+            if !pack
+                .destructive_patterns
+                .iter()
+                .any(|p| p.name == Some(pattern_name))
+            {
                 invalid.push(format!("{rule_id} (pattern not found)"));
             }
         }
-        assert!(invalid.is_empty(), "Invalid suggestion rules:\n  {}", invalid.join("\n  "));
+        assert!(
+            invalid.is_empty(),
+            "Invalid suggestion rules:\n  {}",
+            invalid.join("\n  ")
+        );
     }
 
     #[test]
     fn suggestions_do_not_suggest_destructive_commands() {
         // Suggestions must not recommend running dangerous commands.
         // Note: --force-with-lease is a SAFE alternative to --force, so we exclude it.
-        let forbidden = ["rm -rf", "rm -fr", "git reset --hard", "git clean -fd",
-            "docker system prune -a"];
+        let forbidden = [
+            "rm -rf",
+            "rm -fr",
+            "git reset --hard",
+            "git clean -fd",
+            "docker system prune -a",
+        ];
         let mut violations = Vec::new();
         for (rule_id, suggestions) in SUGGESTION_REGISTRY.iter() {
             for s in suggestions {
                 if let Some(cmd) = &s.command {
                     // Special case: git push --force-with-lease is safe
-                    if cmd.contains("--force-with-lease") { continue; }
+                    if cmd.contains("--force-with-lease") {
+                        continue;
+                    }
                     // Check for bare --force or -f (not in a safe context)
-                    let has_dangerous_force = (cmd.contains("git push") || cmd.contains("git push"))
-                        && (cmd.contains(" --force ") || cmd.contains(" --force\"")
-                            || cmd.ends_with(" --force") || cmd.contains(" -f "));
+                    let has_dangerous_force = (cmd.contains("git push")
+                        || cmd.contains("git push"))
+                        && (cmd.contains(" --force ")
+                            || cmd.contains(" --force\"")
+                            || cmd.ends_with(" --force")
+                            || cmd.contains(" -f "));
                     if has_dangerous_force {
                         violations.push(format!("{rule_id}: '{cmd}' has dangerous force flag"));
                     }
@@ -1345,7 +1396,11 @@ mod tests {
                 }
             }
         }
-        assert!(violations.is_empty(), "Dangerous commands in suggestions:\n  {}", violations.join("\n  "));
+        assert!(
+            violations.is_empty(),
+            "Dangerous commands in suggestions:\n  {}",
+            violations.join("\n  ")
+        );
     }
 
     #[test]
@@ -1355,7 +1410,9 @@ mod tests {
         for rule in rules {
             let s1 = get_suggestions(rule);
             let s2 = get_suggestions(rule);
-            assert_eq!(s1.map(|v| v.len()), s2.map(|v| v.len()), "Count differs for {rule}");
+            let s1_len = s1.map(<[Suggestion]>::len);
+            let s2_len = s2.map(<[Suggestion]>::len);
+            assert_eq!(s1_len, s2_len, "Count differs for {rule}");
             if let (Some(a), Some(b)) = (s1, s2) {
                 for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
                     assert_eq!(x.text, y.text, "Mismatch at {i} for {rule}");

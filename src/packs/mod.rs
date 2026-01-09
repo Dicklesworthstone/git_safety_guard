@@ -1180,7 +1180,7 @@ pub fn global_quick_reject(cmd: &str) -> bool {
 }
 
 #[inline]
-fn is_word_byte(byte: u8) -> bool {
+const fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
@@ -1203,9 +1203,8 @@ fn keyword_matches_span(span_text: &str, keyword: &str) -> bool {
     while let Some(pos) = memmem::find(&haystack[offset..], needle) {
         let start = offset + pos;
         let end = start + needle.len();
-        let start_ok = !first_is_word
-            || start == 0
-            || !is_word_byte(haystack[start.saturating_sub(1)]);
+        let start_ok =
+            !first_is_word || start == 0 || !is_word_byte(haystack[start.saturating_sub(1)]);
         let end_ok = !last_is_word || end == haystack.len() || !is_word_byte(haystack[end]);
 
         if start_ok && end_ok {
