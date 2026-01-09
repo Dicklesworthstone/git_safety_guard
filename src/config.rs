@@ -291,7 +291,7 @@ impl HeredocAllowlistConfig {
         project_path: Option<&std::path::Path>,
     ) -> Option<HeredocAllowlistHit<'_>> {
         // Check global content hashes first
-        let hash = sha256_hex(content);
+        let hash = content_hash(content);
         for entry in &self.content_hashes {
             if entry.hash == hash {
                 return Some(HeredocAllowlistHit {
@@ -2274,7 +2274,7 @@ mod tests {
     #[test]
     fn test_heredoc_allowlist_hash_match() {
         let content = "specific content to hash";
-        let hash = super::sha256_hex(content);
+        let hash = super::content_hash(content);
 
         let allowlist = HeredocAllowlistConfig {
             content_hashes: vec![ContentHashEntry {
