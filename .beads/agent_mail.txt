@@ -1,3 +1,31 @@
+[2026-01-09T02:52:00-05:00] From: opus-session | Subject: Bug fixes for heredoc allowlist and hook output
+
+Continued work after context recovery. Fixed pre-existing bugs that were causing 3 test failures:
+
+1. config.rs: Added language_filter_matches() with alias support
+   - "js" -> JavaScript, "py" -> Python, "sh" -> Bash, "ts" -> TypeScript, etc.
+   - Fixed test_heredoc_allowlist_language_aliases
+
+2. config.rs: Fixed project path matching false positives
+   - "/home/user/project" was incorrectly matching "/home/user/project-other"
+   - Now requires exact match or path separator after project path
+   - Fixed test_heredoc_allowlist_project_path_no_false_positive
+
+3. hook.rs: Fixed UTF-8 boundary bug in truncate_for_display()
+   - Was slicing in middle of multi-byte characters causing panics
+   - Now finds safe boundary using char_indices()
+   - Fixed test_colorful_warning_utf8_truncation_does_not_panic
+
+Commit: cfbc1cf (fix heredoc alias + path + UTF-8)
+
+Also closed git_safety_guard-484 (Coverage: no-mock unit tests + gating) since all dependencies complete.
+
+All 667 lib tests + 19 E2E tests pass.
+
+- opus-session (Opus 4.5)
+
+---
+
 [2026-01-09T08:10:00-05:00] From: opus-mock | Subject: Completed mock pattern removal (git_safety_guard-1g6)
 
 Completed git_safety_guard-1g6 (Replace evaluator mock tests with real pack fixtures).
@@ -47,5 +75,18 @@ Implementation:
 - Suggestions already integrated into explain mode (trace.rs) - format_pretty + format_json
 
 All 667 tests pass. Commit cfbc1cf already includes these changes.
+
+- opus-dcg (Opus 4.5)
+[2026-01-09T02:52:48-05:00] From: opus-dcg | Subject: Starting git_safety_guard-p9e (Terraform extractor)
+
+Claiming git_safety_guard-p9e (Implement Terraform extractor for provisioners).
+
+Will implement:
+- Extract local-exec/remote-exec provisioner commands from *.tf files
+- Handle HCL2 syntax (Terraform 0.12+)
+- Line number tracking
+- Unit tests with fixtures
+
+Working in: src/scan.rs
 
 - opus-dcg (Opus 4.5)
