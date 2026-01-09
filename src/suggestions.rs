@@ -685,7 +685,7 @@ fn register_kubernetes_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>
     );
 }
 
-/// Register suggestions for database pack rules (`PostgreSQL`, `MongoDB`, Redis, `SQLite`).
+/// Register suggestions for database pack rules (`PostgreSQL`, `MongoDB`, `Redis`, `SQLite`).
 #[allow(clippy::too_many_lines)]
 fn register_database_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>) {
     // PostgreSQL suggestions
@@ -867,12 +867,12 @@ fn register_database_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>)
         vec![
             Suggestion::new(
                 SuggestionKind::PreviewFirst,
-                "Check total keys with `DBSIZE` across databases",
+                "Check key counts per database with `INFO keyspace`",
             )
-            .with_command("redis-cli DBSIZE"),
+            .with_command("redis-cli INFO keyspace"),
             Suggestion::new(
-                SuggestionKind::SaferAlternative,
-                "Use `FLUSHDB` to flush only current database instead of all",
+                SuggestionKind::Documentation,
+                "FLUSHALL deletes ALL keys in ALL databases; FLUSHDB affects only current database",
             ),
         ],
     );
@@ -1258,5 +1258,41 @@ mod tests {
             fs_pattern_count, fs_suggestion_count,
             "core.filesystem pattern count ({fs_pattern_count}) != suggestion count ({fs_suggestion_count})"
         );
+    }
+
+    #[test]
+    fn registry_has_docker_rules() {
+        let expected = ["containers.docker:system-prune", "containers.docker:volume-prune",
+            "containers.docker:network-prune", "containers.docker:image-prune",
+            "containers.docker:container-prune", "containers.docker:rm-force",
+            "containers.docker:rmi-force", "containers.docker:volume-rm",
+            "containers.docker:stop-all"];
+        for rule in expected { assert!(get_suggestions(rule).is_some(), "Missing: {rule}"); }
+    }
+
+    #[test]
+    fn registry_has_kubernetes_rules() {
+        let expected = ["kubernetes.kubectl:delete-namespace", "kubernetes.kubectl:delete-all",
+            "kubernetes.kubectl:delete-all-namespaces", "kubernetes.kubectl:drain-node",
+            "kubernetes.kubectl:cordon-node", "kubernetes.kubectl:taint-noexecute",
+            "kubernetes.kubectl:delete-workload", "kubernetes.kubectl:delete-pvc",
+            "kubernetes.kubectl:delete-pv", "kubernetes.kubectl:scale-to-zero",
+            "kubernetes.kubectl:delete-force"];
+        for rule in expected { assert!(get_suggestions(rule).is_some(), "Missing: {rule}"); }
+    }
+
+    #[test]
+    fn registry_has_database_rules() {
+        let expected = ["database.postgresql:drop-database", "database.postgresql:drop-table",
+            "database.postgresql:drop-schema", "database.postgresql:truncate-table",
+            "database.postgresql:delete-without-where", "database.postgresql:dropdb-cli",
+            "database.postgresql:pg-dump-clean", "database.mongodb:drop-database",
+            "database.mongodb:drop-collection", "database.mongodb:delete-all",
+            "database.mongodb:mongorestore-drop", "database.mongodb:collection-drop",
+            "database.redis:flushall", "database.redis:flushdb", "database.redis:debug-crash",
+            "database.redis:debug-sleep", "database.redis:shutdown", "database.redis:config-dangerous",
+            "database.sqlite:drop-table", "database.sqlite:delete-without-where",
+            "database.sqlite:vacuum-into", "database.sqlite:sqlite3-stdin"];
+        for rule in expected { assert!(get_suggestions(rule).is_some(), "Missing: {rule}"); }
     }
 }

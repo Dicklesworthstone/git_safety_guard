@@ -83,6 +83,9 @@ pub struct HeredocConfig {
 
     /// Fail-open when extraction/parsing exceeds the timeout budget.
     pub fallback_on_timeout: Option<bool>,
+
+    /// Content-based allowlist for heredocs (patterns, hashes, commands).
+    pub allowlist: Option<HeredocAllowlistConfig>,
 }
 
 /// Effective heredoc scanning settings used by the evaluator.
@@ -93,6 +96,92 @@ pub struct HeredocSettings {
     pub allowed_languages: Option<Vec<crate::heredoc::ScriptLanguage>>,
     pub fallback_on_parse_error: bool,
     pub fallback_on_timeout: bool,
+    /// Content-based allowlist for heredocs (patterns, hashes, commands).
+    pub content_allowlist: Option<HeredocAllowlistConfig>,
+}
+
+/// Heredoc content allowlist for known-safe patterns and content hashes.
+///
+/// Supports multiple allowlisting mechanisms:
+/// - Command prefixes: allow all heredocs in commands starting with specific paths
+/// - Pattern matching: allow heredocs containing specific patterns (optionally filtered by language)
+/// - Content hashes: allow heredocs with specific content hashes (for known-good scripts)
+/// - Project scopes: additional allowances for specific project directories
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HeredocAllowlistConfig {
+    /// Command prefixes to allowlist entirely (e.g., "./scripts/approved.sh").
+    #[serde(default)]
+    pub commands: Vec<String>,
+
+    /// Content patterns to allowlist.
+    #[serde(default)]
+    pub patterns: Vec<AllowedHeredocPattern>,
+
+    /// Content hashes to allowlist (hash of exact heredoc content).
+    #[serde(default)]
+    pub content_hashes: Vec<ContentHashEntry>,
+
+    /// Project-specific allowlist overrides.
+    #[serde(default)]
+    pub projects: Vec<ProjectHeredocAllowlist>,
+}
+
+/// A pattern-based heredoc allowlist entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowedHeredocPattern {
+    /// Optional language filter (e.g., "python", "bash"). If None, matches any language.
+    pub language: Option<String>,
+    /// Substring pattern to match in heredoc content.
+    pub pattern: String,
+    /// Human-readable reason for allowlisting.
+    pub reason: String,
+}
+
+/// A content-hash based heredoc allowlist entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContentHashEntry {
+    /// Hash of the heredoc content (currently using simple hash, not cryptographic).
+    pub hash: String,
+    /// Human-readable reason for allowlisting.
+    pub reason: String,
+}
+
+/// Project-specific heredoc allowlist overrides.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectHeredocAllowlist {
+    /// Absolute path prefix for the project.
+    pub path: String,
+    /// Additional patterns for this project.
+    #[serde(default)]
+    pub patterns: Vec<AllowedHeredocPattern>,
+    /// Additional content hashes for this project.
+    #[serde(default)]
+    pub content_hashes: Vec<ContentHashEntry>,
+}
+
+/// Result of a heredoc allowlist match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeredocAllowlistHit<'a> {
+    /// The type of allowlist entry that matched.
+    pub kind: HeredocAllowlistHitKind,
+    /// The reason provided in the allowlist entry.
+    pub reason: &'a str,
+    /// The matched pattern, hash, or command.
+    pub matched: &'a str,
+}
+
+/// The type of heredoc allowlist match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeredocAllowlistHitKind {
+    /// Matched a content hash.
+    ContentHash,
+    /// Matched a pattern.
+    Pattern,
+    /// Matched a project-specific content hash.
+    ProjectContentHash,
+    /// Matched a project-specific pattern.
+    ProjectPattern,
 }
 
 impl HeredocConfig {
@@ -158,8 +247,189 @@ impl HeredocConfig {
             allowed_languages,
             fallback_on_parse_error: self.fallback_on_parse_error.unwrap_or(true),
             fallback_on_timeout: self.fallback_on_timeout.unwrap_or(true),
+            content_allowlist: self.allowlist.clone(),
         }
     }
+}
+
+impl HeredocAllowlistConfig {
+    /// Check if a command is allowlisted by its prefix.
+    #[must_use]
+    pub fn is_command_allowlisted(&self, command: &str) -> Option<&str> {
+        for cmd in &self.commands {
+            if command.starts_with(cmd.as_str()) {
+                return Some(cmd.as_str());
+            }
+        }
+        None
+    }
+
+    /// Check if heredoc content is allowlisted.
+    ///
+    /// Checks in order: content hashes, patterns, then project-specific entries.
+    #[must_use]
+    pub fn is_content_allowlisted(
+        &self,
+        content: &str,
+        language: crate::heredoc::ScriptLanguage,
+        project_path: Option<&std::path::Path>,
+    ) -> Option<HeredocAllowlistHit<'_>> {
+        // Check global content hashes first
+        let hash = sha256_hex(content);
+        for entry in &self.content_hashes {
+            if entry.hash == hash {
+                return Some(HeredocAllowlistHit {
+                    kind: HeredocAllowlistHitKind::ContentHash,
+                    reason: &entry.reason,
+                    matched: &entry.hash,
+                });
+            }
+        }
+
+        // Check global patterns
+        for pattern in &self.patterns {
+            if pattern_matches(pattern, content, language) {
+                return Some(HeredocAllowlistHit {
+                    kind: HeredocAllowlistHitKind::Pattern,
+                    reason: &pattern.reason,
+                    matched: &pattern.pattern,
+                });
+            }
+        }
+
+        // Check project-specific entries
+        if let Some(path) = project_path {
+            for project in &self.projects {
+                let project_path_str = path.to_string_lossy();
+                if project_path_str.starts_with(&project.path) {
+                    // Check project content hashes
+                    for entry in &project.content_hashes {
+                        if entry.hash == hash {
+                            return Some(HeredocAllowlistHit {
+                                kind: HeredocAllowlistHitKind::ProjectContentHash,
+                                reason: &entry.reason,
+                                matched: &entry.hash,
+                            });
+                        }
+                    }
+
+                    // Check project patterns
+                    for pattern in &project.patterns {
+                        if pattern_matches(pattern, content, language) {
+                            return Some(HeredocAllowlistHit {
+                                kind: HeredocAllowlistHitKind::ProjectPattern,
+                                reason: &pattern.reason,
+                                matched: &pattern.pattern,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Merge another allowlist config into this one (other takes precedence for additions).
+    pub fn merge(&mut self, other: &HeredocAllowlistConfig) {
+        // Merge commands (deduplicate)
+        for cmd in &other.commands {
+            if !self.commands.contains(cmd) {
+                self.commands.push(cmd.clone());
+            }
+        }
+
+        // Merge patterns (deduplicate by pattern string)
+        for pattern in &other.patterns {
+            if !self.patterns.iter().any(|p| p.pattern == pattern.pattern) {
+                self.patterns.push(pattern.clone());
+            }
+        }
+
+        // Merge content hashes (deduplicate by hash)
+        for entry in &other.content_hashes {
+            if !self.content_hashes.iter().any(|e| e.hash == entry.hash) {
+                self.content_hashes.push(entry.clone());
+            }
+        }
+
+        // Merge project overrides (merge by path)
+        for project in &other.projects {
+            if let Some(existing) = self.projects.iter_mut().find(|p| p.path == project.path) {
+                // Merge patterns into existing project
+                for pattern in &project.patterns {
+                    if !existing.patterns.iter().any(|p| p.pattern == pattern.pattern) {
+                        existing.patterns.push(pattern.clone());
+                    }
+                }
+                // Merge hashes into existing project
+                for entry in &project.content_hashes {
+                    if !existing.content_hashes.iter().any(|e| e.hash == entry.hash) {
+                        existing.content_hashes.push(entry.clone());
+                    }
+                }
+            } else {
+                self.projects.push(project.clone());
+            }
+        }
+    }
+}
+
+impl HeredocAllowlistHitKind {
+    /// Human-readable label for the hit kind.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::ContentHash => "content_hash",
+            Self::Pattern => "pattern",
+            Self::ProjectContentHash => "project_content_hash",
+            Self::ProjectPattern => "project_pattern",
+        }
+    }
+}
+
+/// Check if a pattern matches the content for the given language.
+fn pattern_matches(
+    pattern: &AllowedHeredocPattern,
+    content: &str,
+    language: crate::heredoc::ScriptLanguage,
+) -> bool {
+    // Check language filter
+    if let Some(lang_filter) = &pattern.language {
+        let lang_str = language_to_string(language);
+        if !lang_filter.eq_ignore_ascii_case(lang_str) {
+            return false;
+        }
+    }
+    // Check content contains pattern
+    content.contains(&pattern.pattern)
+}
+
+/// Convert ScriptLanguage to string for matching.
+fn language_to_string(lang: crate::heredoc::ScriptLanguage) -> &'static str {
+    match lang {
+        crate::heredoc::ScriptLanguage::Bash => "bash",
+        crate::heredoc::ScriptLanguage::Python => "python",
+        crate::heredoc::ScriptLanguage::Ruby => "ruby",
+        crate::heredoc::ScriptLanguage::Perl => "perl",
+        crate::heredoc::ScriptLanguage::JavaScript => "javascript",
+        crate::heredoc::ScriptLanguage::TypeScript => "typescript",
+        crate::heredoc::ScriptLanguage::Php => "php",
+        crate::heredoc::ScriptLanguage::Go => "go",
+        crate::heredoc::ScriptLanguage::Unknown => "unknown",
+    }
+}
+
+/// Compute a simple hash of content (for allowlisting).
+///
+/// Note: This uses the standard library's DefaultHasher for simplicity.
+/// For security-critical applications, consider using SHA-256.
+fn sha256_hex(content: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 /// General configuration options.

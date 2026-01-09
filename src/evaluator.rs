@@ -471,11 +471,13 @@ pub fn evaluate_command(
 }
 
 #[inline]
+#[allow(dead_code)] // Reserved for future deadline-based evaluation in hook mode
 fn deadline_exceeded(deadline: Option<&Deadline>) -> bool {
     deadline.is_some_and(|d| d.max_duration().is_zero() || d.is_exceeded())
 }
 
 #[inline]
+#[allow(dead_code)] // Reserved for future deadline-based evaluation in hook mode
 fn remaining_below(deadline: Option<&Deadline>, budget: &crate::perf::Budget) -> bool {
     deadline.is_some_and(|d| !d.has_budget_for(budget))
 }
