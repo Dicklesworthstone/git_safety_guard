@@ -897,6 +897,36 @@ fn init_config(output: Option<String>, force: bool) -> Result<(), Box<dyn std::e
 fn show_config(config: &Config) {
     println!("Current configuration:");
     println!();
+    println!("Config sources (lowest → highest priority):");
+    let user_cfg = config_path();
+    let system_cfg = std::path::PathBuf::from("/etc/dcg").join("config.toml");
+    if system_cfg.exists() {
+        println!("  - system: {}", system_cfg.display());
+    }
+    if user_cfg.exists() {
+        println!("  - user: {}", user_cfg.display());
+    }
+    if let Some(repo_root) = find_repo_root_from_cwd() {
+        let project_cfg = repo_root.join(".dcg.toml");
+        if project_cfg.exists() {
+            println!("  - project: {}", project_cfg.display());
+        }
+    }
+    if let Ok(value) = std::env::var(crate::config::ENV_CONFIG_PATH) {
+        if let Some(path) = crate::config::resolve_config_path_value(
+            &value,
+            std::env::current_dir().ok().as_deref(),
+        ) {
+            if path.exists() {
+                println!("  - DCG_CONFIG: {}", path.display());
+            } else {
+                println!("  - DCG_CONFIG: {} (missing)", path.display());
+            }
+        } else {
+            println!("  - DCG_CONFIG: (set but empty)");
+        }
+    }
+    println!();
     println!("General:");
     println!("  Color: {}", config.general.color);
     println!("  Verbose: {}", config.general.verbose);
@@ -2946,13 +2976,31 @@ impl ConfigDiagnostics {
 fn validate_config_diagnostics() -> ConfigDiagnostics {
     let mut diag = ConfigDiagnostics::default();
 
-    // Find config path
-    let cfg_path = config_path();
-    if cfg_path.exists() {
-        diag.config_path = Some(cfg_path);
-    } else {
-        // Try project-level config
-        if let Some(repo_root) = find_repo_root_from_cwd() {
+    let cwd = std::env::current_dir().ok();
+
+    // Explicit config path override (highest precedence for doctor diagnostics)
+    if let Ok(value) = std::env::var(crate::config::ENV_CONFIG_PATH) {
+        let Some(path) = crate::config::resolve_config_path_value(&value, cwd.as_deref()) else {
+            diag.parse_error = Some("DCG_CONFIG is set but empty".to_string());
+            return diag;
+        };
+        if !path.exists() {
+            diag.parse_error = Some(format!(
+                "DCG_CONFIG points to a missing file: {}",
+                path.display()
+            ));
+            diag.config_path = Some(path);
+            return diag;
+        }
+        diag.config_path = Some(path);
+    }
+
+    // Find default/user/project config path (when DCG_CONFIG isn't set)
+    if diag.config_path.is_none() {
+        let cfg_path = config_path();
+        if cfg_path.exists() {
+            diag.config_path = Some(cfg_path);
+        } else if let Some(repo_root) = find_repo_root_from_cwd() {
             let project_config = repo_root.join(".dcg.toml");
             if project_config.exists() {
                 diag.config_path = Some(project_config);
@@ -3208,13 +3256,7 @@ fn resolve_layer(project: bool, user: bool) -> AllowlistLayer {
 /// Find the repo root from the current working directory.
 fn find_repo_root_from_cwd() -> Option<std::path::PathBuf> {
     let cwd = std::env::current_dir().ok()?;
-    let mut current = cwd.as_path();
-    loop {
-        if current.join(".git").exists() {
-            return Some(current.to_path_buf());
-        }
-        current = current.parent()?;
-    }
+    crate::config::find_repo_root(&cwd, crate::config::REPO_ROOT_SEARCH_MAX_HOPS)
 }
 
 /// Get the path to the allowlist file for a given layer.

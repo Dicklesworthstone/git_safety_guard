@@ -52,7 +52,7 @@ impl HookRunOutput {
 ///
 /// This runs with a cleared environment and a temp CWD to ensure tests don't
 /// depend on user/system configs or allowlists.
-fn run_dcg_hook(command: &str) -> HookRunOutput {
+fn run_dcg_hook_with_env(command: &str, extra_env: &[(&str, &std::ffi::OsStr)]) -> HookRunOutput {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     std::fs::create_dir_all(temp.path().join(".git")).expect("failed to create .git dir");
 
@@ -68,8 +68,8 @@ fn run_dcg_hook(command: &str) -> HookRunOutput {
         }
     });
 
-    let mut child = Command::new(dcg_binary())
-        .env_clear()
+    let mut cmd = Command::new(dcg_binary());
+    cmd.env_clear()
         .env("HOME", &home_dir)
         .env("XDG_CONFIG_HOME", &xdg_config_dir)
         .env("DCG_ALLOWLIST_SYSTEM_PATH", "")
@@ -77,9 +77,12 @@ fn run_dcg_hook(command: &str) -> HookRunOutput {
         .current_dir(temp.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dcg hook mode");
+        .stderr(Stdio::piped());
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+
+    let mut child = cmd.spawn().expect("failed to spawn dcg hook mode");
 
     {
         let stdin = child.stdin.as_mut().expect("failed to open stdin");
@@ -92,6 +95,10 @@ fn run_dcg_hook(command: &str) -> HookRunOutput {
         command: command.to_string(),
         output,
     }
+}
+
+fn run_dcg_hook(command: &str) -> HookRunOutput {
+    run_dcg_hook_with_env(command, &[])
 }
 
 // ============================================================================
@@ -430,6 +437,75 @@ mod config_tests {
 
         assert!(!combined.is_empty(), "config should produce some output");
     }
+
+    #[test]
+    fn config_honors_dcg_config_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home_dir = temp.path().join("home");
+        let xdg_config_dir = temp.path().join("xdg_config");
+        std::fs::create_dir_all(&home_dir).expect("HOME dir");
+        std::fs::create_dir_all(&xdg_config_dir).expect("XDG_CONFIG_HOME dir");
+
+        let cfg_path = temp.path().join("explicit_config.toml");
+        std::fs::write(&cfg_path, "[general]\nverbose = true\n").expect("write config");
+
+        let output = Command::new(dcg_binary())
+            .env_clear()
+            .env("HOME", &home_dir)
+            .env("XDG_CONFIG_HOME", &xdg_config_dir)
+            .env("DCG_CONFIG", &cfg_path)
+            .current_dir(temp.path())
+            .arg("config")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run dcg config");
+
+        assert!(output.status.success(), "dcg config should succeed");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Verbose: true"),
+            "expected config from DCG_CONFIG to take effect\nstdout:\n{stdout}"
+        );
+        assert!(
+            stdout.contains("DCG_CONFIG:"),
+            "expected config sources to mention DCG_CONFIG\nstdout:\n{stdout}"
+        );
+    }
+
+    #[test]
+    fn doctor_reports_missing_dcg_config_override() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let home_dir = temp.path().join("home");
+        let xdg_config_dir = temp.path().join("xdg_config");
+        std::fs::create_dir_all(&home_dir).expect("HOME dir");
+        std::fs::create_dir_all(&xdg_config_dir).expect("XDG_CONFIG_HOME dir");
+
+        let missing = temp.path().join("missing_config.toml");
+
+        let output = Command::new(dcg_binary())
+            .env_clear()
+            .env("HOME", &home_dir)
+            .env("XDG_CONFIG_HOME", &xdg_config_dir)
+            .env("DCG_CONFIG", &missing)
+            .current_dir(temp.path())
+            .arg("doctor")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run dcg doctor");
+
+        assert!(output.status.success(), "dcg doctor should run");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            combined.contains("DCG_CONFIG points to a missing file"),
+            "expected doctor to surface missing DCG_CONFIG\noutput:\n{combined}"
+        );
+    }
 }
 
 // ============================================================================
@@ -520,6 +596,27 @@ mod hook_mode_tests {
             "expected no stdout for allow\ncommand: {}\nstdout:\n{}\nstderr:\n{}",
             result.command,
             stdout,
+            result.stderr_str()
+        );
+    }
+
+    #[test]
+    fn hook_mode_missing_dcg_config_fails_open() {
+        // If the user sets DCG_CONFIG incorrectly, hook mode must not break
+        // workflows (fail-open). It should behave as if no config was loaded.
+        let missing = std::ffi::OsStr::new("/tmp/dcg_config_missing_should_not_exist");
+        let result = run_dcg_hook_with_env("git status", &[("DCG_CONFIG", missing)]);
+
+        assert!(
+            result.output.status.success(),
+            "hook mode should exit successfully\nstdout:\n{}\nstderr:\n{}",
+            result.stdout_str(),
+            result.stderr_str()
+        );
+        assert!(
+            result.stdout_str().trim().is_empty(),
+            "expected allow (no stdout) even with missing DCG_CONFIG\nstdout:\n{}\nstderr:\n{}",
+            result.stdout_str(),
             result.stderr_str()
         );
     }

@@ -23,6 +23,17 @@ const CONFIG_FILE_NAME: &str = "config.toml";
 /// Project-level config file name.
 const PROJECT_CONFIG_NAME: &str = ".dcg.toml";
 
+/// Env var for selecting an explicit config file path.
+///
+/// This is intentionally separate from per-setting env overrides (packs, verbose,
+/// heredoc settings, etc.). It changes *which file* is loaded as a config layer.
+pub(crate) const ENV_CONFIG_PATH: &str = "DCG_CONFIG";
+
+/// Maximum parent directories to traverse when searching for a repo root.
+///
+/// This bounds filesystem work in deeply nested directories.
+pub(crate) const REPO_ROOT_SEARCH_MAX_HOPS: usize = 50;
+
 /// Main configuration structure.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -108,6 +119,62 @@ struct LogEventFilterLayer {
     deny: Option<bool>,
     warn: Option<bool>,
     allow: Option<bool>,
+}
+
+fn expand_tilde_path(value: &str) -> (PathBuf, bool) {
+    if value == "~" {
+        if let Some(home) = dirs::home_dir() {
+            return (home, true);
+        }
+        return (PathBuf::from(value), false);
+    }
+
+    let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    else {
+        return (PathBuf::from(value), false);
+    };
+    let Some(home) = dirs::home_dir() else {
+        return (PathBuf::from(value), false);
+    };
+    (home.join(rest), true)
+}
+
+/// Resolve a config path value, expanding `~` and resolving relative paths.
+///
+/// Returns None when the value is empty/whitespace.
+pub(crate) fn resolve_config_path_value(value: &str, cwd: Option<&Path>) -> Option<PathBuf> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let had_tilde_prefix = trimmed.starts_with('~');
+    let (mut path, _tilde_expanded) = expand_tilde_path(trimmed);
+    if !had_tilde_prefix && path.is_relative() {
+        if let Some(cwd) = cwd {
+            path = cwd.join(path);
+        }
+    }
+    Some(path)
+}
+
+/// Find the git repo root by searching for a `.git` directory upwards from `start_dir`.
+///
+/// This search is bounded by `max_hops` to avoid unbounded filesystem traversal in
+/// very deep directory trees.
+pub(crate) fn find_repo_root(start_dir: &Path, max_hops: usize) -> Option<PathBuf> {
+    let mut current = start_dir.to_path_buf();
+    for _ in 0..=max_hops {
+        if current.join(".git").exists() {
+            return Some(current);
+        }
+        if !current.pop() {
+            break;
+        }
+    }
+    None
 }
 
 /// Heredoc and inline-script scanning configuration.
@@ -1038,14 +1105,22 @@ impl Config {
     /// Load configuration from all sources, merging them in priority order.
     ///
     /// Priority (highest to lowest):
-    /// 1. Environment variables
-    /// 2. Project config (.dcg.toml)
-    /// 3. User config (~/.config/dcg/config.toml)
-    /// 4. System config (/etc/dcg/config.toml)
-    /// 5. Compiled defaults
+    /// 1. Environment variables (settings overrides)
+    /// 2. Explicit config file (`DCG_CONFIG=/path/to/config.toml`)
+    /// 3. Project config (`.dcg.toml` in repo root)
+    /// 4. User config (`~/.config/dcg/config.toml`)
+    /// 5. System config (`/etc/dcg/config.toml`)
+    /// 6. Compiled defaults
     #[must_use]
     pub fn load() -> Self {
         let mut config = Self::default();
+        let cwd = env::current_dir().ok();
+
+        // Optional explicit config path override (highest-priority file config).
+        let explicit_layer = env::var(ENV_CONFIG_PATH)
+            .ok()
+            .and_then(|value| resolve_config_path_value(&value, cwd.as_deref()))
+            .and_then(|path| Self::load_layer_from_file(&path));
 
         // Load system config (lowest priority of file configs)
         if let Some(system_config) = Self::load_system_config_layer() {
@@ -1053,13 +1128,24 @@ impl Config {
         }
 
         // Load user config
-        if let Some(user_config) = Self::load_user_config_layer() {
-            config.merge_layer(user_config);
+        //
+        // If an explicit config file is present and valid, we treat it as the
+        // user-level config and skip loading the default user config path to
+        // reduce layering confusion.
+        if explicit_layer.is_none() {
+            if let Some(user_config) = Self::load_user_config_layer() {
+                config.merge_layer(user_config);
+            }
         }
 
         // Load project config (if in a git repo)
-        if let Some(project_config) = Self::load_project_config_layer() {
+        if let Some(project_config) = Self::load_project_config_layer_from(cwd.as_deref()) {
             config.merge_layer(project_config);
+        }
+
+        // Apply explicit config last among file configs (if present and valid).
+        if let Some(explicit_layer) = explicit_layer {
+            config.merge_layer(explicit_layer);
         }
 
         // Apply environment variable overrides (highest priority)
@@ -1098,32 +1184,15 @@ impl Config {
         Self::load_layer_from_file(&path)
     }
 
-    /// Load project-level configuration.
-    fn load_project_config_layer() -> Option<ConfigLayer> {
-        // Try to find .dcg.toml in current dir or parent dirs
-        let mut current = env::current_dir().ok()?;
-
-        loop {
-            let config_path = current.join(PROJECT_CONFIG_NAME);
-            if config_path.exists() {
-                return Self::load_layer_from_file(&config_path);
-            }
-
-            // Also check for .git directory to find repo root
-            let git_dir = current.join(".git");
-            if git_dir.exists() {
-                // We're at the repo root, check for config here
-                let config_path = current.join(PROJECT_CONFIG_NAME);
-                return Self::load_layer_from_file(&config_path);
-            }
-
-            // Move to parent directory
-            if !current.pop() {
-                break;
-            }
+    /// Load project-level configuration (`.dcg.toml` in repo root).
+    fn load_project_config_layer_from(start_dir: Option<&Path>) -> Option<ConfigLayer> {
+        let start_dir = start_dir?;
+        let repo_root = find_repo_root(start_dir, REPO_ROOT_SEARCH_MAX_HOPS)?;
+        let config_path = repo_root.join(PROJECT_CONFIG_NAME);
+        if !config_path.exists() {
+            return None;
         }
-
-        None
+        Self::load_layer_from_file(&config_path)
     }
 
     /// Merge another config layer into this one (other takes priority when set).
@@ -1933,6 +2002,30 @@ allow = false
         config.heredoc.languages = Some(vec!["definitely_not_a_language".to_string()]);
         let settings = config.heredoc_settings();
         assert!(settings.allowed_languages.is_none());
+    }
+
+    #[test]
+    fn test_find_repo_root_finds_git_within_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(repo_root.join(".git")).expect("create .git");
+        let deep = repo_root.join("a/b/c");
+        std::fs::create_dir_all(&deep).expect("create deep dir");
+
+        let found = find_repo_root(&deep, 10).expect("repo root found");
+        assert_eq!(found, repo_root);
+    }
+
+    #[test]
+    fn test_find_repo_root_respects_hop_limit() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let repo_root = temp.path().join("repo");
+        std::fs::create_dir_all(repo_root.join(".git")).expect("create .git");
+        let deep = repo_root.join("a/b/c");
+        std::fs::create_dir_all(&deep).expect("create deep dir");
+
+        // With a hop limit of 1, we shouldn't reach the repo root from a/b/c.
+        assert!(find_repo_root(&deep, 1).is_none());
     }
 
     // ========================================================================
