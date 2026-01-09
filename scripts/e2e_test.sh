@@ -1141,18 +1141,147 @@ conditions = { CI = "true" }' \
 # SUMMARY
 #
 
+SUITE_END_TIME=$(get_timestamp_ms)
+SUITE_DURATION_MS=$((SUITE_END_TIME - SUITE_START_TIME))
+
+# Calculate timing statistics
+calculate_timing_stats() {
+    local min_ms=999999999
+    local max_ms=0
+    local total_ms=0
+    local count=${#TEST_TIMES[@]}
+
+    for t in "${TEST_TIMES[@]}"; do
+        total_ms=$((total_ms + t))
+        if [[ $t -lt $min_ms ]]; then
+            min_ms=$t
+        fi
+        if [[ $t -gt $max_ms ]]; then
+            max_ms=$t
+        fi
+    done
+
+    if [[ $count -gt 0 ]]; then
+        local avg_ms=$((total_ms / count))
+        echo "$min_ms $max_ms $avg_ms $total_ms"
+    else
+        echo "0 0 0 0"
+    fi
+}
+
+# Format milliseconds as human-readable
+format_duration() {
+    local ms=$1
+    if [[ $ms -lt 1000 ]]; then
+        echo "${ms}ms"
+    elif [[ $ms -lt 60000 ]]; then
+        local secs=$((ms / 1000))
+        local remainder=$((ms % 1000))
+        echo "${secs}.${remainder}s"
+    else
+        local mins=$((ms / 60000))
+        local secs=$(((ms % 60000) / 1000))
+        echo "${mins}m${secs}s"
+    fi
+}
+
+# Output JSON results
+output_json() {
+    local stats
+    stats=$(calculate_timing_stats)
+    read -r min_ms max_ms avg_ms total_ms <<< "$stats"
+
+    echo "{"
+    echo "  \"summary\": {"
+    echo "    \"total\": $TESTS_TOTAL,"
+    echo "    \"passed\": $TESTS_PASSED,"
+    echo "    \"failed\": $TESTS_FAILED,"
+    echo "    \"success\": $( [[ $TESTS_FAILED -eq 0 ]] && echo "true" || echo "false" )"
+    echo "  },"
+    echo "  \"timing\": {"
+    echo "    \"suite_duration_ms\": $SUITE_DURATION_MS,"
+    echo "    \"test_total_ms\": $total_ms,"
+    echo "    \"test_min_ms\": $min_ms,"
+    echo "    \"test_max_ms\": $max_ms,"
+    echo "    \"test_avg_ms\": $avg_ms"
+    echo "  },"
+    echo "  \"binary\": \"$(json_escape "$BINARY")\","
+    if [[ -n "$ARTIFACTS_DIR" ]]; then
+        echo "  \"artifacts_dir\": \"$(json_escape "$ARTIFACTS_DIR")\","
+    fi
+    echo "  \"tests\": ["
+
+    local first=true
+    for i in "${!TEST_NAMES[@]}"; do
+        if $first; then
+            first=false
+        else
+            echo ","
+        fi
+        local result="${TEST_RESULTS[$i]}"
+        local name="${TEST_NAMES[$i]}"
+        local time="${TEST_TIMES[$i]}"
+        local output="${TEST_OUTPUTS[$i]}"
+        echo -n "    {"
+        echo -n "\"id\": \"T$((i + 1))\", "
+        echo -n "\"name\": \"$(json_escape "$name")\", "
+        echo -n "\"result\": \"$result\", "
+        echo -n "\"duration_ms\": $time"
+        if [[ -n "$output" ]]; then
+            echo -n ", \"output\": \"$(json_escape "$output")\""
+        fi
+        echo -n "}"
+    done
+    echo ""
+    echo "  ]"
+    echo "}"
+}
+
+if $JSON_OUTPUT; then
+    output_json
+    if [[ $TESTS_FAILED -gt 0 ]]; then
+        exit 1
+    else
+        exit 0
+    fi
+fi
+
+# Human-readable summary
 echo ""
 echo -e "${BOLD}${BLUE}=== Test Summary ===${NC}"
 echo -e "Total:  ${TESTS_TOTAL}"
 echo -e "${GREEN}Passed: ${TESTS_PASSED}${NC}"
 if [[ $TESTS_FAILED -gt 0 ]]; then
     echo -e "${RED}Failed: ${TESTS_FAILED}${NC}"
+else
+    echo -e "Failed: 0"
+fi
+
+# Timing summary
+stats=$(calculate_timing_stats)
+read -r min_ms max_ms avg_ms total_ms <<< "$stats"
+echo ""
+echo -e "${BOLD}${BLUE}=== Timing Summary ===${NC}"
+echo -e "Suite duration: $(format_duration $SUITE_DURATION_MS)"
+echo -e "Test time:      $(format_duration $total_ms)"
+echo -e "Min/Avg/Max:    $(format_duration $min_ms) / $(format_duration $avg_ms) / $(format_duration $max_ms)"
+
+# List artifacts if any were created
+if [[ -n "$ARTIFACTS_DIR" && $TESTS_FAILED -gt 0 ]]; then
     echo ""
+    echo -e "${BOLD}${YELLOW}=== Failure Artifacts ===${NC}"
+    for f in "$ARTIFACTS_DIR"/*_failure.txt; do
+        if [[ -f "$f" ]]; then
+            echo -e "  ${CYAN}$(basename "$f")${NC}"
+        fi
+    done
+fi
+
+echo ""
+if [[ $TESTS_FAILED -gt 0 ]]; then
     echo -e "${RED}Some tests failed!${NC}"
     exit 1
 else
-    echo -e "Failed: 0"
-    echo ""
     echo -e "${GREEN}${BOLD}All tests passed!${NC}"
     exit 0
 fi
