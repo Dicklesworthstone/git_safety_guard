@@ -172,37 +172,82 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
             }
         }
 
-        // Check for option
-        if bytes[idx] == b'-' {
-            idx += 1;
-            if idx >= bytes.len() {
+        if bytes[idx] != b'-' {
+            break;
+        }
+
+        // Parse one option token (e.g., -E, -EH, -uuser)
+        let token_start = idx;
+        let mut token_end = idx + 1;
+        while token_end < bytes.len() && !bytes[token_end].is_ascii_whitespace() {
+            token_end += 1;
+        }
+
+        if token_end <= token_start + 1 {
+            break;
+        }
+
+        let token = &rest[token_start..token_end];
+        if token == "--" {
+            idx = token_end;
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            break;
+        }
+
+        if token.starts_with("--") {
+            // Unknown long option - stop parsing sudo options
+            break;
+        }
+
+        let mut needs_arg = false;
+        let mut unknown_flag = false;
+        let mut saw_arg_inline = false;
+        let mut chars = token[1..].chars().peekable();
+
+        while let Some(flag) = chars.next() {
+            if SIMPLE_FLAGS.contains(&flag) {
+                continue;
+            }
+            if ARG_FLAGS.contains(&flag) {
+                if chars.peek().is_some() {
+                    // Inline argument (e.g., -uroot)
+                    saw_arg_inline = true;
+                } else {
+                    needs_arg = true;
+                }
+                // Arg flags consume the rest of the token (if any)
                 break;
             }
-
-            let flag = bytes[idx] as char;
-
-            if SIMPLE_FLAGS.contains(&flag) {
-                idx += 1;
-                continue;
-            }
-
-            if ARG_FLAGS.contains(&flag) {
-                idx += 1;
-                // Skip whitespace before argument
-                while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-                    idx += 1;
-                }
-                // Skip the argument (until whitespace)
-                while idx < bytes.len() && !bytes[idx].is_ascii_whitespace() {
-                    idx += 1;
-                }
-                continue;
-            }
-
-            // Unknown flag - stop parsing sudo options
+            unknown_flag = true;
+            break;
         }
-        // Not an option or unknown flag - this is the command
-        break;
+
+        if unknown_flag {
+            break;
+        }
+
+        idx = token_end;
+
+        if saw_arg_inline {
+            continue;
+        }
+
+        if needs_arg {
+            // Skip whitespace before argument
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            if idx >= bytes.len() {
+                // Missing argument - don't strip
+                return None;
+            }
+            // Skip argument token
+            while idx < bytes.len() && !bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+        }
     }
 
     // Skip any remaining whitespace
@@ -382,39 +427,53 @@ fn strip_command_wrapper(command: &str) -> Option<(String, StrippedWrapper)> {
             break;
         }
 
-        if bytes[idx] == b'-' {
-            idx += 1;
-            if idx >= bytes.len() {
-                break;
-            }
-
-            let flag = bytes[idx] as char;
-            match flag {
-                'v' | 'V' => {
-                    // Query mode - NOT a wrapper, don't strip
-                    return None;
-                }
-                'p' => {
-                    // -p uses default PATH - still a wrapper
-                    idx += 1;
-                }
-                '-' => {
-                    // -- terminates options
-                    idx += 1;
-                    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-                        idx += 1;
-                    }
-                    break;
-                }
-                _ => {
-                    // Unknown option - stop
-                    break;
-                }
-            }
-        } else {
-            // Not an option - this is the command
+        if bytes[idx] != b'-' {
             break;
         }
+
+        // Parse one option token (e.g., -p, -pv, --)
+        let token_start = idx;
+        let mut token_end = idx + 1;
+        while token_end < bytes.len() && !bytes[token_end].is_ascii_whitespace() {
+            token_end += 1;
+        }
+
+        if token_end <= token_start + 1 {
+            break;
+        }
+
+        let token = &rest[token_start..token_end];
+        if token == "--" {
+            idx = token_end;
+            while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                idx += 1;
+            }
+            break;
+        }
+        if token.starts_with("--") {
+            // Unknown long option - stop
+            break;
+        }
+
+        let mut unknown = false;
+        for flag in token[1..].chars() {
+            match flag {
+                'v' | 'V' => {
+                    // Query mode - NOT a wrapper
+                    return None;
+                }
+                'p' => {}
+                _ => {
+                    unknown = true;
+                    break;
+                }
+            }
+        }
+        if unknown {
+            break;
+        }
+
+        idx = token_end;
     }
 
     // Skip any remaining whitespace
@@ -497,6 +556,12 @@ mod tests {
     }
 
     #[test]
+    fn test_sudo_with_combined_options() {
+        let result = strip_wrapper_prefixes("sudo -EH git reset --hard");
+        assert_eq!(result.normalized, "git reset --hard");
+    }
+
+    #[test]
     fn test_sudo_with_user() {
         let result = strip_wrapper_prefixes("sudo -u root git reset --hard");
         assert_eq!(result.normalized, "git reset --hard");
@@ -536,6 +601,18 @@ mod tests {
     fn test_command_v_not_wrapper() {
         let result = strip_wrapper_prefixes("command -v git");
         assert!(!result.was_normalized());
+    }
+
+    #[test]
+    fn test_command_pv_not_wrapper() {
+        let result = strip_wrapper_prefixes("command -pv git");
+        assert!(!result.was_normalized());
+    }
+
+    #[test]
+    fn test_command_p_wrapper() {
+        let result = strip_wrapper_prefixes("command -p git reset --hard");
+        assert_eq!(result.normalized, "git reset --hard");
     }
 
     #[test]
