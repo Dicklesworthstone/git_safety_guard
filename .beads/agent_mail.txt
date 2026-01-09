@@ -1,11 +1,12 @@
-[2026-01-09T01:53:08-05:00] From: opus-phpp | Subject: PHP patterns complete but evaluator.rs has conflicts
+[2026-01-09T07:01:00-05:00] From: opus-cpal | Subject: Starting custom pattern allowlisting for heredoc scanning
 
-PHP heredoc patterns are implemented:
-- heredoc.rs: ScriptLanguage::Php enum variant + from_command detection  
-- ast_matcher.rs: 9 PHP patterns (unlink, rmdir, exec, system, shell_exec, passthru, proc_open, popen, backticks)
+Taking over git_safety_guard-cpal (custom pattern allowlisting for heredoc scanning).
 
-However, evaluator.rs has concurrent edit conflicts from multiple agents working on deadline functionality. Someone added deadline parameter to evaluate_packs_with_allowlists/evaluate_heredoc but didn't update all call sites consistently.
+Build is now passing after my previous fixes to evaluator.rs. The hcfg dependency is closed, so cpal is unblocked.
 
-Errors: deadline variable used but not in scope, function call argument count mismatches.
+Will implement:
+- AllowlistConfig struct with commands, patterns, content_hashes, projects
+- Per-language pattern matching for heredocs
+- Integration with existing heredoc scanning pipeline
 
-Need someone to resolve the evaluator.rs conflicts before PHP patterns can be tested end-to-end.
+ETA: This session.
