@@ -155,6 +155,8 @@ create_fixture_repo() {
 # Cleanup helper (safely removes temp directories only)
 cleanup_repo() {
     local repo_dir="$1"
+    # Return to original directory first (we may be inside the temp dir)
+    cd "$ORIGINAL_DIR"
     # Safety check: only remove directories under /tmp
     if [[ -n "$repo_dir" ]] && [[ "$repo_dir" == /tmp/* ]] && [[ -d "$repo_dir" ]]; then
         rm -rf "$repo_dir"

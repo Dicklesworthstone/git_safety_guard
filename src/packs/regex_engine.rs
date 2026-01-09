@@ -96,11 +96,7 @@ impl CompiledRegex {
     pub fn find(&self, text: &str) -> Option<(usize, usize)> {
         match self {
             Self::Linear(re) => re.find(text).map(|m| (m.start(), m.end())),
-            Self::Backtracking(re) => re
-                .find(text)
-                .ok()
-                .flatten()
-                .map(|m| (m.start(), m.end())),
+            Self::Backtracking(re) => re.find(text).ok().flatten().map(|m| (m.start(), m.end())),
         }
     }
 
