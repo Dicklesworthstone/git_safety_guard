@@ -2996,10 +2996,7 @@ allow = false
             crate::heredoc::ScriptLanguage::Bash,
             None,
         );
-        assert!(
-            hit.is_some(),
-            "Empty language filter should match Bash"
-        );
+        assert!(hit.is_some(), "Empty language filter should match Bash");
 
         // Empty language filter should match Python
         let hit = allowlist.is_content_allowlisted(
@@ -3007,10 +3004,7 @@ allow = false
             crate::heredoc::ScriptLanguage::Python,
             None,
         );
-        assert!(
-            hit.is_some(),
-            "Empty language filter should match Python"
-        );
+        assert!(hit.is_some(), "Empty language filter should match Python");
 
         // Empty language filter should match JavaScript
         let hit = allowlist.is_content_allowlisted(

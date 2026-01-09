@@ -126,9 +126,8 @@ fn create_safe_patterns() -> Vec<SafePattern> {
     // - optional subpaths (no shell separators)
     let safe_path_prefix = r"(?![^\s]*\.\.)(?:\./)?(?:";
     let safe_path_suffix = r")(?:/[^\s;&|]+)*/?";
-    let mut safe_path_pattern = String::with_capacity(
-        safe_path_prefix.len() + dir_group.len() + safe_path_suffix.len(),
-    );
+    let mut safe_path_pattern =
+        String::with_capacity(safe_path_prefix.len() + dir_group.len() + safe_path_suffix.len());
     safe_path_pattern.push_str(safe_path_prefix);
     safe_path_pattern.push_str(&dir_group);
     safe_path_pattern.push_str(safe_path_suffix);

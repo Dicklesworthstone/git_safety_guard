@@ -2364,6 +2364,7 @@ mod tests {
     fn evaluator_safe_cleanup_overrides_core_filesystem() {
         let compiled_overrides = default_compiled_overrides();
         let allowlists = default_allowlists();
+        let heredoc_settings = test_heredoc_settings();
         let enabled_keywords: Vec<&str> = vec!["rm"];
 
         // Test with both packs enabled - safe.cleanup should allow
@@ -2378,6 +2379,7 @@ mod tests {
             &packs_with_cleanup,
             &compiled_overrides,
             &allowlists,
+            &heredoc_settings,
         );
 
         assert!(
@@ -2394,6 +2396,7 @@ mod tests {
             &packs_without_cleanup,
             &compiled_overrides,
             &allowlists,
+            &heredoc_settings,
         );
 
         assert!(
@@ -2407,6 +2410,7 @@ mod tests {
     fn evaluator_safe_cleanup_blocks_path_traversal() {
         let compiled_overrides = default_compiled_overrides();
         let allowlists = default_allowlists();
+        let heredoc_settings = test_heredoc_settings();
         let enabled_keywords: Vec<&str> = vec!["rm"];
         let packs: Vec<String> = vec![
             "core.filesystem".to_string(),
@@ -2420,6 +2424,7 @@ mod tests {
             &packs,
             &compiled_overrides,
             &allowlists,
+            &heredoc_settings,
         );
 
         assert!(
@@ -2433,6 +2438,7 @@ mod tests {
     fn evaluator_safe_cleanup_blocks_non_allowlisted() {
         let compiled_overrides = default_compiled_overrides();
         let allowlists = default_allowlists();
+        let heredoc_settings = test_heredoc_settings();
         let enabled_keywords: Vec<&str> = vec!["rm"];
         let packs: Vec<String> = vec![
             "core.filesystem".to_string(),
@@ -2446,6 +2452,7 @@ mod tests {
             &packs,
             &compiled_overrides,
             &allowlists,
+            &heredoc_settings,
         );
 
         assert!(
