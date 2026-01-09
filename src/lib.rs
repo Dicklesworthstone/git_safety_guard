@@ -66,6 +66,7 @@ pub mod context;
 pub mod evaluator;
 pub mod heredoc;
 pub mod hook;
+pub mod logging;
 pub mod normalize;
 pub mod packs;
 pub mod perf;

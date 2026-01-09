@@ -2065,6 +2065,159 @@ mod tests {
             "Match text preview should be deterministic"
         );
     }
+
+    // =========================================================================
+    // Deadline / Fail-Open Tests (git_safety_guard-99e.14)
+    // =========================================================================
+
+    mod deadline_tests {
+        use super::*;
+        use crate::perf::Deadline;
+        use std::time::Duration;
+
+        fn test_heredoc_settings() -> crate::config::HeredocSettings {
+            crate::config::Config::default().heredoc_settings()
+        }
+
+        /// When deadline is already exceeded (zero duration), evaluation should fail-open immediately.
+        #[test]
+        fn exceeded_deadline_fails_open() {
+            let compiled_overrides = default_compiled_overrides();
+            let allowlists = default_allowlists();
+            let heredoc_settings = test_heredoc_settings();
+            let enabled_keywords: Vec<&str> = vec!["git", "rm"];
+            let ordered_packs: Vec<String> = vec!["core.git".to_string()];
+
+            // Create a deadline with zero duration - should be immediately exceeded
+            let deadline = Deadline::new(Duration::ZERO);
+
+            let result = evaluate_command_with_pack_order_deadline(
+                "git reset --hard",
+                &enabled_keywords,
+                &ordered_packs,
+                &compiled_overrides,
+                &allowlists,
+                &heredoc_settings,
+                Some(&deadline),
+            );
+
+            // Should allow due to budget exhaustion, not deny
+            assert!(
+                result.is_allowed(),
+                "Zero-duration deadline should fail open and allow command"
+            );
+            assert!(
+                result.skipped_due_to_budget,
+                "Result should indicate it was skipped due to budget"
+            );
+        }
+
+        /// Normal deadline should allow evaluation to proceed.
+        #[test]
+        fn normal_deadline_allows_evaluation() {
+            let compiled_overrides = default_compiled_overrides();
+            let allowlists = default_allowlists();
+            let heredoc_settings = test_heredoc_settings();
+            let enabled_keywords: Vec<&str> = vec!["git", "rm"];
+            let ordered_packs: Vec<String> = vec!["core.git".to_string()];
+
+            // Create a generous deadline
+            let deadline = Deadline::new(Duration::from_secs(10));
+
+            let result = evaluate_command_with_pack_order_deadline(
+                "git reset --hard",
+                &enabled_keywords,
+                &ordered_packs,
+                &compiled_overrides,
+                &allowlists,
+                &heredoc_settings,
+                Some(&deadline),
+            );
+
+            // Should deny the destructive command normally
+            assert!(
+                result.is_denied(),
+                "Normal deadline should allow evaluation to proceed and deny destructive command"
+            );
+            assert!(
+                !result.skipped_due_to_budget,
+                "Result should not indicate budget skip"
+            );
+        }
+
+        /// No deadline (None) should allow evaluation to proceed.
+        #[test]
+        fn no_deadline_allows_evaluation() {
+            let compiled_overrides = default_compiled_overrides();
+            let allowlists = default_allowlists();
+            let heredoc_settings = test_heredoc_settings();
+            let enabled_keywords: Vec<&str> = vec!["git", "rm"];
+            let ordered_packs: Vec<String> = vec!["core.git".to_string()];
+
+            let result = evaluate_command_with_pack_order_deadline(
+                "git reset --hard",
+                &enabled_keywords,
+                &ordered_packs,
+                &compiled_overrides,
+                &allowlists,
+                &heredoc_settings,
+                None, // No deadline
+            );
+
+            // Should deny the destructive command normally
+            assert!(
+                result.is_denied(),
+                "No deadline should allow evaluation to proceed and deny destructive command"
+            );
+            assert!(
+                !result.skipped_due_to_budget,
+                "Result should not indicate budget skip"
+            );
+        }
+
+        /// Safe commands should be allowed even with tight deadline.
+        #[test]
+        fn safe_command_with_deadline() {
+            let compiled_overrides = default_compiled_overrides();
+            let allowlists = default_allowlists();
+            let heredoc_settings = test_heredoc_settings();
+            let enabled_keywords: Vec<&str> = vec!["git", "rm"];
+            let ordered_packs: Vec<String> = vec!["core.git".to_string()];
+
+            // Generous deadline for safe command
+            let deadline = Deadline::new(Duration::from_secs(10));
+
+            let result = evaluate_command_with_pack_order_deadline(
+                "git status",
+                &enabled_keywords,
+                &ordered_packs,
+                &compiled_overrides,
+                &allowlists,
+                &heredoc_settings,
+                Some(&deadline),
+            );
+
+            // Should allow safe command
+            assert!(result.is_allowed(), "Safe command should be allowed");
+            assert!(
+                !result.skipped_due_to_budget,
+                "Safe command should not trigger budget skip"
+            );
+        }
+
+        /// Test the allowed_due_to_budget() result structure.
+        #[test]
+        fn allowed_due_to_budget_structure() {
+            let result = EvaluationResult::allowed_due_to_budget();
+
+            assert!(result.is_allowed());
+            assert!(!result.is_denied());
+            assert!(result.skipped_due_to_budget);
+            assert!(result.pattern_info.is_none());
+            assert!(result.allowlist_override.is_none());
+            assert!(result.effective_mode.is_none());
+        }
+    }
 }
 
 // =============================================================================

@@ -42,6 +42,9 @@ pub struct Config {
     /// Heredoc/inline-script scanning configuration.
     pub heredoc: HeredocConfig,
 
+    /// Structured logging configuration.
+    pub logging: crate::logging::LoggingConfig,
+
     /// Project-specific configurations (keyed by absolute path).
     #[serde(default)]
     pub projects: std::collections::HashMap<String, ProjectConfig>,
@@ -98,6 +101,19 @@ pub struct HeredocSettings {
     pub fallback_on_timeout: bool,
     /// Content-based allowlist for heredocs (patterns, hashes, commands).
     pub content_allowlist: Option<HeredocAllowlistConfig>,
+}
+
+impl Default for HeredocSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            limits: crate::heredoc::ExtractionLimits::default(),
+            allowed_languages: None,
+            fallback_on_parse_error: true,
+            fallback_on_timeout: true,
+            content_allowlist: None,
+        }
+    }
 }
 
 /// Heredoc content allowlist for known-safe patterns and content hashes.
@@ -1267,6 +1283,7 @@ impl Config {
             policy: PolicyConfig::default(),
             overrides: OverridesConfig::default(),
             heredoc: HeredocConfig::default(),
+            logging: crate::logging::LoggingConfig::default(),
             projects: std::collections::HashMap::new(),
         }
     }
