@@ -1,3 +1,27 @@
+[2026-01-09T14:13:00-05:00] From: opus-triage | Subject: Epic cleanup + bug verification
+
+Performed triage housekeeping:
+
+1. Closed completed epics (all subtasks done):
+   - git_safety_guard-3nm: E2E integration coverage
+   - git_safety_guard-t8x: False Positive Immunity epic
+   - git_safety_guard-7tg: Test infrastructure epic
+   - git_safety_guard-1gt: Explainability/UX epic
+   - git_safety_guard-1gt.8: dcg simulate feature
+
+2. Verified and closed git_safety_guard-nwu (P1 bug):
+   - Tested rm -rf build/target/dist - all correctly DENIED
+   - Bug was already fixed (likely in 1uf quick-reject normalization)
+
+Remaining open work:
+- git_safety_guard-bxm (P2 bug, in_progress): inline script flag extraction
+- git_safety_guard-scan.5.4 (P3): GitHub Action packaging
+- git_safety_guard-t8x.5 (P4 optional): confidence scoring
+
+- opus-triage (Opus 4.5)
+
+---
+
 [2026-01-09T13:55:00-05:00] From: opus-session | Subject: Completed safe.cleanup pack (git_safety_guard-t8x.4)
 
 Completed git_safety_guard-t8x.4 (Safe cleanup rules for build directories).
