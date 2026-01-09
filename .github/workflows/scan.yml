@@ -1,0 +1,147 @@
+# Destructive Command Guard - PR Diff Scanning
+#
+# This workflow scans PR changes for destructive commands in executable contexts
+# (shell scripts, Dockerfiles, GitHub Actions workflows, etc.)
+#
+# USAGE:
+#   1. Copy this file to .github/workflows/scan.yml in your repository
+#   2. Ensure dcg is built or available (this workflow builds from source)
+#   3. Customize the fail-on policy if needed (default: error-only)
+#
+# OPTIONS:
+#   - fail-on: error (default), warning, or none
+#   - redact: none, quoted, or aggressive (for sensitive commands)
+#
+# For more information: https://github.com/Dicklesworthstone/destructive_command_guard
+
+name: scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scan-pr:
+    name: Scan PR for destructive commands
+    runs-on: ubuntu-latest
+
+    # Allow the job to add PR comments and annotations
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch enough history for git diff comparison
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-scan-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-scan-
+
+      - name: Build dcg
+        run: cargo build --release
+
+      - name: Determine base ref
+        id: base
+        run: |
+          # Use PR base or fall back to default branch
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_REF="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_REF="origin/${{ github.event.repository.default_branch }}"
+          fi
+          echo "ref=${BASE_REF}" >> $GITHUB_OUTPUT
+          echo "Base ref: ${BASE_REF}"
+
+      - name: Run dcg scan on PR diff
+        id: scan
+        run: |
+          set +e  # Don't exit on non-zero
+
+          # Run scan and capture output
+          ./target/release/dcg scan \
+            --git-diff "${{ steps.base.outputs.ref }}...HEAD" \
+            --format json \
+            --fail-on error \
+            --max-findings 50 \
+            --truncate 200 \
+            > scan-results.json 2>&1
+
+          EXIT_CODE=$?
+          echo "exit_code=${EXIT_CODE}" >> $GITHUB_OUTPUT
+
+          # Generate summary for GitHub Actions
+          echo "## Destructive Command Scan Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          if [ -f scan-results.json ]; then
+            # Extract summary stats
+            FILES_SCANNED=$(jq -r '.summary.files_scanned // 0' scan-results.json)
+            FINDINGS_TOTAL=$(jq -r '.summary.findings_total // 0' scan-results.json)
+            ERRORS=$(jq -r '.summary.severities.error // 0' scan-results.json)
+            WARNINGS=$(jq -r '.summary.severities.warning // 0' scan-results.json)
+
+            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Files scanned | ${FILES_SCANNED} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Total findings | ${FINDINGS_TOTAL} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Errors | ${ERRORS} |" >> $GITHUB_STEP_SUMMARY
+            echo "| Warnings | ${WARNINGS} |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Show findings if any exist
+            if [ "${FINDINGS_TOTAL}" -gt 0 ]; then
+              echo "### Findings" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              jq -r '.findings[] | "\(.file):\(.line) [\(.severity)] \(.rule_id // .extractor_id): \(.reason // "no reason")"' scan-results.json | head -20 >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+
+              if [ "${FINDINGS_TOTAL}" -gt 20 ]; then
+                echo "" >> $GITHUB_STEP_SUMMARY
+                echo "_... and $((FINDINGS_TOTAL - 20)) more findings (see artifact for full report)_" >> $GITHUB_STEP_SUMMARY
+              fi
+            else
+              echo "No destructive commands found in changed files." >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "Scan output not available" >> $GITHUB_STEP_SUMMARY
+          fi
+
+          # Exit with original code
+          exit ${EXIT_CODE}
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-results
+          path: scan-results.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+      - name: Check scan result
+        if: steps.scan.outputs.exit_code != '0'
+        run: |
+          echo "::error::Destructive commands detected in PR diff. Review the scan results above."
+          # Show findings in annotations
+          if [ -f scan-results.json ]; then
+            jq -r '.findings[] | select(.severity == "error") | "::error file=\(.file),line=\(.line)::\(.rule_id // .extractor_id): \(.reason // "destructive command detected")"' scan-results.json
+          fi
+          exit 1

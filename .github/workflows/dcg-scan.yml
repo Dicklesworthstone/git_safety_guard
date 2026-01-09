@@ -1,0 +1,159 @@
+# dcg-scan.yml — Scan PR diffs for destructive commands
+#
+# This workflow runs `dcg scan --git-diff` on pull requests to detect
+# dangerous patterns in changed files before they're merged.
+#
+# USAGE: Copy this file to your project's .github/workflows/ directory.
+#
+# CONFIGURATION:
+#   - Set DCG_FAIL_ON to control exit behavior:
+#     - "error" (default): Fail only on error-severity findings
+#     - "warning": Fail on warnings and errors
+#     - "none": Never fail (informational only)
+#
+#   - Set DCG_VERSION to pin a specific version:
+#     - "latest" (default): Use latest release
+#     - "v0.2.0": Use specific version tag
+
+name: dcg-scan
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+env:
+  CARGO_TERM_COLOR: always
+  # Fail policy: "error" | "warning" | "none"
+  DCG_FAIL_ON: error
+  # Version to use: "latest" or specific tag like "v0.2.0"
+  DCG_VERSION: latest
+
+jobs:
+  scan:
+    name: Scan for destructive commands
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch enough history for git diff
+          fetch-depth: 0
+
+      - name: Download dcg binary
+        run: |
+          if [ "$DCG_VERSION" = "latest" ]; then
+            RELEASE_URL="https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/latest"
+          else
+            RELEASE_URL="https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/tags/$DCG_VERSION"
+          fi
+
+          # Get download URL for Linux x86_64 binary
+          DOWNLOAD_URL=$(curl -sL "$RELEASE_URL" | \
+            jq -r '.assets[] | select(.name | contains("linux") and contains("x86_64")) | .browser_download_url' | \
+            head -1)
+
+          if [ -z "$DOWNLOAD_URL" ] || [ "$DOWNLOAD_URL" = "null" ]; then
+            echo "::warning::No pre-built binary found, building from source..."
+            # Fallback: build from source
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            source "$HOME/.cargo/env"
+            cargo install destructive_command_guard --locked
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          else
+            echo "Downloading dcg from: $DOWNLOAD_URL"
+            curl -sL "$DOWNLOAD_URL" -o dcg
+            chmod +x dcg
+            sudo mv dcg /usr/local/bin/
+          fi
+
+      - name: Verify dcg installation
+        run: dcg --version
+
+      - name: Determine base commit
+        id: base
+        run: |
+          # Use the merge base between PR branch and target branch
+          BASE_SHA=$(git merge-base "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}")
+          echo "sha=$BASE_SHA" >> $GITHUB_OUTPUT
+          echo "Base commit: $BASE_SHA"
+
+      - name: Run dcg scan on changed files
+        id: scan
+        run: |
+          set +e  # Don't exit on error so we can capture the exit code
+
+          # Build the diff range
+          DIFF_RANGE="${{ steps.base.outputs.sha }}...${{ github.event.pull_request.head.sha }}"
+          echo "Scanning diff range: $DIFF_RANGE"
+
+          # Run the scan
+          dcg scan \
+            --git-diff "$DIFF_RANGE" \
+            --format json \
+            --fail-on "$DCG_FAIL_ON" \
+            > scan-results.json 2>&1
+
+          SCAN_EXIT=$?
+          echo "exit_code=$SCAN_EXIT" >> $GITHUB_OUTPUT
+
+          # Always output results for debugging
+          cat scan-results.json
+
+          # Parse summary for step summary
+          if [ -f scan-results.json ] && jq -e '.summary' scan-results.json > /dev/null 2>&1; then
+            TOTAL=$(jq '.summary.total_findings // 0' scan-results.json)
+            ERRORS=$(jq '.summary.by_severity.error // 0' scan-results.json)
+            WARNINGS=$(jq '.summary.by_severity.warning // 0' scan-results.json)
+
+            echo "## DCG Scan Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Findings | $TOTAL |" >> $GITHUB_STEP_SUMMARY
+            echo "| Errors | $ERRORS |" >> $GITHUB_STEP_SUMMARY
+            echo "| Warnings | $WARNINGS |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            if [ "$SCAN_EXIT" -ne 0 ]; then
+              echo "**Status: FAILED** (exit code $SCAN_EXIT)" >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "Review the findings below and fix any destructive patterns before merging." >> $GITHUB_STEP_SUMMARY
+            else
+              echo "**Status: PASSED**" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "## DCG Scan Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "No findings or scan output could not be parsed." >> $GITHUB_STEP_SUMMARY
+          fi
+
+          exit $SCAN_EXIT
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dcg-scan-results
+          path: scan-results.json
+          retention-days: 14
+          if-no-files-found: ignore
+
+  # Optional: Build from source (for repos that want to build dcg themselves)
+  # Uncomment this job and remove the "Download dcg binary" step above
+  #
+  # build-dcg:
+  #   name: Build dcg from source
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: dtolnay/rust-toolchain@nightly
+  #     - name: Build dcg
+  #       run: cargo install destructive_command_guard --locked
+  #     - name: Upload binary
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: dcg-binary
+  #         path: ~/.cargo/bin/dcg
