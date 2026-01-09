@@ -262,6 +262,28 @@ CheckResult {blocked, reason, rule_id}
 Note: `pack_aware_quick_reject()` returns `true` if safe to skip (no keywords),
 `false` if keywords present and further checking is needed.
 
+## Developer Notes
+
+### Integration Points
+
+- `src/main.rs`: evaluates heredoc settings once and passes them into the main
+  evaluation pipeline.
+- `src/cli.rs`: CLI overrides (`--heredoc-scan`, `--heredoc-timeout`,
+  `--heredoc-languages`) feed into the effective config.
+- `src/config.rs`: parses `[heredoc]` config and merges overrides.
+
+### Error Handling Patterns
+
+- All heredoc parse/timeouts are **fail-open** in hook mode.
+- Diagnostics should be emitted with enough context for `dcg explain` or logs.
+
+### Testing
+
+```
+cargo test heredoc
+cargo test ast_matcher
+```
+
 ## References
 
 - `docs/pattern-library-design.md` - Pattern metadata schema

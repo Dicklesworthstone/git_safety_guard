@@ -44,6 +44,12 @@ This hook intercepts dangerous commands *before* execution and blocks them with 
 **Filesystem commands:**
 - `rm -rf` on any path outside `/tmp`, `/var/tmp`, or `$TMPDIR`
 
+**Heredoc and inline-script scanning (AST-based):**
+- Blocks destructive operations embedded inside heredocs, here-strings, and inline scripts
+  (e.g., `python -c`, `bash -c`, `node -e`)
+- Supported languages: bash, python, javascript, typescript, ruby, perl, go
+- Fail-open on parse errors/timeouts to avoid breaking workflows
+
 ## What It Allows
 
 **Safe git operations pass through silently:**
@@ -98,6 +104,15 @@ dcg uses a modular "pack" system to organize destructive command patterns by cat
 - **system.permissions** - Blocks dangerous chmod/chown patterns
 - **system.services** - Blocks systemctl stop/disable patterns
 
+### Heredoc Packs
+- **heredoc.bash** - Destructive bash operations inside heredocs/inline scripts
+- **heredoc.python** - Destructive Python operations inside heredocs/inline scripts
+- **heredoc.javascript** - Destructive JavaScript operations inside heredocs/inline scripts
+- **heredoc.typescript** - Destructive TypeScript operations inside heredocs/inline scripts
+- **heredoc.ruby** - Destructive Ruby operations inside heredocs/inline scripts
+- **heredoc.perl** - Destructive Perl operations inside heredocs/inline scripts
+- **heredoc.go** - Destructive Go operations inside heredocs/inline scripts
+
 ### Other Packs
 - **strict_git** - Extra paranoid git protections
 - **package_managers** - Blocks npm unpublish, cargo yank, etc.
@@ -112,6 +127,41 @@ enabled = [
     "kubernetes",  # Enables all kubernetes sub-packs
 ]
 ```
+
+Heredoc scanning configuration:
+
+```toml
+[heredoc]
+# Enable scanning for heredocs and inline scripts (python -c, bash -c, etc.).
+enabled = true
+
+# Extraction timeout budget (milliseconds).
+timeout_ms = 50
+
+# Resource limits for extracted bodies.
+max_body_bytes = 1048576
+max_body_lines = 10000
+max_heredocs = 10
+
+# Optional language filter (scan only these languages). Omit for "all".
+# languages = ["python", "bash", "javascript", "typescript", "ruby", "perl", "go"]
+
+# Graceful degradation (hook defaults are fail-open).
+fallback_on_parse_error = true
+fallback_on_timeout = true
+```
+
+CLI overrides for heredoc scanning:
+
+- `--heredoc-scan` / `--no-heredoc-scan`
+- `--heredoc-timeout <ms>`
+- `--heredoc-languages <lang1,lang2,...>`
+
+Heredoc documentation:
+
+- `docs/adr-001-heredoc-scanning.md` (architecture and rationale)
+- `docs/patterns.md` (pattern authoring + inventory)
+- `docs/security.md` (threat model and incident response)
 
 If you encounter commands that should be blocked, please file an issue.
 
@@ -404,6 +454,7 @@ dcg allowlist add-command "rm -rf ./build" --reason "Build cleanup" --project
 ```
 
 The finding output includes a copy-paste allowlist command for convenience.
+Heredoc rules use stable IDs like `heredoc.python.shutil_rmtree`.
 
 ### Privacy and Redaction
 

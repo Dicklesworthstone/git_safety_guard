@@ -176,6 +176,17 @@ echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | cargo run --
 
 ---
 
+## Heredoc Detection Notes (for contributors)
+
+- **Rule IDs**: Heredoc patterns use stable IDs like `heredoc.python.shutil_rmtree` for allowlisting.
+- **Fail-open**: In hook mode, heredoc parse errors/timeouts must allow (do not block).
+- **Tests**: Prefer targeted tests in `src/ast_matcher.rs` and `src/heredoc.rs`.
+  - `cargo test ast_matcher`
+  - `cargo test heredoc`
+  - Add positive and negative fixtures for each new pattern.
+
+---
+
 ## Third-Party Library Usage
 
 If you aren't 100% sure how to use a third-party library, **SEARCH ONLINE** to find the latest documentation and mid-2025 best practices.
