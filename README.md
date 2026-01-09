@@ -107,6 +107,9 @@ dcg uses a modular "pack" system to organize destructive command patterns by cat
 - **system.permissions** - Blocks dangerous chmod/chown patterns
 - **system.services** - Blocks systemctl stop/disable patterns
 
+### CI/CD Packs
+- **cicd.github_actions** - Blocks destructive GitHub Actions operations via gh (secret/variable deletion, workflow disable, gh api DELETE /actions/*)
+
 ### Heredoc Packs
 - **heredoc.bash** - Destructive bash operations inside heredocs/inline scripts
 - **heredoc.python** - Destructive Python operations inside heredocs/inline scripts

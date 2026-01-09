@@ -708,6 +708,15 @@ test_command_with_packs "redis-cli GET key" "allow" "database.redis" "redis-cli 
 test_command_with_packs "terraform destroy" "block" "infrastructure.terraform" "terraform destroy (terraform pack enabled)"
 test_command_with_packs "terraform plan" "allow" "infrastructure.terraform" "terraform plan (terraform pack enabled, safe command)"
 
+# GitHub Actions pack tests
+test_command_with_packs "gh secret delete FOO" "block" "cicd.github_actions" "gh secret delete (github actions pack enabled)"
+test_command_with_packs "gh -R owner/repo secret remove FOO" "block" "cicd.github_actions" "gh -R ... secret remove (github actions pack enabled)"
+test_command_with_packs "gh variable delete FOO" "block" "cicd.github_actions" "gh variable delete (github actions pack enabled)"
+test_command_with_packs "gh workflow disable 123" "block" "cicd.github_actions" "gh workflow disable (github actions pack enabled)"
+test_command_with_packs "gh run cancel 123" "block" "cicd.github_actions" "gh run cancel (github actions pack enabled)"
+test_command_with_packs "gh api -X DELETE repos/o/r/actions/secrets/FOO" "block" "cicd.github_actions" "gh api -X DELETE .../actions/secrets (github actions pack enabled)"
+test_command_with_packs "gh secret list" "allow" "cicd.github_actions" "gh secret list (github actions pack enabled, safe command)"
+
 # Multiple packs enabled simultaneously
 test_command_with_packs "docker system prune" "block" "containers.docker,kubernetes.kubectl" "docker system prune (multiple packs enabled)"
 test_command_with_packs "kubectl delete namespace foo" "block" "containers.docker,kubernetes.kubectl" "kubectl delete namespace (multiple packs enabled)"

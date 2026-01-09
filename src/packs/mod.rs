@@ -12,6 +12,7 @@
 //! Enabling a category enables all its sub-packs. Sub-packs can be individually
 //! disabled even if their parent category is enabled.
 
+pub mod cicd;
 pub mod cloud;
 pub mod containers;
 pub mod core;
@@ -418,6 +419,7 @@ impl PackRegistry {
         // Register all built-in packs
         registry.register_pack(core::git::create_pack());
         registry.register_pack(core::filesystem::create_pack());
+        registry.register_pack(cicd::github_actions::create_pack());
         registry.register_pack(database::postgresql::create_pack());
         registry.register_pack(database::mysql::create_pack());
         registry.register_pack(database::mongodb::create_pack());
