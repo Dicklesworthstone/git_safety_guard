@@ -1376,6 +1376,84 @@ mod tests {
         );
     }
 
+    /// Regression test: rm commands should NOT be quick-rejected regardless of target directory.
+    /// Bug git_safety_guard-nwu: "rm -rf build" was incorrectly allowed while "rm -rf src" was blocked.
+    #[test]
+    fn pack_aware_quick_reject_rm_commands_not_rejected() {
+        let keywords: Vec<&str> = vec!["rm"];
+
+        // All rm commands should NOT be quick-rejected (should return false)
+        assert!(
+            !pack_aware_quick_reject("rm -rf build", &keywords),
+            "rm -rf build should NOT be quick-rejected"
+        );
+        assert!(
+            !pack_aware_quick_reject("rm -rf src", &keywords),
+            "rm -rf src should NOT be quick-rejected"
+        );
+        assert!(
+            !pack_aware_quick_reject("rm -rf target", &keywords),
+            "rm -rf target should NOT be quick-rejected"
+        );
+        assert!(
+            !pack_aware_quick_reject("rm -rf dist", &keywords),
+            "rm -rf dist should NOT be quick-rejected"
+        );
+        assert!(
+            !pack_aware_quick_reject("rm -rf node_modules", &keywords),
+            "rm -rf node_modules should NOT be quick-rejected"
+        );
+        assert!(
+            !pack_aware_quick_reject("rm -rf foo", &keywords),
+            "rm -rf foo should NOT be quick-rejected"
+        );
+    }
+
+    /// Regression test: full flow from "core" category to keyword collection to quick-reject.
+    /// Bug git_safety_guard-nwu: The full evaluation flow was incorrectly allowing build dir removals.
+    #[test]
+    fn full_flow_core_category_rm_commands_blocked() {
+        // Simulate the default config: enabled_pack_ids returns {"core"}
+        let mut enabled = HashSet::new();
+        enabled.insert("core".to_string());
+
+        // This is what enabled_pack_ids() returns by default
+        let keywords = REGISTRY.collect_enabled_keywords(&enabled);
+
+        // Verify "rm" is in the keywords (from core.filesystem)
+        assert!(
+            keywords.contains(&"rm"),
+            "Keywords should include 'rm' from core.filesystem. Got: {:?}",
+            keywords
+        );
+
+        // All rm commands should NOT be quick-rejected
+        assert!(
+            !pack_aware_quick_reject("rm -rf build", &keywords),
+            "rm -rf build should NOT be quick-rejected with core keywords"
+        );
+        assert!(
+            !pack_aware_quick_reject("rm -rf src", &keywords),
+            "rm -rf src should NOT be quick-rejected with core keywords"
+        );
+        assert!(
+            !pack_aware_quick_reject("rm -rf target", &keywords),
+            "rm -rf target should NOT be quick-rejected with core keywords"
+        );
+
+        // And check_command should block them
+        let result = REGISTRY.check_command("rm -rf build", &enabled);
+        assert!(
+            result.blocked,
+            "rm -rf build should be BLOCKED by core.filesystem"
+        );
+        let result = REGISTRY.check_command("rm -rf src", &enabled);
+        assert!(
+            result.blocked,
+            "rm -rf src should be BLOCKED by core.filesystem"
+        );
+    }
+
     /// Test that `pack_tier` returns correct tiers for all known categories.
     #[test]
     fn pack_tier_ordering() {

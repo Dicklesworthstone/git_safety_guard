@@ -61,17 +61,23 @@ static HEREDOC_TRIGGERS: LazyLock<RegexSet> = LazyLock::new(|| {
         // Heredoc operators (bash, sh, zsh)
         r"<<-?\s*['\x22]?\w+['\x22]?", // << or <<- with optional quotes
         r"<<<",                        // Here-strings (bash)
+        // Inline interpreter execution. These patterns intentionally allow:
+        // - interleaved flags (python -I -c, bash --norc -c)
+        // - combined short-flag clusters (bash -lc, node -pe, perl -pi -e)
+        //
+        // Tier 1 MUST have zero false negatives for Tier 2 extraction.
+        //
         // Python inline execution (matches python, python3, python3.11, python3.12.1, etc.)
-        r"\bpython[0-9.]*\s+-[ce]\s",
+        r"\bpython[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[ce][A-Za-z]*\s",
         // Ruby inline execution (matches ruby, ruby3, ruby3.0, etc.)
-        r"\bruby[0-9.]*\s+-e\s",
-        r"\birb[0-9.]*\s+-e\s",
+        r"\bruby[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*e[A-Za-z]*\s",
+        r"\birb[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*e[A-Za-z]*\s",
         // Perl inline execution (matches perl, perl5, perl5.36, etc.)
-        r"\bperl[0-9.]*\s+-[eE]\s",
+        r"\bperl[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[eE][A-Za-z]*\s",
         // Node.js inline execution (matches node, node18, nodejs, nodejs18, etc.)
-        r"\bnode(js)?[0-9.]*\s+-[ep]\s",
-        // Shell inline execution (sh -c, bash -c, zsh -c, fish -c)
-        r"\b(sh|bash|zsh|fish)\s+-c\s",
+        r"\bnode(js)?[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[ep][A-Za-z]*\s",
+        // Shell inline execution (sh -c, bash -c, zsh -c, fish -c, bash -lc, etc.)
+        r"\b(sh|bash|zsh|fish)\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*c[A-Za-z]*\s",
         // Piped execution to interpreters (versioned)
         r"\|\s*(python[0-9.]*|ruby[0-9.]*|perl[0-9.]*|node(js)?[0-9.]*|sh|bash)\b",
         // Piped to xargs (can execute arbitrary commands)
@@ -649,7 +655,7 @@ static INLINE_SCRIPT_SINGLE_QUOTE: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: command -c/-e/-p/-E followed by single-quoted content
     // Groups: (1) interpreter, (2) optional "js" suffix, (3) flag, (4) content
     // Supports versioned interpreters: python3.11, ruby3.0, perl5.36, node18, nodejs20, etc.
-    Regex::new(r"\b(python[0-9.]*|ruby[0-9.]*|irb[0-9.]*|perl[0-9.]*|node(js)?[0-9.]*|sh|bash|zsh|fish)\s+(-[ceEp])\s+'([^']*)'")
+    Regex::new(r"\b(python[0-9.]*|ruby[0-9.]*|irb[0-9.]*|perl[0-9.]*|node(js)?[0-9.]*|sh|bash|zsh|fish)\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+(-[A-Za-z]*[ceEp][A-Za-z]*)\s+'([^']*)'")
         .expect("inline script single-quote regex compiles")
 });
 
@@ -658,7 +664,7 @@ static INLINE_SCRIPT_DOUBLE_QUOTE: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: command -c/-e/-p/-E followed by double-quoted content
     // Groups: (1) interpreter, (2) optional "js" suffix, (3) flag, (4) content
     // Supports versioned interpreters: python3.11, ruby3.0, perl5.36, node18, nodejs20, etc.
-    Regex::new(r#"\b(python[0-9.]*|ruby[0-9.]*|irb[0-9.]*|perl[0-9.]*|node(js)?[0-9.]*|sh|bash|zsh|fish)\s+(-[ceEp])\s+"([^"]*)""#)
+    Regex::new(r#"\b(python[0-9.]*|ruby[0-9.]*|irb[0-9.]*|perl[0-9.]*|node(js)?[0-9.]*|sh|bash|zsh|fish)\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+(-[A-Za-z]*[ceEp][A-Za-z]*)\s+"([^"]*)""#)
         .expect("inline script double-quote regex compiles")
 });
 
@@ -909,8 +915,28 @@ fn extract_inline_scripts(
             }
 
             let cmd_name = cap.get(1).map_or("", |m| m.as_str());
+            let flag = cap.get(3).map_or("", |m| m.as_str());
             // Content is in group 4: (1) interpreter, (2) optional "js", (3) flag, (4) content
             let content = cap.get(4).map_or("", |m| m.as_str());
+
+            // The regex covers multiple interpreters; validate that the matched flag actually
+            // implies inline code for this interpreter (e.g. bash needs -c, perl needs -e/-E).
+            let is_inline_flag = if cmd_name.starts_with("python") {
+                flag.contains('c') || flag.contains('e')
+            } else if cmd_name.starts_with("ruby") || cmd_name.starts_with("irb") {
+                flag.contains('e')
+            } else if cmd_name.starts_with("perl") {
+                flag.contains('e') || flag.contains('E')
+            } else if cmd_name.starts_with("node") {
+                flag.contains('e') || flag.contains('p')
+            } else {
+                // sh/bash/zsh/fish
+                flag.contains('c')
+            };
+
+            if !is_inline_flag {
+                continue;
+            }
 
             // Enforce content size limit
             if content.len() > limits.max_body_bytes {
@@ -1403,6 +1429,8 @@ mod tests {
             let python_commands = [
                 "python -c 'import os'",
                 "python3 -c 'import os'",
+                "python -I -c 'import os'",
+                "python3 -I -c 'import os'",
                 "python -e 'print(1)'",
                 "python3 -e 'print(1)'",
             ];
@@ -1448,7 +1476,7 @@ mod tests {
 
         #[test]
         fn triggers_on_ruby_inline() {
-            let ruby_commands = ["ruby -e 'puts 1'", "irb -e 'exit'"];
+            let ruby_commands = ["ruby -e 'puts 1'", "ruby -w -e 'puts 1'", "irb -e 'exit'"];
 
             for cmd in ruby_commands {
                 assert_eq!(
@@ -1464,6 +1492,7 @@ mod tests {
             let perl_commands = [
                 "perl -e 'print 1'",
                 "perl -E 'say 1'", // Modern Perl
+                "perl -pi -e 'print 1'",
             ];
 
             for cmd in perl_commands {
@@ -1477,7 +1506,11 @@ mod tests {
 
         #[test]
         fn triggers_on_node_inline() {
-            let node_commands = ["node -e 'console.log(1)'", "node -p 'process.version'"];
+            let node_commands = [
+                "node -e 'console.log(1)'",
+                "node -p 'process.version'",
+                "node -pe 'process.version'",
+            ];
 
             for cmd in node_commands {
                 assert_eq!(
@@ -1492,6 +1525,9 @@ mod tests {
         fn triggers_on_shell_inline() {
             let shell_commands = [
                 "bash -c 'echo hello'",
+                "bash -l -c 'echo hello'",
+                "bash -lc 'echo hello'",
+                "bash --noprofile --norc -c 'echo hello'",
                 "sh -c 'ls'",
                 "zsh -c 'pwd'",
                 "fish -c 'echo hello'",
@@ -1617,6 +1653,56 @@ mod tests {
                 assert_eq!(contents.len(), 1);
                 assert_eq!(contents[0].content, "echo hello");
                 assert_eq!(contents[0].language, ScriptLanguage::Bash);
+            } else {
+                panic!("Expected Extracted result");
+            }
+        }
+
+        #[test]
+        fn extracts_inline_script_with_intervening_flags() {
+            let result = extract_content("python -I -c 'import os'", &ExtractionLimits::default());
+            if let ExtractionResult::Extracted(contents) = result {
+                assert_eq!(contents.len(), 1);
+                assert_eq!(contents[0].content, "import os");
+                assert_eq!(contents[0].language, ScriptLanguage::Python);
+                assert!(contents[0].quoted);
+            } else {
+                panic!("Expected Extracted result");
+            }
+        }
+
+        #[test]
+        fn extracts_inline_script_with_combined_shell_flags() {
+            let result = extract_content("bash -lc 'echo hello'", &ExtractionLimits::default());
+            if let ExtractionResult::Extracted(contents) = result {
+                assert_eq!(contents.len(), 1);
+                assert_eq!(contents[0].content, "echo hello");
+                assert_eq!(contents[0].language, ScriptLanguage::Bash);
+            } else {
+                panic!("Expected Extracted result");
+            }
+        }
+
+        #[test]
+        fn extracts_inline_script_with_combined_node_flags() {
+            let result =
+                extract_content("node -pe 'process.version'", &ExtractionLimits::default());
+            if let ExtractionResult::Extracted(contents) = result {
+                assert_eq!(contents.len(), 1);
+                assert_eq!(contents[0].content, "process.version");
+                assert_eq!(contents[0].language, ScriptLanguage::JavaScript);
+            } else {
+                panic!("Expected Extracted result");
+            }
+        }
+
+        #[test]
+        fn extracts_inline_script_with_interleaved_perl_flags() {
+            let result = extract_content("perl -pi -e 'print 1'", &ExtractionLimits::default());
+            if let ExtractionResult::Extracted(contents) = result {
+                assert_eq!(contents.len(), 1);
+                assert_eq!(contents[0].content, "print 1");
+                assert_eq!(contents[0].language, ScriptLanguage::Perl);
             } else {
                 panic!("Expected Extracted result");
             }

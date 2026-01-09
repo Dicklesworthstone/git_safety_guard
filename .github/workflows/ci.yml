@@ -336,8 +336,8 @@ jobs:
           cd fuzz
           echo "## Fuzzing Results" >> $GITHUB_STEP_SUMMARY
           for target in fuzz_context fuzz_evaluate fuzz_hook_input fuzz_normalize fuzz_heredoc_trigger fuzz_heredoc_extract fuzz_heredoc_language fuzz_shell_extract; do
-            echo "Fuzzing $target for 60 seconds..."
-            timeout 60s cargo fuzz run "$target" -- -max_total_time=60 || true
+            echo "Fuzzing $target (~60s runtime + build)..."
+            timeout 10m cargo fuzz run "$target" -- -max_total_time=60 || true
             echo "- $target: completed" >> $GITHUB_STEP_SUMMARY
           done
 

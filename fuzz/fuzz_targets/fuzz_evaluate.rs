@@ -11,10 +11,16 @@ use libfuzzer_sys::fuzz_target;
 
 use destructive_command_guard::LayeredAllowlist;
 use destructive_command_guard::config::Config;
+use destructive_command_guard::config::CompiledOverrides;
 use destructive_command_guard::evaluator::evaluate_command;
 use std::sync::LazyLock;
 
 static EMPTY_ALLOWLISTS: LazyLock<LayeredAllowlist> = LazyLock::new(LayeredAllowlist::default);
+static DEFAULT_CONFIG_AND_OVERRIDES: LazyLock<(Config, CompiledOverrides)> = LazyLock::new(|| {
+    let config = Config::default();
+    let compiled_overrides = config.overrides.compile();
+    (config, compiled_overrides)
+});
 
 fuzz_target!(|data: &[u8]| {
     // Try to interpret the bytes as UTF-8
@@ -24,9 +30,8 @@ fuzz_target!(|data: &[u8]| {
             return;
         }
 
-        // Use default config for consistent behavior
-        let config = Config::default();
-        let compiled_overrides = config.overrides.compile();
+        // Use default config for consistent behavior (cached for fuzzing throughput).
+        let (config, compiled_overrides) = &*DEFAULT_CONFIG_AND_OVERRIDES;
         let allowlists = &EMPTY_ALLOWLISTS;
 
         // Test with various keyword combinations
@@ -44,13 +49,13 @@ fuzz_target!(|data: &[u8]| {
         // Evaluate - this should never panic
         let _ = evaluate_command(
             command,
-            &config,
+            config,
             all_keywords,
-            &compiled_overrides,
+            compiled_overrides,
             allowlists,
         );
 
         // Also test with empty keywords (triggers different code paths)
-        let _ = evaluate_command(command, &config, &[], &compiled_overrides, allowlists);
+        let _ = evaluate_command(command, config, &[], compiled_overrides, allowlists);
     }
 });

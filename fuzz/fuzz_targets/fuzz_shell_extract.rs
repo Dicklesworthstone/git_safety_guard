@@ -2,7 +2,7 @@
 //!
 //! This fuzzes `heredoc::extract_shell_commands` and validates:
 //! - No panics for arbitrary UTF-8 input
-//! - Returned byte ranges are in-bounds and ordered
+//! - Returned byte ranges are in-bounds
 //! - Returned byte ranges are valid UTF-8 slice boundaries
 
 #![no_main]

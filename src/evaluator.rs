@@ -843,6 +843,33 @@ fn evaluate_packs_with_allowlists(
         return EvaluationResult::allowed_due_to_budget();
     }
 
+    // Two-pass evaluation for cross-pack safe pattern support.
+    //
+    // Pass 1: Check safe patterns across ALL enabled packs first.
+    // If any pack's safe pattern matches, allow the command immediately.
+    // This enables "safe" packs (like safe.cleanup) to whitelist commands
+    // that would otherwise be blocked by other packs (like core.filesystem).
+    for pack_id in ordered_packs {
+        if deadline_exceeded(deadline) || remaining_below(deadline, &crate::perf::PATTERN_MATCH) {
+            return EvaluationResult::allowed_due_to_budget();
+        }
+
+        let Some(pack) = REGISTRY.get(pack_id) else {
+            continue;
+        };
+
+        // Per-pack keyword quick reject.
+        if !pack.might_match(normalized) {
+            continue;
+        }
+
+        // If any safe pattern matches, allow immediately (cross-pack override).
+        if pack.matches_safe(normalized) {
+            return EvaluationResult::allowed();
+        }
+    }
+
+    // Pass 2: Check destructive patterns across all packs.
     // If we allowlist a deny, we keep scanning for other denies. If none appear,
     // we return ALLOW + the first allowlist override metadata for explain/logging.
     let mut first_allowlist_hit: Option<(PatternMatch, AllowlistLayer, String)> = None;
@@ -858,11 +885,6 @@ fn evaluate_packs_with_allowlists(
 
         // Per-pack keyword quick reject.
         if !pack.might_match(normalized) {
-            continue;
-        }
-
-        // Pack safe patterns (whitelist) win within that pack.
-        if pack.matches_safe(normalized) {
             continue;
         }
 
@@ -2323,6 +2345,113 @@ mod tests {
             assert!(result.allowlist_override.is_none());
             assert!(result.effective_mode.is_none());
         }
+    }
+
+    // =========================================================================
+    // Cross-pack safe pattern tests (git_safety_guard-t8x.4)
+    // =========================================================================
+    //
+    // These tests verify that the evaluator implements two-pass evaluation,
+    // allowing safe patterns from any enabled pack to override destructive
+    // patterns from other packs.
+
+    /// Test that safe.cleanup pack overrides core.filesystem in the evaluator.
+    ///
+    /// This is critical for the cross-pack safe pattern feature. Without two-pass
+    /// evaluation, safe.cleanup's safe patterns would be ignored when core.filesystem
+    /// comes first in the pack order.
+    #[test]
+    fn evaluator_safe_cleanup_overrides_core_filesystem() {
+        let compiled_overrides = default_compiled_overrides();
+        let allowlists = default_allowlists();
+        let enabled_keywords: Vec<&str> = vec!["rm"];
+
+        // Test with both packs enabled - safe.cleanup should allow
+        let packs_with_cleanup: Vec<String> = vec![
+            "core.filesystem".to_string(),
+            "safe.cleanup".to_string(),
+        ];
+
+        let result = evaluate_command_with_pack_order(
+            "rm -rf target/",
+            &enabled_keywords,
+            &packs_with_cleanup,
+            &compiled_overrides,
+            &allowlists,
+        );
+
+        assert!(
+            result.is_allowed(),
+            "rm -rf target/ should be allowed when safe.cleanup is enabled"
+        );
+
+        // Test with only core.filesystem - should be blocked
+        let packs_without_cleanup: Vec<String> = vec!["core.filesystem".to_string()];
+
+        let result = evaluate_command_with_pack_order(
+            "rm -rf target/",
+            &enabled_keywords,
+            &packs_without_cleanup,
+            &compiled_overrides,
+            &allowlists,
+        );
+
+        assert!(
+            result.is_denied(),
+            "rm -rf target/ should be denied without safe.cleanup"
+        );
+    }
+
+    /// Test that path traversal is still blocked even with safe.cleanup enabled.
+    #[test]
+    fn evaluator_safe_cleanup_blocks_path_traversal() {
+        let compiled_overrides = default_compiled_overrides();
+        let allowlists = default_allowlists();
+        let enabled_keywords: Vec<&str> = vec!["rm"];
+        let packs: Vec<String> = vec![
+            "core.filesystem".to_string(),
+            "safe.cleanup".to_string(),
+        ];
+
+        // Path traversal should still be blocked
+        let result = evaluate_command_with_pack_order(
+            "rm -rf ../target/",
+            &enabled_keywords,
+            &packs,
+            &compiled_overrides,
+            &allowlists,
+        );
+
+        assert!(
+            result.is_denied(),
+            "rm -rf ../target/ should be denied (path traversal)"
+        );
+    }
+
+    /// Test that non-allowlisted directories are still blocked.
+    #[test]
+    fn evaluator_safe_cleanup_blocks_non_allowlisted() {
+        let compiled_overrides = default_compiled_overrides();
+        let allowlists = default_allowlists();
+        let enabled_keywords: Vec<&str> = vec!["rm"];
+        let packs: Vec<String> = vec![
+            "core.filesystem".to_string(),
+            "safe.cleanup".to_string(),
+        ];
+
+        // src/ is not in the cleanup allowlist
+        let result = evaluate_command_with_pack_order(
+            "rm -rf src/",
+            &enabled_keywords,
+            &packs,
+            &compiled_overrides,
+            &allowlists,
+        );
+
+        assert!(
+            result.is_denied(),
+            "rm -rf src/ should be denied (not in cleanup allowlist)"
+        );
     }
 }
 

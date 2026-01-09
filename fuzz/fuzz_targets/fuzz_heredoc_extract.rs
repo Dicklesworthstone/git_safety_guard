@@ -79,6 +79,16 @@ fuzz_target!(|data: &[u8]| {
                     item.byte_range.start,
                     item.byte_range.end
                 );
+                assert!(
+                    command.is_char_boundary(item.byte_range.start),
+                    "byte_range.start {} is not a char boundary",
+                    item.byte_range.start
+                );
+                assert!(
+                    command.is_char_boundary(item.byte_range.end),
+                    "byte_range.end {} is not a char boundary",
+                    item.byte_range.end
+                );
             }
         }
     }

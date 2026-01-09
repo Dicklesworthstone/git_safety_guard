@@ -20,9 +20,10 @@
 //! - `.pytest_cache/` - pytest cache
 //! - `.mypy_cache/` - mypy cache
 //! - `.ruff_cache/` - ruff cache
+//! - `.tox/` - tox environments
+//! - `.eggs/` - setuptools cache
 //! - `.gradle/` - Gradle cache
 //! - `.maven/` - Maven cache
-//! - `.cargo/` - Cargo cache (careful: contains downloaded crates)
 //! - `vendor/` - Vendored dependencies
 //! - `coverage/` - Test coverage reports
 //! - `.coverage/` - Coverage data
@@ -78,119 +79,88 @@ pub fn create_pack() -> Pack {
 /// Each directory gets patterns for both `rm -rf` and `rm -fr` flag orders,
 /// as well as `./dir` prefix variants.
 fn create_safe_patterns() -> Vec<SafePattern> {
-    // Common build/cache directories that are safe to delete
-    // These are all relative-path-only and reject path traversal
+    // Common build/cache directories that are safe to delete.
+    // These are all relative-path-only and reject path traversal.
     let safe_dirs = [
         // Rust
-        ("target", "rm-rf-target"),
+        "target",
         // Frontend/JS
-        ("dist", "rm-rf-dist"),
-        ("build", "rm-rf-build"),
-        ("node_modules", "rm-rf-node-modules"),
-        (".next", "rm-rf-next"),
-        (".turbo", "rm-rf-turbo"),
-        (".nuxt", "rm-rf-nuxt"),
-        (".output", "rm-rf-output"),
-        (".svelte-kit", "rm-rf-svelte-kit"),
-        (".parcel-cache", "rm-rf-parcel-cache"),
-        (".cache", "rm-rf-cache"),
-        (".vite", "rm-rf-vite"),
-        (".rollup.cache", "rm-rf-rollup-cache"),
-        ("out", "rm-rf-out"),
+        "dist",
+        "build",
+        "node_modules",
+        ".next",
+        ".turbo",
+        ".nuxt",
+        ".output",
+        ".svelte-kit",
+        ".parcel-cache",
+        ".cache",
+        ".vite",
+        ".rollup.cache",
+        "out",
         // Python
-        ("__pycache__", "rm-rf-pycache"),
-        (".pytest_cache", "rm-rf-pytest-cache"),
-        (".mypy_cache", "rm-rf-mypy-cache"),
-        (".ruff_cache", "rm-rf-ruff-cache"),
-        (".tox", "rm-rf-tox"),
-        ("*.egg-info", "rm-rf-egg-info"),
-        (".eggs", "rm-rf-eggs"),
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".eggs",
         // Java/JVM
-        (".gradle", "rm-rf-gradle"),
-        (".maven", "rm-rf-maven"),
+        ".gradle",
+        ".maven",
         // Go
-        ("vendor", "rm-rf-vendor"),
+        "vendor",
         // Coverage
-        ("coverage", "rm-rf-coverage"),
-        (".coverage", "rm-rf-dot-coverage"),
-        (".nyc_output", "rm-rf-nyc-output"),
+        "coverage",
+        ".coverage",
+        ".nyc_output",
     ];
 
-    let mut patterns = Vec::new();
+    let escaped_dirs: Vec<String> = safe_dirs.iter().map(|dir| regex_escape(dir)).collect();
+    let dir_group = escaped_dirs.join("|");
 
-    for (dir, base_name) in safe_dirs {
-        // Escape special regex characters in directory name
-        let escaped_dir = regex_escape(dir);
+    // A single safe path pattern:
+    // - no ".." segments
+    // - optional "./" prefix
+    // - exact directory allowlist at path start
+    // - optional subpaths (no shell separators)
+    let safe_path_prefix = r"(?![^\s]*\.\.)(?:\./)?(?:";
+    let safe_path_suffix = r")(?:/[^\s;&|]+)*/?";
+    let mut safe_path_pattern = String::with_capacity(
+        safe_path_prefix.len() + dir_group.len() + safe_path_suffix.len(),
+    );
+    safe_path_pattern.push_str(safe_path_prefix);
+    safe_path_pattern.push_str(&dir_group);
+    safe_path_pattern.push_str(safe_path_suffix);
 
-        // Pattern requirements:
-        // 1. Match rm with -rf or -fr flags (combined or separate)
-        // 2. Path must be relative (not start with / or ~)
-        // 3. Path must not contain .. anywhere
-        // 4. Directory must be at the start of the path (after optional ./)
-        //
-        // We use negative lookahead (?!...) to reject:
-        // - Absolute paths: starts with /
-        // - Home paths: starts with ~
-        // - Path traversal: contains ..
-        //
-        // Pattern structure:
-        // rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+  -- rm with -rf flags
-        // (?!/)(?!~)(?![^\s]*\.\.)                -- negative lookahead: no /, ~, or ..
-        // (?:\./)?                                -- optional ./ prefix
-        // {dir}(?:/|\s|$)                         -- directory name followed by /, space, or end
+    // One or more safe paths separated by whitespace.
+    let safe_path_list = format!(r"{safe_path_pattern}(?:\s+{safe_path_pattern})*");
 
-        // Combined -rf flags (like -rf, -rfi, -Rf, etc.)
-        let rf_pattern = format!(
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+(?!/)(?!~)(?![^\s]*\.\.)(?:\./)?{escaped_dir}(?:/|\s|$)"
-        );
+    let prefix = r"^\s*rm\s+";
 
-        // Combined -fr flags (like -fr, -fri, -fR, etc.)
-        let fr_pattern = format!(
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+(?!/)(?!~)(?![^\s]*\.\.)(?:\./)?{escaped_dir}(?:/|\s|$)"
-        );
+    let rf_pattern =
+        format!(r"{prefix}-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*(?:\s+--)?\s+{safe_path_list}\s*$");
+    let fr_pattern =
+        format!(r"{prefix}-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*(?:\s+--)?\s+{safe_path_list}\s*$");
+    let separate_r_then_f = format!(
+        r"{prefix}(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f(?:\s+--)?\s+{safe_path_list}\s*$"
+    );
+    let separate_f_then_r = format!(
+        r"{prefix}(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR](?:\s+--)?\s+{safe_path_list}\s*$"
+    );
+    let recursive_force_pattern =
+        format!(r"{prefix}.*--recursive.*--force(?:\s+--)?\s+{safe_path_list}\s*$");
+    let force_recursive_pattern =
+        format!(r"{prefix}.*--force.*--recursive(?:\s+--)?\s+{safe_path_list}\s*$");
 
-        // Separate -r -f flags (like -r -f, -R -f, etc.)
-        let separate_r_then_f = format!(
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+(?!/)(?!~)(?![^\s]*\.\.)(?:\./)?{escaped_dir}(?:/|\s|$)"
-        );
-
-        // Separate -f -r flags (like -f -r, -f -R, etc.)
-        let separate_f_then_r = format!(
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+(?!/)(?!~)(?![^\s]*\.\.)(?:\./)?{escaped_dir}(?:/|\s|$)"
-        );
-
-        // Long flags --recursive --force
-        let recursive_force_pattern = format!(
-            r"rm\s+.*--recursive.*--force\s+(?!/)(?!~)(?![^\s]*\.\.)(?:\./)?{escaped_dir}(?:/|\s|$)"
-        );
-
-        // Long flags --force --recursive
-        let force_recursive_pattern = format!(
-            r"rm\s+.*--force.*--recursive\s+(?!/)(?!~)(?![^\s]*\.\.)(?:\./)?{escaped_dir}(?:/|\s|$)"
-        );
-
-        // Add all pattern variants
-        patterns.push(make_safe_pattern(&format!("{base_name}-rf"), &rf_pattern));
-        patterns.push(make_safe_pattern(&format!("{base_name}-fr"), &fr_pattern));
-        patterns.push(make_safe_pattern(
-            &format!("{base_name}-r-f"),
-            &separate_r_then_f,
-        ));
-        patterns.push(make_safe_pattern(
-            &format!("{base_name}-f-r"),
-            &separate_f_then_r,
-        ));
-        patterns.push(make_safe_pattern(
-            &format!("{base_name}-recursive-force"),
-            &recursive_force_pattern,
-        ));
-        patterns.push(make_safe_pattern(
-            &format!("{base_name}-force-recursive"),
-            &force_recursive_pattern,
-        ));
-    }
-
-    patterns
+    vec![
+        make_safe_pattern("safe-cleanup-rf", &rf_pattern),
+        make_safe_pattern("safe-cleanup-fr", &fr_pattern),
+        make_safe_pattern("safe-cleanup-r-f", &separate_r_then_f),
+        make_safe_pattern("safe-cleanup-f-r", &separate_f_then_r),
+        make_safe_pattern("safe-cleanup-recursive-force", &recursive_force_pattern),
+        make_safe_pattern("safe-cleanup-force-recursive", &force_recursive_pattern),
+    ]
 }
 
 /// Escape regex special characters in a string.
@@ -214,8 +184,7 @@ fn regex_escape(s: &str) -> String {
 /// Panics if the regex is invalid (compile-time bug).
 fn make_safe_pattern(name: &str, pattern: &str) -> SafePattern {
     SafePattern {
-        regex: fancy_regex::Regex::new(pattern)
-            .unwrap_or_else(|e| panic!("safe.cleanup pattern '{name}' should compile: {e}")),
+        regex: fancy_regex::Regex::new(pattern).expect("safe.cleanup pattern should compile"),
         // We need a &'static str, so we leak the string. This is fine because
         // packs are created once at startup and live for the program's lifetime.
         name: Box::leak(name.to_string().into_boxed_str()),

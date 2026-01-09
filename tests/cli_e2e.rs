@@ -560,14 +560,21 @@ mod hook_mode_tests {
             result.stderr_str()
         );
 
-        let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
-            panic!(
-                "expected hook JSON output for deny, got parse error: {e}\ncommand: {}\nstdout:\n{}\nstderr:\n{}",
-                result.command,
-                stdout,
-                result.stderr_str()
-            )
-        });
+        let mut parse_error = None;
+        let json: serde_json::Value = match serde_json::from_str(stdout.trim()) {
+            Ok(value) => value,
+            Err(e) => {
+                parse_error = Some(format!(
+                    "expected hook JSON output for deny, got parse error: {e}\ncommand: {}\nstdout:\n{}\nstderr:\n{}",
+                    result.command,
+                    stdout,
+                    result.stderr_str()
+                ));
+                serde_json::Value::Null
+            }
+        };
+
+        assert!(parse_error.is_none(), "{}", parse_error.unwrap());
 
         assert_eq!(
             json["hookSpecificOutput"]["permissionDecision"],
@@ -676,10 +683,7 @@ mod simulate_tests {
 
     /// Helper to create a temp file with given content.
     fn create_temp_log_file(content: &str) -> tempfile::NamedTempFile {
-        let mut file = tempfile::Builder::new()
-            .suffix(".log")
-            .tempfile()
-            .unwrap();
+        let mut file = tempfile::Builder::new().suffix(".log").tempfile().unwrap();
         file.write_all(content.as_bytes()).unwrap();
         file.flush().unwrap();
         file
@@ -747,12 +751,15 @@ mod simulate_tests {
 
         assert!(output.status.success(), "simulate should succeed");
 
-        let json: serde_json::Value = serde_json::from_str(&stdout)
-            .expect("should produce valid JSON");
+        let json: serde_json::Value =
+            serde_json::from_str(&stdout).expect("should produce valid JSON");
 
         // 2 Bash commands extracted, 1 Read tool ignored
         assert_eq!(json["totals"]["commands"], 2, "should have 2 commands");
-        assert_eq!(json["errors"]["ignored_count"], 1, "should ignore 1 non-Bash");
+        assert_eq!(
+            json["errors"]["ignored_count"], 1,
+            "should ignore 1 non-Bash"
+        );
     }
 
     #[test]
@@ -800,9 +807,18 @@ mod simulate_tests {
 
         assert_eq!(json["schema_version"], 1, "should have schema_version");
         assert!(json["totals"].is_object(), "should have totals object");
-        assert!(json["totals"]["commands"].is_number(), "should have commands count");
-        assert!(json["totals"]["allowed"].is_number(), "should have allowed count");
-        assert!(json["totals"]["denied"].is_number(), "should have denied count");
+        assert!(
+            json["totals"]["commands"].is_number(),
+            "should have commands count"
+        );
+        assert!(
+            json["totals"]["allowed"].is_number(),
+            "should have allowed count"
+        );
+        assert!(
+            json["totals"]["denied"].is_number(),
+            "should have denied count"
+        );
         assert!(json["rules"].is_array(), "should have rules array");
         assert!(json["errors"].is_object(), "should have errors object");
     }
@@ -818,7 +834,10 @@ mod simulate_tests {
 
         let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
-        assert_eq!(json["totals"]["commands"], 3, "should have 3 total commands");
+        assert_eq!(
+            json["totals"]["commands"], 3,
+            "should have 3 total commands"
+        );
         assert!(
             json["totals"]["denied"].as_u64().unwrap() >= 1,
             "should have at least 1 denied (docker system prune)"
@@ -870,9 +889,7 @@ mod simulate_tests {
             let second_count = rules[1]["count"].as_u64().unwrap();
             assert!(
                 first_count >= second_count,
-                "rules should be sorted by count desc: {} >= {}",
-                first_count,
-                second_count
+                "rules should be sorted by count desc: {first_count} >= {second_count}"
             );
         }
     }
@@ -920,15 +937,15 @@ mod simulate_tests {
         // The command itself is safe, but if there were blocked commands,
         // their exemplars would have quoted strings redacted
         assert!(output.status.success(), "redact mode should work");
-        let _json: serde_json::Value = serde_json::from_str(&stdout)
-            .expect("should produce valid JSON with redaction");
+        let _json: serde_json::Value =
+            serde_json::from_str(&stdout).expect("should produce valid JSON with redaction");
     }
 
     #[test]
     fn simulate_truncation_limits_exemplars() {
         // Create a long command
         let long_cmd = format!("echo {}", "x".repeat(200));
-        let content = format!("{}\n", long_cmd);
+        let content = format!("{long_cmd}\n");
         let file = create_temp_log_file(&content);
 
         let output = run_simulate_file(
@@ -940,8 +957,8 @@ mod simulate_tests {
         // Even though the command is safe (allow), verify truncation works
         // in parse output (no rules but parse stats should work)
         assert!(output.status.success(), "truncation should work");
-        let _json: serde_json::Value = serde_json::from_str(&stdout)
-            .expect("should produce valid JSON with truncation");
+        let _json: serde_json::Value =
+            serde_json::from_str(&stdout).expect("should produce valid JSON with truncation");
     }
 
     // -------------------------------------------------------------------------
@@ -964,7 +981,9 @@ mod simulate_tests {
         // Should process only 3 lines
         assert_eq!(json["totals"]["commands"], 3, "should limit to 3 commands");
         assert!(
-            json["errors"]["stopped_at_limit"].as_bool().unwrap_or(false),
+            json["errors"]["stopped_at_limit"]
+                .as_bool()
+                .unwrap_or(false),
             "should indicate stopped at limit"
         );
     }
@@ -1051,14 +1070,20 @@ echo hello
         let json2: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
 
         // Totals should be identical
-        assert_eq!(json1["totals"], json2["totals"], "totals should be deterministic");
+        assert_eq!(
+            json1["totals"], json2["totals"],
+            "totals should be deterministic"
+        );
 
         // Rule order should be identical
         let rules1 = json1["rules"].as_array().unwrap();
         let rules2 = json2["rules"].as_array().unwrap();
         assert_eq!(rules1.len(), rules2.len(), "rule count should match");
         for (r1, r2) in rules1.iter().zip(rules2.iter()) {
-            assert_eq!(r1["rule_id"], r2["rule_id"], "rule order should be deterministic");
+            assert_eq!(
+                r1["rule_id"], r2["rule_id"],
+                "rule order should be deterministic"
+            );
             assert_eq!(r1["count"], r2["count"], "rule counts should match");
         }
     }
@@ -1079,6 +1104,9 @@ echo hello
 
         assert!(output.status.success(), "should parse decision log format");
         let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-        assert_eq!(json["totals"]["commands"], 1, "should extract 1 command from log");
+        assert_eq!(
+            json["totals"]["commands"], 1,
+            "should extract 1 command from log"
+        );
     }
 }
