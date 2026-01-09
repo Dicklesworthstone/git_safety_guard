@@ -225,7 +225,7 @@ pub struct PolicyConfig {
     /// - ISO 8601 without timezone (treated as UTC): `2026-02-01T00:00:00`
     /// - Date only (treated as end of day UTC): `2026-02-01`
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub observe_until: Option<String>,
+    pub observe_until: Option<ObserveUntil>,
 
     /// Per-pack mode overrides.
     /// Key is `pack_id` (e.g., "core.git", "database.postgresql").
@@ -315,10 +315,10 @@ impl PolicyConfig {
         // 3. Global default (optionally gated by observe_until)
         let effective_default_mode = self
             .observe_until
-            .as_deref()
-            .and_then(parse_timestamp_as_utc)
+            .as_ref()
+            .and_then(ObserveUntil::parsed_utc)
             .map_or(self.default_mode, |until| {
-                if now < until {
+                if &now < until {
                     Some(self.default_mode.unwrap_or(PolicyMode::Warn))
                 } else {
                     None
@@ -838,10 +838,7 @@ impl Config {
 
         // DCG_POLICY_OBSERVE_UNTIL=2030-01-01T00:00:00Z
         if let Some(observe_until) = get_env(&format!("{ENV_PREFIX}_POLICY_OBSERVE_UNTIL")) {
-            let trimmed = observe_until.trim();
-            if !trimmed.is_empty() {
-                self.policy.observe_until = Some(trimmed.to_string());
-            }
+            self.policy.observe_until = ObserveUntil::parse(&observe_until);
         }
     }
 
@@ -1131,6 +1128,62 @@ fn parse_policy_mode(value: &str) -> Option<PolicyMode> {
         "warn" | "warning" => Some(PolicyMode::Warn),
         "log" | "log-only" | "logonly" => Some(PolicyMode::Log),
         _ => None,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObserveUntil {
+    raw: String,
+    parsed_utc: Option<DateTime<Utc>>,
+}
+
+impl ObserveUntil {
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        Some(Self {
+            raw: trimmed.to_string(),
+            parsed_utc: parse_timestamp_as_utc(trimmed),
+        })
+    }
+
+    #[must_use]
+    pub const fn parsed_utc(&self) -> Option<&DateTime<Utc>> {
+        self.parsed_utc.as_ref()
+    }
+}
+
+impl std::ops::Deref for ObserveUntil {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.raw
+    }
+}
+
+impl Serialize for ObserveUntil {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.raw)
+    }
+}
+
+impl<'de> Deserialize<'de> for ObserveUntil {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        let trimmed = raw.trim();
+        Ok(Self {
+            raw: trimmed.to_string(),
+            parsed_utc: parse_timestamp_as_utc(trimmed),
+        })
     }
 }
 
@@ -1653,7 +1706,7 @@ mod tests {
     fn test_policy_config_merge() {
         let mut base = Config::default();
         base.policy.default_mode = Some(PolicyMode::Deny);
-        base.policy.observe_until = Some("2000-01-01T00:00:00Z".to_string());
+        base.policy.observe_until = ObserveUntil::parse("2000-01-01T00:00:00Z");
         base.policy
             .packs
             .insert("core.git".to_string(), PolicyMode::Deny);
@@ -1661,7 +1714,7 @@ mod tests {
         let other = Config {
             policy: PolicyConfig {
                 default_mode: Some(PolicyMode::Warn),
-                observe_until: Some("2030-01-01T00:00:00Z".to_string()),
+                observe_until: ObserveUntil::parse("2030-01-01T00:00:00Z"),
                 packs: std::collections::HashMap::from([(
                     "containers.docker".to_string(),
                     PolicyMode::Log,
@@ -1728,7 +1781,7 @@ mod tests {
     #[test]
     fn test_policy_observe_window_active_defaults_to_warn_when_unset() {
         let policy = PolicyConfig {
-            observe_until: Some("2030-01-01T00:00:00Z".to_string()),
+            observe_until: ObserveUntil::parse("2030-01-01T00:00:00Z"),
             ..Default::default()
         };
 
@@ -1749,7 +1802,7 @@ mod tests {
     fn test_policy_observe_window_expired_ignores_default_mode() {
         let policy = PolicyConfig {
             default_mode: Some(PolicyMode::Warn),
-            observe_until: Some("2026-01-01T00:00:00Z".to_string()),
+            observe_until: ObserveUntil::parse("2026-01-01T00:00:00Z"),
             ..Default::default()
         };
 
@@ -1770,7 +1823,7 @@ mod tests {
     fn test_policy_observe_window_active_does_not_loosen_critical_without_rule_override() {
         let policy = PolicyConfig {
             default_mode: Some(PolicyMode::Warn),
-            observe_until: Some("2030-01-01T00:00:00Z".to_string()),
+            observe_until: ObserveUntil::parse("2030-01-01T00:00:00Z"),
             ..Default::default()
         };
 
