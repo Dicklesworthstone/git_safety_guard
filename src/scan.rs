@@ -482,6 +482,7 @@ fn redact_token(token: &str) -> String {
 /// Currently implements:
 /// - Shell-script extractor (`*.sh`)
 /// - Dockerfile extractor (`Dockerfile`, `*.dockerfile`, `Dockerfile.*`)
+/// - GitHub Actions workflow extractor (`.github/workflows/*.yml|*.yaml`)
 #[allow(clippy::missing_errors_doc)]
 pub fn scan_paths(
     paths: &[PathBuf],
@@ -529,8 +530,9 @@ pub fn scan_paths(
         // Determine which extractor(s) to use
         let is_shell = is_shell_script_path(file);
         let is_docker = is_dockerfile_path(file);
+        let is_actions = is_github_actions_workflow_path(file);
 
-        if !is_shell && !is_docker {
+        if !is_shell && !is_docker && !is_actions {
             files_skipped += 1;
             continue;
         }
@@ -557,6 +559,14 @@ pub fn scan_paths(
 
         if is_docker {
             extracted.extend(extract_dockerfile_from_str(
+                &file_label,
+                &content,
+                &ctx.enabled_keywords,
+            ));
+        }
+
+        if is_actions {
+            extracted.extend(extract_github_actions_workflow_from_str(
                 &file_label,
                 &content,
                 &ctx.enabled_keywords,
@@ -686,6 +696,24 @@ fn extract_shell_script_from_str(
     }
 
     out
+}
+
+fn extract_shell_script_with_offset_and_id(
+    file: &str,
+    start_line: usize,
+    content: &str,
+    enabled_keywords: &[&'static str],
+    extractor_id: &'static str,
+) -> Vec<ExtractedCommand> {
+    let mut extracted = extract_shell_script_from_str(file, content, enabled_keywords);
+    let offset = start_line.saturating_sub(1);
+
+    for cmd in &mut extracted {
+        cmd.line = cmd.line.saturating_add(offset);
+        cmd.extractor_id = extractor_id.to_string();
+    }
+
+    extracted
 }
 
 fn extract_shell_command_line(
@@ -1044,6 +1072,151 @@ fn join_dockerfile_continuation(
     }
 
     (joined, lines_consumed)
+}
+
+// ============================================================================
+// GitHub Actions workflow extractor (.github/workflows/*.yml|*.yaml)
+// ============================================================================
+
+fn is_github_actions_workflow_path(path: &Path) -> bool {
+    let Some(ext) = path.extension().and_then(std::ffi::OsStr::to_str) else {
+        return false;
+    };
+    let ext = ext.to_ascii_lowercase();
+    if ext != "yml" && ext != "yaml" {
+        return false;
+    }
+
+    let components: Vec<String> = path
+        .components()
+        .filter_map(|c| c.as_os_str().to_str().map(str::to_ascii_lowercase))
+        .collect();
+
+    components
+        .windows(2)
+        .any(|w| w[0] == ".github" && w[1] == "workflows")
+}
+
+fn extract_github_actions_workflow_from_str(
+    file: &str,
+    content: &str,
+    enabled_keywords: &[&'static str],
+) -> Vec<ExtractedCommand> {
+    const EXTRACTOR_ID: &str = "github_actions.steps.run";
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut out = Vec::new();
+    let mut steps_indent: Option<usize> = None;
+
+    let mut idx = 0usize;
+    while idx < lines.len() {
+        let line_no = idx + 1;
+        let raw_line = lines[idx];
+        let trimmed_start = raw_line.trim_start();
+
+        if trimmed_start.is_empty() || trimmed_start.starts_with('#') {
+            idx += 1;
+            continue;
+        }
+
+        let indent = raw_line.len() - trimmed_start.len();
+
+        if let Some(steps) = steps_indent {
+            // Exit steps block when indentation returns to the steps key level (or less).
+            if !trimmed_start.starts_with('-') && indent <= steps {
+                steps_indent = None;
+            }
+        }
+
+        if steps_indent.is_none() {
+            if let Some(rest) = yaml_key_value(trimmed_start, "steps") {
+                if rest.is_empty() || rest.starts_with('#') {
+                    steps_indent = Some(indent);
+                }
+            }
+            idx += 1;
+            continue;
+        }
+
+        let Some(steps) = steps_indent else {
+            unreachable!("steps_indent is checked above");
+        };
+
+        let in_steps_line = indent > steps || (indent == steps && trimmed_start.starts_with('-'));
+        if !in_steps_line {
+            idx += 1;
+            continue;
+        }
+
+        let mut candidate = trimmed_start;
+        if let Some(after_dash) = candidate.strip_prefix('-') {
+            candidate = after_dash.trim_start();
+        }
+
+        let Some(run_value) = yaml_key_value(candidate, "run") else {
+            idx += 1;
+            continue;
+        };
+
+        if run_value.starts_with('|') || run_value.starts_with('>') {
+            let block_start_line = line_no + 1;
+            let mut block = String::new();
+            let mut j = idx + 1;
+
+            while j < lines.len() {
+                let raw = lines[j];
+                let trimmed = raw.trim_start();
+
+                if !trimmed.is_empty() {
+                    let block_indent = raw.len() - trimmed.len();
+                    if block_indent <= indent {
+                        break;
+                    }
+                }
+
+                if !block.is_empty() {
+                    block.push('\n');
+                }
+                block.push_str(raw);
+                j += 1;
+            }
+
+            out.extend(extract_shell_script_with_offset_and_id(
+                file,
+                block_start_line,
+                &block,
+                enabled_keywords,
+                EXTRACTOR_ID,
+            ));
+
+            idx = j;
+            continue;
+        }
+
+        out.extend(extract_shell_script_with_offset_and_id(
+            file,
+            line_no,
+            run_value,
+            enabled_keywords,
+            EXTRACTOR_ID,
+        ));
+
+        idx += 1;
+    }
+
+    out
+}
+
+fn yaml_key_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let trimmed = line.trim_start();
+    let after_key = trimmed.strip_prefix(key)?;
+
+    // Require `key:` or `key :` (avoid matching prefixes like `runner:` for `run`).
+    let after_key = after_key
+        .strip_prefix(':')
+        .or_else(|| after_key.trim_start().strip_prefix(':'))?;
+
+    Some(after_key.trim_start())
 }
 #[must_use]
 pub fn build_report(
@@ -1851,5 +2024,96 @@ RUN rm -rf ./tmp # cleanup temp dir
         let extracted = extract_dockerfile_from_str("Dockerfile", content, &["apt"]);
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].command, "apt-get update");
+    }
+
+    // ========================================================================
+    // GitHub Actions extractor tests (git_safety_guard-scan.3.3)
+    // ========================================================================
+
+    #[test]
+    fn github_actions_path_detection() {
+        use std::path::Path;
+        assert!(is_github_actions_workflow_path(Path::new(
+            ".github/workflows/ci.yml"
+        )));
+        assert!(is_github_actions_workflow_path(Path::new(
+            ".github/workflows/ci.yaml"
+        )));
+        assert!(is_github_actions_workflow_path(Path::new(
+            ".github/workflows/sub/ci.yml"
+        )));
+        assert!(is_github_actions_workflow_path(Path::new(
+            ".GITHUB/WORKFLOWS/CI.YML"
+        )));
+        assert!(!is_github_actions_workflow_path(Path::new(
+            ".github/workflows/ci.json"
+        )));
+        assert!(!is_github_actions_workflow_path(Path::new(
+            "workflows/ci.yml"
+        )));
+        assert!(!is_github_actions_workflow_path(Path::new(
+            ".github/workflow/ci.yml"
+        )));
+    }
+
+    #[test]
+    fn github_actions_extractor_extracts_run_steps_only() {
+        let content = r#"name: CI
+on: [push]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: "rm -rf /"
+      - run: git status
+      - run: rm -rf ./build
+"#;
+
+        let extracted = extract_github_actions_workflow_from_str(
+            ".github/workflows/ci.yml",
+            content,
+            &["git", "rm"],
+        );
+        assert_eq!(extracted.len(), 2);
+        assert_eq!(extracted[0].line, 8);
+        assert_eq!(extracted[0].extractor_id, "github_actions.steps.run");
+        assert_eq!(extracted[0].command, "git status");
+        assert_eq!(extracted[1].line, 9);
+        assert_eq!(extracted[1].extractor_id, "github_actions.steps.run");
+        assert_eq!(extracted[1].command, "rm -rf ./build");
+    }
+
+    #[test]
+    fn github_actions_extractor_handles_block_scalar_and_skips_comments() {
+        // Note: list items can appear at the same indentation level as the `steps:` key.
+        let content = r"jobs:
+  test:
+    steps:
+    - run: |
+        echo hello
+        # rm -rf /
+        rm -rf ./build
+";
+
+        let extracted =
+            extract_github_actions_workflow_from_str(".github/workflows/ci.yml", content, &["rm"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].line, 7);
+        assert_eq!(extracted[0].extractor_id, "github_actions.steps.run");
+        assert_eq!(extracted[0].command, "rm -rf ./build");
+    }
+
+    #[test]
+    fn github_actions_extractor_ignores_run_outside_steps() {
+        let content = r"run: rm -rf /
+jobs:
+  test:
+    steps:
+      - run: echo hello
+";
+
+        let extracted =
+            extract_github_actions_workflow_from_str(".github/workflows/ci.yml", content, &["rm"]);
+        assert!(extracted.is_empty());
     }
 }
