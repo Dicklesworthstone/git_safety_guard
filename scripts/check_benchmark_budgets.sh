@@ -90,7 +90,8 @@ WARNINGS=0
 # We use the middle value (point estimate)
 while IFS= read -r line; do
     # Look for benchmark name lines (they start with the benchmark group/name)
-    if [[ "$line" =~ ^([a-z_]+/[a-z_/]+)$ ]]; then
+    # Include digits in pattern for names like "tier1_triggers"
+    if [[ "$line" =~ ^([a-z0-9_]+/[a-z0-9_/]+)$ ]]; then
         CURRENT_BENCH="$line"
         continue
     fi

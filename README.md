@@ -680,16 +680,19 @@ If dcg blocks a command that is safe in your specific context, you can add it to
 
 ```bash
 # Allow a specific rule by ID (recommended)
-dcg allowlist add --rule core.git:reset-hard --reason "Used for CI cleanup"
+dcg allowlist add core.git:reset-hard -r "Used for CI cleanup"
 
-# Allow at project level (default is user level)
-dcg allowlist add --rule core.git:reset-hard --reason "CI cleanup" --scope project
+# Allow at project level (default if in a git repo)
+dcg allowlist add core.git:reset-hard -r "CI cleanup" --project
 
-# Allow with expiration
-dcg allowlist add --rule core.git:clean-force --reason "Migration" --expires 7d
+# Add to user-level allowlist instead
+dcg allowlist add core.git:reset-hard -r "Personal workflow" --user
 
-# Allow a specific command (exact match)
-dcg allowlist add --command "rm -rf ./build" --reason "Build cleanup"
+# Allow with expiration (ISO 8601 format)
+dcg allowlist add core.git:clean-force -r "Migration" --expires "2026-02-01T00:00:00Z"
+
+# Allow a specific command (exact match) using add-command
+dcg allowlist add-command "rm -rf ./build" -r "Build cleanup"
 ```
 
 **Listing allowlist entries:**
@@ -698,18 +701,24 @@ dcg allowlist add --command "rm -rf ./build" --reason "Build cleanup"
 # List all entries from all layers
 dcg allowlist list
 
-# List entries for a specific scope
-dcg allowlist list --scope project
+# List project allowlist only
+dcg allowlist list --project
+
+# List user allowlist only
+dcg allowlist list --user
+
+# Output as JSON
+dcg allowlist list --format json
 ```
 
 **Removing entries:**
 
 ```bash
-# Remove by rule ID
-dcg allowlist remove --rule core.git:reset-hard
+# Remove a rule by ID
+dcg allowlist remove core.git:reset-hard
 
-# Remove by command
-dcg allowlist remove --command "rm -rf ./build"
+# Remove from project allowlist specifically
+dcg allowlist remove core.git:reset-hard --project
 ```
 
 **Validating allowlist files:**
@@ -717,15 +726,9 @@ dcg allowlist remove --command "rm -rf ./build"
 ```bash
 # Check for issues (expired entries, invalid patterns)
 dcg allowlist validate
-```
 
-**Pattern-based allowlisting (advanced):**
-
-For pattern-based allowlists using regex, you must acknowledge the risk:
-
-```bash
-# Allow any rm -rf on build directories (requires acknowledgement)
-dcg allowlist add --pattern "rm -rf .*/build" --reason "Build dirs" --risk-acknowledged
+# Strict mode: treat warnings as errors
+dcg allowlist validate --strict
 ```
 
 **Example allowlist.toml:**
@@ -737,7 +740,7 @@ reason = "Used for CI pipeline cleanup"
 added_at = "2026-01-08T12:00:00Z"
 
 [[allow]]
-command = "rm -rf ./build"
+exact_command = "rm -rf ./build"
 reason = "Safe build directory cleanup"
 added_at = "2026-01-08T12:00:00Z"
 expires_at = "2026-02-08T12:00:00Z"  # Optional expiration

@@ -124,7 +124,7 @@ pub use scan::{
 
 // Re-export performance budget types
 pub use perf::{
-    ABSOLUTE_MAX, Budget, BudgetStatus, FAIL_OPEN_THRESHOLD_MS, FAST_PATH, FAST_PATH_P99_US,
+    ABSOLUTE_MAX, Budget, BudgetStatus, FAIL_OPEN_THRESHOLD_MS, FAST_PATH, FAST_PATH_BUDGET_US,
     FULL_HEREDOC_PIPELINE, HEREDOC_EXTRACT, HEREDOC_TRIGGER, LANGUAGE_DETECT, PATTERN_MATCH,
-    QUICK_REJECT, SLOW_PATH_P99_MS, should_fail_open,
+    QUICK_REJECT, SLOW_PATH_BUDGET_MS, should_fail_open,
 };

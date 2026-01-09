@@ -207,11 +207,13 @@ pub fn should_fail_open(duration: Duration) -> bool {
 // Summary Constants for External Use
 // =============================================================================
 
-/// Fast path p99 budget in microseconds (for documentation and config).
-pub const FAST_PATH_P99_US: u64 = 500;
+/// Fast path maximum budget in microseconds (panic threshold).
+/// Commands exceeding this trigger CI failures.
+pub const FAST_PATH_BUDGET_US: u64 = 500;
 
-/// Slow path (heredoc) p99 budget (for documentation and config).
-pub const SLOW_PATH_P99_MS: u64 = 50;
+/// Slow path (heredoc) maximum budget in milliseconds (panic threshold).
+/// Operations exceeding this trigger fail-open behavior.
+pub const SLOW_PATH_BUDGET_MS: u64 = 50;
 
 /// Absolute maximum before fail-open (for documentation and config).
 pub const FAIL_OPEN_THRESHOLD_MS: u64 = 50;
