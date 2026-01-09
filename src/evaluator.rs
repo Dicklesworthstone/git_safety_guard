@@ -51,7 +51,9 @@ use crate::heredoc::{
     ExtractionResult, SkipReason, TriggerResult, check_triggers, extract_content,
 };
 use crate::packs::{REGISTRY, normalize_command, pack_aware_quick_reject};
+use crate::perf::{Deadline, FULL_HEREDOC_PIPELINE, PATTERN_MATCH};
 use std::collections::HashSet;
+use std::time::Duration;
 
 /// Convert `ast_matcher::Severity` to `packs::Severity`.
 ///
@@ -207,6 +209,8 @@ pub struct EvaluationResult {
     /// - Warn: allow command, output warning only
     /// - Log: allow command, log only (no visible output)
     pub effective_mode: Option<crate::packs::DecisionMode>,
+    /// Whether evaluation skipped deeper analysis due to a deadline overrun.
+    pub skipped_due_to_budget: bool,
 }
 
 impl EvaluationResult {

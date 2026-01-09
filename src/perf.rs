@@ -30,7 +30,7 @@
 //! Any operation exceeding 50ms triggers fail-open behavior in hook mode.
 //! This ensures dcg never blocks a user's workflow indefinitely.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Performance budget for a single operation tier.
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +102,85 @@ pub enum BudgetStatus {
     Warning,
     /// Duration exceeds panic threshold.
     Panic,
+}
+
+// =============================================================================
+// Deadline Type (for fail-open budget enforcement)
+// =============================================================================
+
+/// A deadline for operation completion, used for fail-open behavior.
+///
+/// The Deadline tracks when an operation started and how long it's allowed
+/// to run. When the deadline is exceeded, expensive operations should be
+/// skipped and the command allowed to proceed (fail-open).
+///
+/// # Example
+///
+/// ```
+/// use destructive_command_guard::perf::Deadline;
+/// use std::time::Duration;
+///
+/// let deadline = Deadline::new(Duration::from_millis(10));
+/// // ... perform operations ...
+/// if deadline.is_exceeded() {
+///     // Skip remaining analysis, fail-open
+/// }
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Deadline {
+    /// When the deadline started.
+    start: Instant,
+    /// Maximum duration allowed.
+    max_duration: Duration,
+}
+
+impl Deadline {
+    /// Create a new deadline with the given maximum duration.
+    #[must_use]
+    pub fn new(max_duration: Duration) -> Self {
+        Self {
+            start: Instant::now(),
+            max_duration,
+        }
+    }
+
+    /// Create a deadline from the absolute maximum (fail-open threshold).
+    #[must_use]
+    pub fn fail_open_default() -> Self {
+        Self::new(ABSOLUTE_MAX)
+    }
+
+    /// Check if the deadline has been exceeded.
+    #[must_use]
+    pub fn is_exceeded(&self) -> bool {
+        self.start.elapsed() > self.max_duration
+    }
+
+    /// Get the remaining time before the deadline, or None if exceeded.
+    #[must_use]
+    pub fn remaining(&self) -> Option<Duration> {
+        self.max_duration.checked_sub(self.start.elapsed())
+    }
+
+    /// Get the elapsed time since the deadline started.
+    #[must_use]
+    pub fn elapsed(&self) -> Duration {
+        self.start.elapsed()
+    }
+
+    /// Get the maximum duration for this deadline.
+    #[must_use]
+    pub const fn max_duration(&self) -> Duration {
+        self.max_duration
+    }
+
+    /// Check if there's enough time remaining for an operation with the given budget.
+    ///
+    /// Returns true if the remaining time exceeds the budget's panic threshold.
+    #[must_use]
+    pub fn has_budget_for(&self, budget: &Budget) -> bool {
+        self.remaining().is_some_and(|r| r > budget.panic)
+    }
 }
 
 // =============================================================================
@@ -197,6 +276,12 @@ pub const FULL_HEREDOC_PIPELINE: Budget = Budget::from_ms(
 /// This ensures dcg never blocks a user's workflow indefinitely.
 pub const ABSOLUTE_MAX: Duration = Duration::from_millis(50);
 
+/// Hook evaluation time budget in milliseconds (tight for shell responsiveness).
+pub const HOOK_EVALUATION_BUDGET_MS: u64 = 10;
+
+/// Hook evaluation time budget as a Duration.
+pub const HOOK_EVALUATION_BUDGET: Duration = Duration::from_millis(HOOK_EVALUATION_BUDGET_MS);
+
 /// Check if a duration should trigger fail-open behavior.
 #[must_use]
 pub fn should_fail_open(duration: Duration) -> bool {
@@ -270,5 +355,40 @@ mod tests {
 
         // Full pipeline should accommodate all components
         assert!(FULL_HEREDOC_PIPELINE.panic >= HEREDOC_EXTRACT.panic);
+    }
+
+    #[test]
+    fn deadline_creation() {
+        let deadline = Deadline::new(Duration::from_millis(100));
+        assert!(!deadline.is_exceeded());
+        assert!(deadline.remaining().is_some());
+        assert_eq!(deadline.max_duration(), Duration::from_millis(100));
+    }
+
+    #[test]
+    fn deadline_fail_open_default() {
+        let deadline = Deadline::fail_open_default();
+        assert_eq!(deadline.max_duration(), ABSOLUTE_MAX);
+        assert!(!deadline.is_exceeded());
+    }
+
+    #[test]
+    fn deadline_exceeded_with_zero_duration() {
+        let deadline = Deadline::new(Duration::ZERO);
+        // A zero-duration deadline should be immediately exceeded
+        assert!(deadline.is_exceeded());
+        assert!(deadline.remaining().is_none());
+    }
+
+    #[test]
+    fn deadline_has_budget_for() {
+        let deadline = Deadline::new(Duration::from_millis(100));
+        let small_budget = Budget::new(1000, 5000, 10_000); // 10ms panic
+        let large_budget = Budget::new(10_000, 50_000, 200_000); // 200ms panic
+
+        // Should have budget for small operations
+        assert!(deadline.has_budget_for(&small_budget));
+        // Should not have budget for operations that take longer than the deadline
+        assert!(!deadline.has_budget_for(&large_budget));
     }
 }

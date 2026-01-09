@@ -318,7 +318,7 @@ impl TraceCollector {
     }
 
     /// Mark whether evaluation skipped deeper analysis due to budget.
-    pub fn set_budget_skip(&mut self, skipped: bool) {
+    pub const fn set_budget_skip(&mut self, skipped: bool) {
         self.skipped_due_to_budget = skipped;
     }
 

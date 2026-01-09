@@ -479,10 +479,28 @@ fn main() {
         return;
     }
 
+    // Start evaluation deadline after input size checks (includes JSON parse + evaluation).
+    let deadline = Deadline::new(HOOK_EVALUATION_BUDGET);
+
     // Fast path: parse JSON directly from the input buffer
     let Ok(hook_input) = serde_json::from_str::<HookInput>(&input) else {
         return;
     };
+
+    if deadline.is_exceeded() {
+        if let (Some(log_file), Some(command)) =
+            (config.general.log_file.as_deref(), hook::extract_command(&hook_input))
+        {
+            let _ = hook::log_budget_skip(
+                log_file,
+                &command,
+                "input_parsing",
+                deadline.elapsed(),
+                HOOK_EVALUATION_BUDGET,
+            );
+        }
+        return;
+    }
 
     // Only process Bash tool invocations
     if hook_input.tool_name.as_deref() != Some("Bash") {
@@ -516,15 +534,42 @@ fn main() {
         return;
     }
 
+    if deadline.is_exceeded() {
+        if let Some(log_file) = config.general.log_file.as_deref() {
+            let _ = hook::log_budget_skip(
+                log_file,
+                &command,
+                "pre_evaluation",
+                deadline.elapsed(),
+                HOOK_EVALUATION_BUDGET,
+            );
+        }
+        return;
+    }
+
     // Use the shared evaluator for hook mode parity with `dcg test`.
-    let result = evaluate_command_with_pack_order(
+    let result = evaluate_command_with_pack_order_deadline(
         &command,
         &enabled_keywords,
         &ordered_packs,
         &compiled_overrides,
         &allowlists,
         &heredoc_settings,
+        Some(&deadline),
     );
+
+    if result.skipped_due_to_budget {
+        if let Some(log_file) = config.general.log_file.as_deref() {
+            let _ = hook::log_budget_skip(
+                log_file,
+                &command,
+                "evaluation",
+                deadline.elapsed(),
+                HOOK_EVALUATION_BUDGET,
+            );
+        }
+        return;
+    }
 
     if result.decision != EvaluationDecision::Deny {
         return;

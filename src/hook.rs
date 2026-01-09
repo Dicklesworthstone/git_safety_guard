@@ -7,6 +7,7 @@ use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::time::Duration;
 
 /// Input structure from Claude Code's `PreToolUse` hook.
 #[derive(Debug, Deserialize)]
@@ -426,6 +427,55 @@ pub fn log_blocked_command(
     let pack_str = pack.unwrap_or("unknown");
 
     writeln!(file, "[{timestamp}] [{pack_str}] {reason}")?;
+    writeln!(file, "  Command: {command}")?;
+    writeln!(file)?;
+
+    Ok(())
+}
+
+/// Log a budget skip to a file (if logging is enabled).
+///
+/// # Errors
+///
+/// Returns any I/O errors encountered while creating directories or appending
+/// to the log file.
+pub fn log_budget_skip(
+    log_file: &str,
+    command: &str,
+    stage: &str,
+    elapsed: Duration,
+    budget: Duration,
+) -> io::Result<()> {
+    use std::fs::OpenOptions;
+
+    // Expand ~ in path
+    let path = if log_file.starts_with("~/") {
+        dirs::home_dir().map_or_else(
+            || std::path::PathBuf::from(log_file),
+            |h| h.join(&log_file[2..]),
+        )
+    } else {
+        std::path::PathBuf::from(log_file)
+    };
+
+    // Ensure parent directory exists
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+
+    let timestamp = chrono_lite_timestamp();
+    writeln!(
+        file,
+        "[{timestamp}] [budget] evaluation skipped due to budget at {stage}"
+    )?;
+    writeln!(
+        file,
+        "  Budget: {}ms, Elapsed: {}ms",
+        budget.as_millis(),
+        elapsed.as_millis()
+    )?;
     writeln!(file, "  Command: {command}")?;
     writeln!(file)?;
 

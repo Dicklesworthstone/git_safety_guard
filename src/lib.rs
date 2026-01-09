@@ -84,6 +84,8 @@ pub use evaluator::{
     EvaluationDecision, EvaluationResult, LegacyDestructivePattern, LegacySafePattern, MatchSource,
     MatchSpan, PatternMatch, evaluate_command, evaluate_command_with_legacy,
     evaluate_command_with_pack_order,
+    // TODO(git_safety_guard-99e.14): Re-export when implemented:
+    // evaluate_command_with_deadline, evaluate_command_with_pack_order_deadline,
 };
 pub use hook::{HookInput, HookOutput, HookResult, HookSpecificOutput};
 pub use packs::{Pack, PackId, PackRegistry};
@@ -135,8 +137,9 @@ pub use simulate::{
 
 // Re-export performance budget types
 pub use perf::{
-    ABSOLUTE_MAX, Budget, BudgetStatus, FAIL_OPEN_THRESHOLD_MS, FAST_PATH, FAST_PATH_BUDGET_US,
-    FULL_HEREDOC_PIPELINE, HEREDOC_EXTRACT, HEREDOC_TRIGGER, LANGUAGE_DETECT, PATTERN_MATCH,
+    ABSOLUTE_MAX, Budget, BudgetStatus, Deadline, FAIL_OPEN_THRESHOLD_MS, FAST_PATH,
+    FAST_PATH_BUDGET_US, FULL_HEREDOC_PIPELINE, HEREDOC_EXTRACT, HEREDOC_TRIGGER,
+    HOOK_EVALUATION_BUDGET, HOOK_EVALUATION_BUDGET_MS, LANGUAGE_DETECT, PATTERN_MATCH,
     QUICK_REJECT, SLOW_PATH_BUDGET_MS, should_fail_open,
 };
 
