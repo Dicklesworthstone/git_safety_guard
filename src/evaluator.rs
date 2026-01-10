@@ -54,8 +54,10 @@ use crate::heredoc::{
 };
 use crate::packs::{REGISTRY, normalize_command, pack_aware_quick_reject};
 use crate::perf::Deadline;
+use regex::RegexSet;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 /// Convert `ast_matcher::Severity` to `packs::Severity`.
 ///
@@ -1362,29 +1364,28 @@ fn evaluate_heredoc(
 
 #[allow(dead_code)]
 fn check_fallback_patterns(command: &str) -> Option<EvaluationResult> {
-    // List of critical substrings that indicate destructive code in script contexts.
-    // Used when AST analysis is skipped due to size limits.
-    const FALLBACK_PATTERNS: &[&str] = &[
-        "shutil.rmtree",
-        "os.remove",
-        "os.rmdir",
-        "os.unlink",
-        "fs.rmSync",
-        "fs.rmdirSync",
-        "child_process.execSync",
-        "child_process.spawnSync",
-        "os.RemoveAll",
-        "rm -rf",
-        "git reset --hard",
-    ];
+    // List of critical destructive patterns to check when AST analysis is skipped (e.g. oversized input).
+    // These patterns must be robust to whitespace variations where applicable.
+    static FALLBACK_PATTERNS: LazyLock<RegexSet> = LazyLock::new(|| {
+        RegexSet::new([
+            r"shutil\.rmtree",
+            r"os\.remove",
+            r"os\.rmdir",
+            r"os\.unlink",
+            r"fs\.rmSync",
+            r"fs\.rmdirSync",
+            r"child_process\.execSync",
+            r"child_process\.spawnSync",
+            r"os\.RemoveAll",
+            r"\brm\s+-rf\b",
+            r"\bgit\s+reset\s+--hard\b",
+        ]).expect("fallback patterns must compile")
+    });
 
-    for &pattern in FALLBACK_PATTERNS {
-        if command.contains(pattern) {
-            return Some(EvaluationResult::denied_by_legacy(&format!(
-                "Oversized command contains destructive pattern '{}' (fallback check)",
-                pattern
-            )));
-        }
+    if FALLBACK_PATTERNS.is_match(command) {
+        return Some(EvaluationResult::denied_by_legacy(
+            "Oversized command contains destructive pattern (fallback check)",
+        ));
     }
     None
 }

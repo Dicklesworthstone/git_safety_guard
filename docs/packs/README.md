@@ -37,6 +37,9 @@ in config files and environment variables.
 - `infrastructure.pulumi`
 - `infrastructure.ansible`
 
+## Platform
+- `platform.github`
+
 ## System
 - `system.disk`
 - `system.permissions`
