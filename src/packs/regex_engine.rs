@@ -4,11 +4,15 @@
 //! - ~85% of pack patterns can use the linear-time `regex` crate
 //! - ~15% require lookahead/lookbehind (needs `fancy_regex`)
 //!
-//! This module provides [`CompiledRegex`], an abstraction that auto-selects
-//! the appropriate engine based on pattern syntax, providing guaranteed O(n)
-//! performance for the majority of patterns.
+//! This module provides:
+//! - [`CompiledRegex`]: Eagerly compiled abstraction that auto-selects engine
+//! - [`LazyFancyRegex`]: Lazily compiled regex using `fancy_regex` (for pack patterns)
+//!
+//! The lazy variant avoids regex compilation during pack registry initialization,
+//! improving startup latency for the common allow-path case.
 
 use std::borrow::Cow;
+use std::sync::OnceLock;
 
 /// A compiled regex that auto-selects between linear-time and backtracking engines.
 ///
@@ -172,6 +176,117 @@ pub fn needs_backtracking_engine(pattern: &str) -> bool {
 
     false
 }
+
+// ============================================================================
+// Lazy Regex Primitive
+// ============================================================================
+
+/// A lazily-compiled regex pattern using `fancy_regex`.
+///
+/// This primitive stores the pattern text and defers regex compilation until
+/// first use. This is critical for pack registry performance: we can initialize
+/// pack metadata (keywords, pattern names) without paying the compilation cost
+/// for patterns that may never be evaluated (e.g., on the quick-reject allow path).
+///
+/// # Performance Characteristics
+///
+/// - **Construction**: O(1) - just stores the pattern string
+/// - **First match**: O(pattern) - compiles the regex once
+/// - **Subsequent matches**: O(n) for linear patterns, varies for backtracking
+///
+/// # Thread Safety
+///
+/// Uses `OnceLock` for thread-safe lazy initialization. Multiple threads may
+/// race to compile the pattern, but only one compilation occurs.
+///
+/// # Example
+///
+/// ```ignore
+/// use destructive_command_guard::packs::regex_engine::LazyFancyRegex;
+///
+/// // No compilation happens here
+/// static PATTERN: LazyFancyRegex = LazyFancyRegex::new(r"git\s+reset\s+--hard");
+///
+/// // Compilation happens on first use
+/// assert!(PATTERN.is_match("git reset --hard HEAD"));
+/// ```
+#[derive(Debug)]
+pub struct LazyFancyRegex {
+    pattern: &'static str,
+    compiled: OnceLock<fancy_regex::Regex>,
+}
+
+impl LazyFancyRegex {
+    /// Create a new lazy regex pattern.
+    ///
+    /// This is a `const fn` and performs no regex compilation.
+    /// The pattern will be compiled on first use.
+    #[must_use]
+    pub const fn new(pattern: &'static str) -> Self {
+        Self {
+            pattern,
+            compiled: OnceLock::new(),
+        }
+    }
+
+    /// Get or compile the regex.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pattern fails to compile. Pack patterns should be validated
+    /// by unit tests (e.g., `all_patterns_compile`) to catch this at test time
+    /// rather than runtime.
+    fn get_compiled(&self) -> &fancy_regex::Regex {
+        self.compiled.get_or_init(|| {
+            fancy_regex::Regex::new(self.pattern).unwrap_or_else(|e| {
+                panic!(
+                    "LazyFancyRegex pattern failed to compile: '{}': {}",
+                    self.pattern, e
+                )
+            })
+        })
+    }
+
+    /// Check if the pattern matches the text.
+    ///
+    /// On first call, this compiles the regex. Subsequent calls reuse the
+    /// compiled pattern.
+    ///
+    /// Returns `false` on regex execution errors (e.g., backtracking limits).
+    #[must_use]
+    pub fn is_match(&self, haystack: &str) -> bool {
+        self.get_compiled().is_match(haystack).unwrap_or(false)
+    }
+
+    /// Find the span (start, end) of the first match.
+    ///
+    /// Returns `None` if no match or on execution error.
+    #[must_use]
+    pub fn find_span(&self, haystack: &str) -> Option<(usize, usize)> {
+        self.get_compiled()
+            .find(haystack)
+            .ok()
+            .flatten()
+            .map(|m| (m.start(), m.end()))
+    }
+
+    /// Get the pattern string.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        self.pattern
+    }
+
+    /// Check if the regex has been compiled.
+    ///
+    /// Useful for testing to verify lazy compilation behavior.
+    #[must_use]
+    pub fn is_compiled(&self) -> bool {
+        self.compiled.get().is_some()
+    }
+}
+
+// Remove unnecessary unsafe impl Sync - fancy_regex::Regex is Sync
+// unsafe impl Sync for LazyFancyRegex {}
 
 #[cfg(test)]
 mod tests {
@@ -399,5 +514,140 @@ mod tests {
         let result = CompiledRegex::new_backtracking(r"(unclosed");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("fancy_regex compile error"));
+    }
+
+    // =========================================================================
+    // LazyFancyRegex Tests
+    // =========================================================================
+
+    #[test]
+    fn test_lazy_regex_not_compiled_initially() {
+        let lazy = LazyFancyRegex::new(r"test\s+pattern");
+        assert!(!lazy.is_compiled());
+    }
+
+    #[test]
+    fn test_lazy_regex_compiles_on_first_use() {
+        let lazy = LazyFancyRegex::new(r"test\s+pattern");
+        assert!(!lazy.is_compiled());
+
+        // First use triggers compilation
+        let _ = lazy.is_match("test pattern");
+        assert!(lazy.is_compiled());
+    }
+
+    #[test]
+    fn test_lazy_regex_is_match_same_as_eager() {
+        let pattern = r"git\s+reset\s+--hard";
+        let lazy = LazyFancyRegex::new(pattern);
+        let eager = fancy_regex::Regex::new(pattern).unwrap();
+
+        // Test matching inputs
+        let inputs = [
+            "git reset --hard",
+            "git reset --hard HEAD",
+            "  git reset --hard  ",
+            "git status", // No match
+            "reset --hard", // No match
+            "",
+        ];
+
+        for input in inputs {
+            assert_eq!(
+                lazy.is_match(input),
+                eager.is_match(input).unwrap_or(false),
+                "Mismatch for input: {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lazy_regex_find_span_same_as_eager() {
+        let pattern = r"rm\s+-rf";
+        let lazy = LazyFancyRegex::new(pattern);
+        let eager = fancy_regex::Regex::new(pattern).unwrap();
+
+        let inputs = [
+            "rm -rf /",
+            "sudo rm -rf /tmp",
+            "echo rm -rf",
+            "rm command",
+            "",
+        ];
+
+        for input in inputs {
+            let lazy_span = lazy.find_span(input);
+            let eager_span = eager.find(input).ok().flatten().map(|m| (m.start(), m.end()));
+            assert_eq!(lazy_span, eager_span, "Span mismatch for input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn test_lazy_regex_as_str() {
+        let pattern = r"test\s+pattern";
+        let lazy = LazyFancyRegex::new(pattern);
+        assert_eq!(lazy.as_str(), pattern);
+    }
+
+    #[test]
+    fn test_lazy_regex_lookahead() {
+        // Test with lookahead pattern (requires fancy_regex)
+        let lazy = LazyFancyRegex::new(r"git\s+push(?=.*--force)");
+
+        assert!(lazy.is_match("git push --force"));
+        assert!(lazy.is_match("git push origin main --force"));
+        assert!(!lazy.is_match("git push"));
+        assert!(!lazy.is_match("git push origin main"));
+    }
+
+    #[test]
+    fn test_lazy_regex_lookbehind() {
+        // Test with lookbehind pattern
+        let lazy = LazyFancyRegex::new(r"(?<=drop\s)database");
+
+        assert!(lazy.is_match("drop database"));
+        assert!(!lazy.is_match("database"));
+    }
+
+    #[test]
+    fn test_lazy_regex_span_with_lookahead() {
+        let lazy = LazyFancyRegex::new(r"git(?=\s+push)");
+
+        // Lookahead is zero-width, so span should be just "git"
+        assert_eq!(lazy.find_span("git push"), Some((0, 3)));
+        assert_eq!(lazy.find_span("run git push now"), Some((4, 7)));
+        assert_eq!(lazy.find_span("git status"), None);
+    }
+
+    #[test]
+    fn test_lazy_regex_static_usage() {
+        // Verify it works as a static (the primary use case)
+        static PATTERN: LazyFancyRegex = LazyFancyRegex::new(r"hello\s+world");
+
+        assert!(PATTERN.is_match("hello world"));
+        assert!(!PATTERN.is_match("hello"));
+    }
+
+    #[test]
+    fn test_lazy_regex_empty_pattern() {
+        let lazy = LazyFancyRegex::new("");
+
+        // Empty pattern matches at position 0
+        assert!(lazy.is_match(""));
+        assert!(lazy.is_match("anything"));
+        assert_eq!(lazy.find_span("test"), Some((0, 0)));
+    }
+
+    #[test]
+    fn test_lazy_regex_reuses_compiled() {
+        let lazy = LazyFancyRegex::new(r"test");
+
+        // Multiple calls should reuse the same compiled regex
+        assert!(lazy.is_match("test"));
+        assert!(lazy.is_match("test again"));
+        assert!(lazy.is_match("another test"));
+
+        // All calls after first should still show as compiled
+        assert!(lazy.is_compiled());
     }
 }
