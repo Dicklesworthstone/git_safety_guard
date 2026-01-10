@@ -153,11 +153,20 @@ impl CompiledRegex {
 pub fn needs_backtracking_engine(pattern: &str) -> bool {
     // Lookahead: (?= positive, (?! negative
     // Lookbehind: (?<= positive, (?<! negative
+    // Atomic groups: (?>
     if pattern.contains("(?=")
         || pattern.contains("(?!")
         || pattern.contains("(?<=")
         || pattern.contains("(?<!")
+        || pattern.contains("(?>")
     {
+        return true;
+    }
+
+    // Possessive quantifiers: *+, ++, ?+, {n,m}+
+    // Note: This is a heuristic. + can also be a literal or part of character class.
+    // However, *+, ++, ?+ are almost always possessive quantifiers in this context.
+    if pattern.contains("*+") || pattern.contains("++") || pattern.contains("?+") || pattern.contains("}+") {
         return true;
     }
 
