@@ -35,32 +35,33 @@ fn create_safe_patterns() -> Vec<SafePattern> {
     // Match the target subcommand and action
     
     // Subcommands to look ahead for: repo|gist|release|issue|ssh-key|api
+    // We use a robust value matcher that handles quoted strings to prevent bypasses.
     
     vec![
         safe_pattern!(
             "gh-repo-list-view",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+repo\s+(?:list|view)\b"
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+repo\s+(?:list|view)\b"
         ),
         safe_pattern!(
             "gh-gist-list-view",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+gist\s+(?:list|view)\b"
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+gist\s+(?:list|view)\b"
         ),
         safe_pattern!(
             "gh-release-list-view",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+release\s+(?:list|view)\b"
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+release\s+(?:list|view)\b"
         ),
         safe_pattern!(
             "gh-issue-list-view",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+issue\s+(?:list|view)\b"
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+issue\s+(?:list|view)\b"
         ),
         safe_pattern!(
             "gh-ssh-key-list",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+ssh-key\s+list\b"
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+ssh-key\s+list\b"
         ),
         // Safe API GETs
         safe_pattern!(
             "gh-api-explicit-get",
-             r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+api\b.*(?:-X|--method)\s+GET\b"
+             r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+api\b.*(?:-X|--method)\s+GET\b"
         ),
     ]
 }
@@ -69,39 +70,39 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
     vec![
         destructive_pattern!(
             "gh-repo-delete",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+repo\s+delete\b",
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+repo\s+delete\b",
             "gh repo delete permanently deletes a GitHub repository. This cannot be undone."
         ),
         destructive_pattern!(
             "gh-repo-archive",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+repo\s+archive\b",
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+repo\s+archive\b",
             "gh repo archive makes a repository read-only. While reversible, it stops all write access."
         ),
         destructive_pattern!(
             "gh-gist-delete",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+gist\s+delete\b",
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+gist\s+delete\b",
             "gh gist delete permanently deletes a Gist."
         ),
         destructive_pattern!(
             "gh-release-delete",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+release\s+delete\b",
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+release\s+delete\b",
             "gh release delete permanently deletes a release."
         ),
         destructive_pattern!(
             "gh-issue-delete",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+issue\s+delete\b",
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+issue\s+delete\b",
             "gh issue delete permanently deletes an issue."
         ),
         destructive_pattern!(
             "gh-ssh-key-delete",
-            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+ssh-key\s+delete\b",
+            r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+ssh-key\s+delete\b",
             "gh ssh-key delete removes an SSH key, potentially breaking access."
         ),
         // API Deletes
         // DELETE /repos/{owner}/{repo} -> Delete a repository
         destructive_pattern!(
             "gh-api-delete-repo",
-             r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)\S+)?)*\s+api\b.*(?:-X|--method)\s+DELETE\b",
+             r"gh(?:\s+--?[A-Za-z][A-Za-z0-9-]*\b(?:\s+(?!(?:repo|gist|release|issue|ssh-key|api)\b)(?:(?:\x22[^\x22]*\x22)|(?:'[^']*')|\S+))?)*\s+api\b.*(?:-X|--method)\s+DELETE\b",
             "gh api DELETE calls can be destructive. Please verify the endpoint."
         ),
     ]
@@ -127,7 +128,9 @@ mod tests {
 
     #[test]
     fn blocks_destructive_variants() {
-        let pack = create_pack();
+        let mut pack = create_pack();
+        // Manually inject keywords for testing if needed
+        pack.keywords = &["gh"];
 
         let checks = vec![
             ("gh repo delete owner/repo", "gh-repo-delete"),
@@ -141,8 +144,8 @@ mod tests {
         ];
 
         for (cmd, expected_rule) in checks {
-            let matched = pack.check(cmd).unwrap_or_else(|| panic!("Should block: {}", cmd));
-            assert_eq!(matched.name, Some(expected_rule), "Command: {}", cmd);
+            let matched = pack.check(cmd).unwrap_or_else(|| panic!("Should block: {cmd}"));
+            assert_eq!(matched.name, Some(expected_rule), "Command: {cmd}");
         }
     }
 }
