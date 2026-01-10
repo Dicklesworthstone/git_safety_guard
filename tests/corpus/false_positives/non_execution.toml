@@ -1,0 +1,186 @@
+# False positives: command existence/version checks (non-execution)
+#
+# These commands check if a command exists or get its version/location,
+# they don't actually execute the command's functionality.
+
+# ============================================================================
+# command -v (check if command exists in PATH)
+# ============================================================================
+
+[[case]]
+description = "command -v git is safe"
+command = "command -v git"
+expected = "allow"
+
+[[case]]
+description = "command -v rm is safe"
+command = "command -v rm"
+expected = "allow"
+
+[[case]]
+description = "command -v docker is safe"
+command = "command -v docker"
+expected = "allow"
+
+[[case]]
+description = "command -v kubectl is safe"
+command = "command -v kubectl"
+expected = "allow"
+
+# ============================================================================
+# command -V (verbose, shows command type)
+# ============================================================================
+
+[[case]]
+description = "command -V git is safe"
+command = "command -V git"
+expected = "allow"
+
+[[case]]
+description = "command -V rm is safe"
+command = "command -V rm"
+expected = "allow"
+
+# ============================================================================
+# which (find command location)
+# ============================================================================
+
+[[case]]
+description = "which git is safe"
+command = "which git"
+expected = "allow"
+
+[[case]]
+description = "which rm is safe"
+command = "which rm"
+expected = "allow"
+
+[[case]]
+description = "which -a git is safe"
+command = "which -a git"
+expected = "allow"
+
+# ============================================================================
+# type (show command type)
+# ============================================================================
+
+[[case]]
+description = "type git is safe"
+command = "type git"
+expected = "allow"
+
+[[case]]
+description = "type rm is safe"
+command = "type rm"
+expected = "allow"
+
+[[case]]
+description = "type -a git is safe"
+command = "type -a git"
+expected = "allow"
+
+[[case]]
+description = "type -t git is safe"
+command = "type -t git"
+expected = "allow"
+
+[[case]]
+description = "type -p rm is safe"
+command = "type -p rm"
+expected = "allow"
+
+# ============================================================================
+# whereis (locate binary, source, manual)
+# ============================================================================
+
+[[case]]
+description = "whereis git is safe"
+command = "whereis git"
+expected = "allow"
+
+[[case]]
+description = "whereis rm is safe"
+command = "whereis rm"
+expected = "allow"
+
+# ============================================================================
+# --version and --help flags
+# ============================================================================
+
+[[case]]
+description = "git --version is safe"
+command = "git --version"
+expected = "allow"
+
+[[case]]
+description = "git -v is safe (version)"
+command = "git -v"
+expected = "allow"
+
+[[case]]
+description = "rm --version is safe"
+command = "rm --version"
+expected = "allow"
+
+[[case]]
+description = "rm --help is safe"
+command = "rm --help"
+expected = "allow"
+
+[[case]]
+description = "git --help is safe"
+command = "git --help"
+expected = "allow"
+
+[[case]]
+description = "git help reset is safe"
+command = "git help reset"
+expected = "allow"
+
+[[case]]
+description = "man git is safe"
+command = "man git"
+expected = "allow"
+
+[[case]]
+description = "man rm is safe"
+command = "man rm"
+expected = "allow"
+
+# ============================================================================
+# hash (check command in hash table)
+# ============================================================================
+
+[[case]]
+description = "hash git is safe"
+command = "hash git"
+expected = "allow"
+
+[[case]]
+description = "hash rm is safe"
+command = "hash rm"
+expected = "allow"
+
+[[case]]
+description = "hash -t git is safe"
+command = "hash -t git"
+expected = "allow"
+
+# ============================================================================
+# Conditional existence checks
+# ============================================================================
+
+[[case]]
+description = "if command -v git is safe"
+command = "if command -v git >/dev/null; then echo found; fi"
+expected = "allow"
+
+[[case]]
+description = "test -x /usr/bin/git is safe"
+command = "test -x /usr/bin/git && echo exists"
+expected = "allow"
+
+[[case]]
+description = "[ -x /usr/bin/rm ] is safe"
+command = "[ -x /usr/bin/rm ] && echo exists"
+expected = "allow"

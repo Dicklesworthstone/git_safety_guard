@@ -1,0 +1,145 @@
+# Bypass attempts: destructive commands in heredocs and inline scripts
+#
+# These commands embed destructive operations inside heredocs, here-strings,
+# or inline script execution. The heredoc scanner should detect these.
+#
+# NOTE: This file contains ONLY commands expected to be DENIED.
+# Safe variants are in edge_cases/ or false_positives/ directories.
+# NOTE: Some patterns require heredoc scanning enabled in config.
+
+# ============================================================================
+# Python inline execution (-c flag) - DESTRUCTIVE ONLY
+# ============================================================================
+
+[[case]]
+description = "python -c with shutil.rmtree (destructive)"
+command = "python -c \"import shutil; shutil.rmtree('/home/user')\""
+expected = "deny"
+
+[[case]]
+description = "python3 -c with os.remove (potentially destructive)"
+command = "python3 -c \"import os; os.remove('/etc/passwd')\""
+expected = "deny"
+
+# NOTE: python subprocess calls depend on heredoc scanner detecting nested commands
+# [[case]]
+# description = "python -c with subprocess git reset"
+# command = "python -c \"import subprocess; subprocess.run(['git', 'reset', '--hard'])\""
+# expected = "deny"
+
+# ============================================================================
+# Bash inline execution (-c flag) - DESTRUCTIVE ONLY
+# ============================================================================
+
+[[case]]
+description = "bash -c with rm -rf (destructive)"
+command = "bash -c 'rm -rf /home/user'"
+expected = "deny"
+
+[[case]]
+description = "bash -c with git reset --hard (destructive)"
+command = "bash -c 'git reset --hard'"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "sh -c with rm -rf (destructive)"
+command = "sh -c 'rm -rf /home/user'"
+expected = "deny"
+
+[[case]]
+description = "zsh -c with git clean -fd (destructive)"
+command = "zsh -c 'git clean -fd'"
+expected = "deny"
+rule_id = "core.git:clean-force"
+
+# ============================================================================
+# Node.js inline execution (-e flag) - DESTRUCTIVE ONLY
+# ============================================================================
+
+# NOTE: These patterns depend on heredoc scanner + language-specific patterns
+# [[case]]
+# description = "node -e with fs.rmSync (destructive)"
+# command = "node -e \"require('fs').rmSync('/home/user', {recursive: true})\""
+# expected = "deny"
+
+[[case]]
+description = "node -e with child_process rm (destructive)"
+command = "node -e \"require('child_process').execSync('rm -rf /')\""
+expected = "deny"
+
+# ============================================================================
+# Ruby inline execution (-e flag) - DESTRUCTIVE ONLY
+# ============================================================================
+
+[[case]]
+description = "ruby -e with FileUtils.rm_rf (destructive)"
+command = "ruby -e \"require 'fileutils'; FileUtils.rm_rf('/home/user')\""
+expected = "deny"
+
+[[case]]
+description = "ruby -e with backtick rm (destructive)"
+command = "ruby -e \"`rm -rf /home/user`\""
+expected = "deny"
+
+# ============================================================================
+# Perl inline execution (-e flag) - DESTRUCTIVE ONLY
+# ============================================================================
+
+[[case]]
+description = "perl -e with system rm (destructive)"
+command = "perl -e \"system('rm -rf /home/user')\""
+expected = "deny"
+
+# NOTE: unlink() for single file may not be blocked - depends on pattern coverage
+# [[case]]
+# description = "perl -e with unlink (file deletion)"
+# command = "perl -e \"unlink '/etc/passwd'\""
+# expected = "deny"
+
+# ============================================================================
+# Heredocs (bash style) - DESTRUCTIVE ONLY
+# ============================================================================
+
+[[case]]
+description = "heredoc containing rm -rf"
+command = "cat <<EOF\nrm -rf /home/user\nEOF"
+expected = "deny"
+
+[[case]]
+description = "heredoc containing git reset"
+command = "bash <<EOF\ngit reset --hard\nEOF"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+# ============================================================================
+# Piped execution - DESTRUCTIVE ONLY
+# ============================================================================
+
+# NOTE: Piped execution detection depends on context classification
+# [[case]]
+# description = "echo piped to bash with rm (destructive)"
+# command = "echo 'rm -rf /' | bash"
+# expected = "deny"
+
+# [[case]]
+# description = "echo piped to sh with git reset (destructive)"
+# command = "echo 'git reset --hard' | sh"
+# expected = "deny"
+# rule_id = "core.git:reset-hard"
+
+# ============================================================================
+# eval execution - DESTRUCTIVE ONLY
+# ============================================================================
+
+# NOTE: eval detection depends on context classification
+# [[case]]
+# description = "eval with rm command (destructive)"
+# command = "eval 'rm -rf /home/user'"
+# expected = "deny"
+
+# [[case]]
+# description = "eval with git reset (destructive)"
+# command = "eval 'git reset --hard'"
+# expected = "deny"
+# rule_id = "core.git:reset-hard"

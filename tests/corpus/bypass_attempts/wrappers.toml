@@ -1,0 +1,144 @@
+# Bypass attempts: destructive commands with wrapper prefixes
+#
+# These commands use wrapper prefixes (sudo, env, command, etc.) that should
+# still be detected and blocked.
+
+# ============================================================================
+# sudo prefix (should still block)
+# ============================================================================
+
+[[case]]
+description = "sudo git reset --hard is blocked"
+command = "sudo git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "sudo rm -rf is blocked"
+command = "sudo rm -rf /home/user"
+expected = "deny"
+
+[[case]]
+description = "sudo git clean -fd is blocked"
+command = "sudo git clean -fd"
+expected = "deny"
+rule_id = "core.git:clean-force"
+
+[[case]]
+description = "sudo git push --force is blocked"
+command = "sudo git push --force origin main"
+expected = "deny"
+rule_id = "core.git:push-force"
+
+# ============================================================================
+# env prefix (should still block)
+# ============================================================================
+
+[[case]]
+description = "env git reset --hard is blocked"
+command = "env git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "env with VAR git reset is blocked"
+command = "env GIT_AUTHOR_NAME=test git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "env rm -rf is blocked"
+command = "env rm -rf /home/user"
+expected = "deny"
+
+[[case]]
+description = "env -i git reset is blocked"
+command = "env -i git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+# ============================================================================
+# command prefix (should still block)
+# ============================================================================
+
+[[case]]
+description = "command git reset --hard is blocked"
+command = "command git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "command rm -rf is blocked"
+command = "command rm -rf /home/user"
+expected = "deny"
+
+# NOTE: command -v/-V cases moved to false_positives/non_execution.toml
+# (bypass_attempts category expects all commands to be DENIED)
+
+# ============================================================================
+# builtin prefix (should still block)
+# ============================================================================
+
+[[case]]
+description = "builtin command git reset is blocked"
+command = "builtin command git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+# ============================================================================
+# Multiple wrappers combined
+# ============================================================================
+
+[[case]]
+description = "sudo env git reset is blocked"
+command = "sudo env git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "env sudo git reset is blocked"
+command = "env sudo git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "sudo command git reset is blocked"
+command = "sudo command git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+# ============================================================================
+# time/strace/ltrace prefixes (profiling wrappers)
+# ============================================================================
+
+[[case]]
+description = "time git reset --hard is blocked"
+command = "time git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "time rm -rf is blocked"
+command = "time rm -rf /home/user"
+expected = "deny"
+
+# ============================================================================
+# nohup/nice prefixes
+# ============================================================================
+
+[[case]]
+description = "nohup git reset is blocked"
+command = "nohup git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "nice git reset is blocked"
+command = "nice git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "nice -n 19 rm -rf is blocked"
+command = "nice -n 19 rm -rf /home/user"
+expected = "deny"

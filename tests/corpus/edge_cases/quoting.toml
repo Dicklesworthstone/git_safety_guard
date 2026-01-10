@@ -1,0 +1,196 @@
+# Edge cases: quoting and escaping variations
+#
+# These test various quoting scenarios that could affect pattern matching.
+
+# ============================================================================
+# Single quotes (literal strings - no expansion)
+# ============================================================================
+
+[[case]]
+description = "single quoted rm in echo is safe (data)"
+command = "echo 'rm -rf /'"
+expected = "allow"
+
+[[case]]
+description = "single quoted git command in echo is safe"
+command = "echo 'git reset --hard'"
+expected = "allow"
+
+[[case]]
+description = "command in single quotes as argument is safe"
+command = "grep 'git reset --hard' file.txt"
+expected = "allow"
+
+# ============================================================================
+# Double quotes (variable expansion, some escaping)
+# ============================================================================
+
+[[case]]
+description = "double quoted rm in echo is safe"
+command = "echo \"rm -rf /\""
+expected = "allow"
+
+[[case]]
+description = "double quoted git command in echo is safe"
+command = "echo \"git reset --hard\""
+expected = "allow"
+
+[[case]]
+description = "variable in double quotes is safe"
+command = "echo \"$HOME\""
+expected = "allow"
+
+[[case]]
+description = "escaped dollar in double quotes"
+command = "echo \"\\$HOME\""
+expected = "allow"
+
+# ============================================================================
+# Backslash escaping
+# ============================================================================
+
+[[case]]
+description = "backslash escaped git should still be blocked"
+command = "\\git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "backslash in path is allowed"
+command = "ls /path/with\\ space/file"
+expected = "allow"
+
+[[case]]
+description = "escaped characters in argument"
+command = "echo hello\\ world"
+expected = "allow"
+
+[[case]]
+description = "escaped newline continuation"
+command = "echo hello \\\nworld"
+expected = "allow"
+
+# ============================================================================
+# $'...' ANSI-C quoting
+# ============================================================================
+
+[[case]]
+description = "ANSI-C quoted string with rm is safe"
+command = "echo $'rm -rf /'"
+expected = "allow"
+
+[[case]]
+description = "ANSI-C quoting with escape sequences"
+command = "echo $'hello\\nworld'"
+expected = "allow"
+
+# ============================================================================
+# Mixed quoting styles
+# ============================================================================
+
+[[case]]
+description = "mixed single and double quotes"
+command = "echo 'hello' \"world\""
+expected = "allow"
+
+[[case]]
+description = "adjacent quoted strings"
+command = "echo 'hello''world'"
+expected = "allow"
+
+[[case]]
+description = "nested quotes in variable"
+command = "VAR='rm -rf /'; echo \"$VAR\""
+expected = "allow"
+
+# ============================================================================
+# Inline code with various quoting
+# ============================================================================
+
+[[case]]
+description = "python -c with double quotes outer single inner"
+command = "python -c \"print('hello')\""
+expected = "allow"
+
+[[case]]
+description = "python -c with single quotes outer double inner"
+command = "python -c 'print(\"hello\")'"
+expected = "allow"
+
+[[case]]
+description = "bash -c with nested quotes"
+command = "bash -c 'echo \"hello world\"'"
+expected = "allow"
+
+[[case]]
+description = "bash -c with escaped quotes"
+command = "bash -c 'echo \\\"hello\\\"'"
+expected = "allow"
+
+# ============================================================================
+# Destructive commands that should still be blocked despite quoting tricks
+# ============================================================================
+
+[[case]]
+description = "destructive with extra whitespace in quotes still blocked"
+command = "git   reset   --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "rm -rf with quoted path argument still blocked"
+command = "rm -rf \"/home/user\""
+expected = "deny"
+
+[[case]]
+description = "rm -rf with single quoted path still blocked"
+command = "rm -rf '/home/user'"
+expected = "deny"
+
+# ============================================================================
+# Commands where quoting is part of legitimate use
+# ============================================================================
+
+[[case]]
+description = "find with quoted expression is safe"
+command = "find . -name '*.txt' -exec rm {} \\;"
+expected = "allow"
+
+[[case]]
+description = "xargs with quoted command is safe"
+command = "echo file.txt | xargs -I {} cat '{}'"
+expected = "allow"
+
+[[case]]
+description = "awk with quoted program is safe"
+command = "awk '{print $1}' file.txt"
+expected = "allow"
+
+[[case]]
+description = "sed with quoted expression is safe"
+command = "sed 's/old/new/g' file.txt"
+expected = "allow"
+
+# ============================================================================
+# Complex command line patterns
+# ============================================================================
+
+[[case]]
+description = "git commit with multiword message"
+command = "git commit -m 'fix: do not rm -rf root'"
+expected = "allow"
+
+[[case]]
+description = "git commit with quoted message containing reset"
+command = "git commit -m \"update git reset documentation\""
+expected = "allow"
+
+[[case]]
+description = "command with equals in argument"
+command = "VAR=value echo test"
+expected = "allow"
+
+[[case]]
+description = "array-style arguments"
+command = "echo ${array[@]}"
+expected = "allow"

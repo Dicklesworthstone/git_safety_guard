@@ -1,0 +1,216 @@
+# Edge cases: multi-segment commands with shell operators
+#
+# These test command chaining with pipes, &&, ||, ; and subshells.
+# Destructive commands in ANY segment should be blocked.
+
+# ============================================================================
+# Pipe chains with destructive commands
+# ============================================================================
+
+[[case]]
+description = "safe command piped to safe command"
+command = "ls -la | grep test"
+expected = "allow"
+
+[[case]]
+description = "safe before destructive via pipe"
+command = "echo yes | git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "destructive piped to safe"
+command = "git reset --hard | tee log.txt"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "multiple pipes all safe"
+command = "cat file | grep pattern | sort | uniq"
+expected = "allow"
+
+[[case]]
+description = "destructive in middle of pipe chain"
+command = "echo y | rm -rf /home | cat"
+expected = "deny"
+
+# ============================================================================
+# AND chains (&&) with destructive commands
+# ============================================================================
+
+[[case]]
+description = "safe && safe"
+command = "cd /tmp && ls -la"
+expected = "allow"
+
+[[case]]
+description = "safe && destructive"
+command = "git status && git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "destructive && safe"
+command = "git reset --hard && echo done"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "safe && safe && destructive"
+command = "pwd && ls && rm -rf /home"
+expected = "deny"
+
+[[case]]
+description = "multiple && all safe"
+command = "cd src && cargo build && cargo test"
+expected = "allow"
+
+# ============================================================================
+# OR chains (||) with destructive commands
+# ============================================================================
+
+[[case]]
+description = "safe || safe"
+command = "test -f file || touch file"
+expected = "allow"
+
+[[case]]
+description = "safe || destructive (fallback is dangerous)"
+command = "git stash || git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "destructive || safe"
+command = "rm -rf / || echo failed"
+expected = "deny"
+
+# ============================================================================
+# Semicolon chains (;) with destructive commands
+# ============================================================================
+
+[[case]]
+description = "safe ; safe"
+command = "echo hello; echo world"
+expected = "allow"
+
+[[case]]
+description = "safe ; destructive"
+command = "echo starting; git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "destructive ; safe"
+command = "rm -rf /home; ls"
+expected = "deny"
+
+[[case]]
+description = "multiple ; all safe"
+command = "cd /tmp; pwd; ls -la"
+expected = "allow"
+
+# ============================================================================
+# Mixed operators
+# ============================================================================
+
+[[case]]
+description = "mixed && and || all safe"
+command = "test -f file && cat file || echo not found"
+expected = "allow"
+
+[[case]]
+description = "mixed && and || with destructive"
+command = "test -d .git && git status || git reset --hard"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "pipe and && combined safe"
+command = "ls | grep test && echo found"
+expected = "allow"
+
+[[case]]
+description = "pipe and && with destructive"
+command = "echo yes | rm -rf && echo done"
+expected = "deny"
+
+# ============================================================================
+# Command substitution
+# ============================================================================
+
+[[case]]
+description = "command substitution with safe command"
+command = "echo $(date)"
+expected = "allow"
+
+[[case]]
+description = "command substitution $()"
+command = "$(echo ls)"
+expected = "allow"
+
+[[case]]
+description = "backtick substitution"
+command = "`echo pwd`"
+expected = "allow"
+
+[[case]]
+description = "nested command substitution"
+command = "echo $(echo $(pwd))"
+expected = "allow"
+
+[[case]]
+description = "destructive in command substitution"
+command = "echo $(git reset --hard)"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "destructive in backticks"
+command = "echo `rm -rf /home`"
+expected = "deny"
+
+# ============================================================================
+# Subshells and grouping
+# ============================================================================
+
+[[case]]
+description = "subshell with safe commands"
+command = "(cd /tmp && ls)"
+expected = "allow"
+
+[[case]]
+description = "subshell with destructive command"
+command = "(git reset --hard)"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+[[case]]
+description = "brace group with safe commands"
+command = "{ cd /tmp; ls; }"
+expected = "allow"
+
+[[case]]
+description = "brace group with destructive command"
+command = "{ git reset --hard; echo done; }"
+expected = "deny"
+rule_id = "core.git:reset-hard"
+
+# ============================================================================
+# Background execution
+# ============================================================================
+
+[[case]]
+description = "safe command in background"
+command = "sleep 10 &"
+expected = "allow"
+
+[[case]]
+description = "destructive command in background"
+command = "rm -rf /home &"
+expected = "deny"
+
+[[case]]
+description = "destructive with disown"
+command = "rm -rf /home & disown"
+expected = "deny"

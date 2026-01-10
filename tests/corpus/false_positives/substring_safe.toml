@@ -1,0 +1,175 @@
+# False positives: commands with git/rm as SUBSTRINGS (not commands)
+#
+# These commands contain "git" or "rm" as substrings but are NOT git/rm commands.
+# Tests word-boundary keyword gating.
+
+# ============================================================================
+# Commands containing "git" as substring (NOT git commands)
+# ============================================================================
+
+[[case]]
+description = "digit is not git"
+command = "digit 123"
+expected = "allow"
+
+[[case]]
+description = "legitimate is not git"
+command = "legitimate --option"
+expected = "allow"
+
+[[case]]
+description = "cogito is not git"
+command = "cogito ergo sum"
+expected = "allow"
+
+[[case]]
+description = "fugitive is not git"
+command = "fugitive search"
+expected = "allow"
+
+[[case]]
+description = "agitation is not git"
+command = "agitation level high"
+expected = "allow"
+
+[[case]]
+description = "digital is not git"
+command = "digital transform"
+expected = "allow"
+
+[[case]]
+description = "gitignore as filename is not git command"
+command = "cat .gitignore"
+expected = "allow"
+
+[[case]]
+description = "github in URL is not git command"
+command = "curl https://github.com/user/repo"
+expected = "allow"
+
+[[case]]
+description = "gitlab in URL is not git command"
+command = "curl https://gitlab.com/user/repo"
+expected = "allow"
+
+# ============================================================================
+# Commands containing "rm" as substring (NOT rm commands)
+# ============================================================================
+
+[[case]]
+description = "form is not rm"
+command = "form submit"
+expected = "allow"
+
+[[case]]
+description = "normal is not rm"
+command = "normal operation"
+expected = "allow"
+
+[[case]]
+description = "storm is not rm"
+command = "storm warning"
+expected = "allow"
+
+[[case]]
+description = "transform is not rm"
+command = "transform data"
+expected = "allow"
+
+[[case]]
+description = "perform is not rm"
+command = "perform action"
+expected = "allow"
+
+[[case]]
+description = "firmware is not rm"
+command = "firmware update"
+expected = "allow"
+
+[[case]]
+description = "thermal is not rm"
+command = "thermal analysis"
+expected = "allow"
+
+[[case]]
+description = "terminal is not rm"
+command = "terminal session"
+expected = "allow"
+
+[[case]]
+description = "format is not rm"
+command = "format disk --help"
+expected = "allow"
+
+[[case]]
+description = "germinate is not rm"
+command = "germinate seeds"
+expected = "allow"
+
+# ============================================================================
+# git/rm in arguments or data (not as commands)
+# ============================================================================
+
+[[case]]
+description = "echo git is not a git command"
+command = "echo 'git reset --hard'"
+expected = "allow"
+
+[[case]]
+description = "grep for git pattern is safe"
+command = "grep 'git reset' file.txt"
+expected = "allow"
+
+[[case]]
+description = "comment with git is safe"
+command = "echo 'Use git status to check'"
+expected = "allow"
+
+[[case]]
+description = "git in commit message is safe"
+command = "git commit -m 'fix git reset behavior'"
+expected = "allow"
+
+[[case]]
+description = "rm in string argument is safe"
+command = "echo 'run rm -rf to clean'"
+expected = "allow"
+
+[[case]]
+description = "grep for rm pattern is safe"
+command = "grep 'rm -rf' Makefile"
+expected = "allow"
+
+[[case]]
+description = "variable containing git is safe"
+command = "GIT_DIR=/home/user echo $GIT_DIR"
+expected = "allow"
+
+[[case]]
+description = "path containing git is safe"
+command = "ls /usr/share/doc/git/"
+expected = "allow"
+
+# ============================================================================
+# Command names similar to git/rm
+# ============================================================================
+
+[[case]]
+description = "gitstats is not git"
+command = "gitstats /repo stats/"
+expected = "allow"
+
+[[case]]
+description = "git-lfs is a different binary"
+command = "git-lfs pull"
+expected = "allow"
+
+[[case]]
+description = "rmdir is not rm"
+command = "rmdir empty_folder"
+expected = "allow"
+
+[[case]]
+description = "srm (secure rm) is different"
+command = "srm -z file.txt"
+expected = "allow"
