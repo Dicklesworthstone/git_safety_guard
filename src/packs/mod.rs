@@ -20,6 +20,7 @@ pub mod database;
 pub mod infrastructure;
 pub mod kubernetes;
 pub mod package_managers;
+pub mod platform;
 pub mod regex_engine;
 pub mod safe;
 pub mod strict_git;
@@ -475,17 +476,18 @@ pub struct PackRegistry {
 
 /// Static pack entries - metadata is available without instantiating packs.
 /// Packs are built lazily on first access.
-static PACK_ENTRIES: [PackEntry; 26] = [
+static PACK_ENTRIES: [PackEntry; 27] = [
     PackEntry::new("core.git", &["git"], core::git::create_pack),
-    PackEntry::new(
-        "core.filesystem",
-        &["rm", "/rm"],
-        core::filesystem::create_pack,
-    ),
+    PackEntry::new("core.filesystem", &["rm", "/rm"], core::filesystem::create_pack),
     PackEntry::new(
         "cicd.github_actions",
         &["gh"],
         cicd::github_actions::create_pack,
+    ),
+    PackEntry::new(
+        "platform.github",
+        &["gh"],
+        platform::github::create_pack,
     ),
     PackEntry::new(
         "database.postgresql",
@@ -758,7 +760,7 @@ impl PackRegistry {
             "core" => 1,
             "system" => 2,
             "infrastructure" => 3,
-            "cloud" => 4,
+            "cloud" | "platform" => 4,
             "kubernetes" => 5,
             "containers" => 6,
             "database" => 7,
@@ -782,7 +784,7 @@ impl PackRegistry {
     ///    This allows "safe" packs (like `safe.cleanup`) to whitelist commands
     ///    that would otherwise be blocked by other packs.
     /// 2. **Destructive patterns pass**: Check destructive patterns across all packs.
-    ///    The first matching destructive pattern blocks (based on severity).
+    ///    The first matching destructive pattern determines the result.
     ///
     /// Returns a `CheckResult` containing:
     /// - `blocked`: whether the command should be blocked (based on severity)
