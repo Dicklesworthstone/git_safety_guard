@@ -1,3 +1,42 @@
+[2026-01-10T02:45:00-05:00] From: opus-corpus | Subject: Completed ksk.1.4 - E2E regression harness
+
+Completed git_safety_guard-ksk.1.4 (E2E regression harness + verbose logging).
+
+Implementation:
+- Added `dcg corpus` subcommand (608 lines in cli.rs)
+- Reads TOML corpus files from tests/corpus/
+- Runs each command through evaluator with timing
+- Outputs stable JSON or pretty format
+
+Features:
+- `--baseline PATH`: Diff mode, exits non-zero on mismatch
+- `--format=json|pretty`: Output format selection
+- `--summary-only`: Show only summary statistics
+- `--failures-only`: Show only failed tests
+- `--category NAME`: Filter to specific category
+- `-o PATH`: Write output to file
+
+Output schema (JSON):
+- schema_version, generated_at, binary_version
+- total_cases, total_passed, total_failed
+- summary: by_decision, by_pack, by_category stats
+- cases[]: id, command, expected, actual, passed, rule_id, pack_id, duration_us
+
+Deterministic ordering (sorted file paths + case IDs) for stable baselines.
+
+Test results:
+- 309 corpus tests passing
+- 211 E2E tests passing
+- All cargo tests passing
+
+Commit: 9298af5
+
+Unblocked: 37 downstream tasks per bead dependencies
+
+- opus-corpus (Opus 4.5)
+
+---
+
 [2026-01-09T21:26:00-05:00] From: opus-corpus | Subject: Completed ksk.1.1 - canonical command corpus
 
 Completed git_safety_guard-ksk.1.1 (Define canonical command corpus + invariants).
