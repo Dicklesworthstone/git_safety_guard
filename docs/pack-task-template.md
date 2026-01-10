@@ -28,20 +28,21 @@ List safe patterns that should NOT be blocked:
 
 ### 5. Testing Requirements (Required)
 Standard checklist for ALL packs:
-- [ ] Unit tests in `src/packs/<category>/<pack>.rs`
-- [ ] E2E tests in `scripts/e2e_tests/<pack>.txt`
-- [ ] E2E runs use the shared harness (git_safety_guard-ksk.1.4) with `--verbose` JSON logging
+- [ ] Unit tests in `src/packs/<category>/<pack>.rs` using `test_template.rs` patterns
+- [ ] E2E test script created at `scripts/test_pack_<pack_name>.sh` (use `scripts/templates/test_pack.sh`)
+- [ ] Fixtures added to `tests/fixtures/destructive_commands.yaml`
 - [ ] Test coverage >= 90%
 - [ ] All destructive patterns have test cases
 - [ ] All safe patterns have test cases
 - [ ] Edge cases tested (quotes, special chars)
-- [ ] Performance benchmark < 500us
+- [ ] Performance benchmark < 500us (verify with `cargo bench`)
 
 ### 6. Acceptance Criteria (Required)
 Specific, measurable criteria:
 - [ ] Pattern X blocked
 - [ ] Pattern Y allowed
-- [ ] Documentation updated
+- [ ] E2E script passes
+- [ ] Documentation updated (`docs/packs/README.md`)
 - [ ] Completion checklist passed
 
 ## Example Structure
