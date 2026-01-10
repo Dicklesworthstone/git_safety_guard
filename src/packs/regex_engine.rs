@@ -192,7 +192,7 @@ pub fn needs_backtracking_engine(pattern: &str) -> bool {
 ///
 /// - **Construction**: O(1) - just stores the pattern string
 /// - **First match**: O(pattern) - compiles the regex once
-/// - **Subsequent matches**: O(n) for linear patterns, varies for backtracking
+/// - **Subsequent matches**: Varies (backtracking engine may be super-linear)
 ///
 /// # Thread Safety
 ///
@@ -284,9 +284,6 @@ impl LazyFancyRegex {
         self.compiled.get().is_some()
     }
 }
-
-// Remove unnecessary unsafe impl Sync - fancy_regex::Regex is Sync
-// unsafe impl Sync for LazyFancyRegex {}
 
 #[cfg(test)]
 mod tests {
