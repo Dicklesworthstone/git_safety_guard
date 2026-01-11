@@ -752,12 +752,12 @@ mod allow_once_flow_tests {
         let config_path = env.temp.path().join("dcg.toml");
         std::fs::write(
             &config_path,
-            r#"
+            r"
 [overrides]
 block = [
   { pattern = '\bgit\s+reset\s+--hard\b', reason = 'test config block' },
 ]
-"#,
+",
         )
         .expect("write config");
 
