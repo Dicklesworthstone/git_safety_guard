@@ -351,8 +351,409 @@ fi
 
 ok "Done. Binary at: $DEST/dcg"
 echo ""
-info "To configure Claude Code, add to ~/.claude/settings.json:"
-cat <<EOF
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Predecessor Detection & Removal
+# ═══════════════════════════════════════════════════════════════════════════════
+
+PREDECESSOR_SCRIPT="git_safety_guard.py"
+PREDECESSOR_FOUND=0
+PREDECESSOR_LOCATIONS=()
+
+detect_predecessor() {
+  local locations=(
+    "$HOME/.claude/hooks/$PREDECESSOR_SCRIPT"
+    ".claude/hooks/$PREDECESSOR_SCRIPT"
+  )
+
+  for loc in "${locations[@]}"; do
+    if [ -f "$loc" ]; then
+      PREDECESSOR_FOUND=1
+      PREDECESSOR_LOCATIONS+=("$loc")
+    fi
+  done
+}
+
+show_upgrade_banner() {
+  if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
+    echo ""
+    gum style \
+      --border double \
+      --border-foreground 214 \
+      --padding "1 2" \
+      --margin "0 0 1 0" \
+      "$(gum style --foreground 214 --bold '⬆️  UPGRADE DETECTED')" \
+      "" \
+      "$(gum style --foreground 252 "Found predecessor: $PREDECESSOR_SCRIPT")" \
+      "$(gum style --foreground 245 'dcg is the modern, high-performance replacement')" \
+      "" \
+      "$(gum style --foreground 42 '✓ 300+ detection patterns (vs ~10 in predecessor)')" \
+      "$(gum style --foreground 42 '✓ Sub-millisecond evaluation (vs Python startup)')" \
+      "$(gum style --foreground 42 '✓ Heredoc & multi-line command detection')" \
+      "$(gum style --foreground 42 '✓ Modular pack system with severity levels')" \
+      "$(gum style --foreground 42 '✓ Allow-once escape hatch for false positives')"
+  else
+    echo ""
+    echo -e "\033[1;33m╔══════════════════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[1;33m║\033[0m  \033[1;33m⬆️  UPGRADE DETECTED\033[0m                                        \033[1;33m║\033[0m"
+    echo -e "\033[1;33m╠══════════════════════════════════════════════════════════════╣\033[0m"
+    echo -e "\033[1;33m║\033[0m  Found predecessor: \033[0;36m$PREDECESSOR_SCRIPT\033[0m               \033[1;33m║\033[0m"
+    echo -e "\033[1;33m║\033[0m  dcg is the modern, high-performance replacement            \033[1;33m║\033[0m"
+    echo -e "\033[1;33m║\033[0m                                                              \033[1;33m║\033[0m"
+    echo -e "\033[1;33m║\033[0m  \033[0;32m✓\033[0m 300+ detection patterns (vs ~10 in predecessor)         \033[1;33m║\033[0m"
+    echo -e "\033[1;33m║\033[0m  \033[0;32m✓\033[0m Sub-millisecond evaluation (vs Python startup)          \033[1;33m║\033[0m"
+    echo -e "\033[1;33m║\033[0m  \033[0;32m✓\033[0m Heredoc & multi-line command detection                  \033[1;33m║\033[0m"
+    echo -e "\033[1;33m║\033[0m  \033[0;32m✓\033[0m Modular pack system with severity levels                \033[1;33m║\033[0m"
+    echo -e "\033[1;33m║\033[0m  \033[0;32m✓\033[0m Allow-once escape hatch for false positives             \033[1;33m║\033[0m"
+    echo -e "\033[1;33m╚══════════════════════════════════════════════════════════════╝\033[0m"
+    echo ""
+  fi
+}
+
+remove_predecessor() {
+  local loc="$1"
+  local dir=$(dirname "$loc")
+
+  info "Removing predecessor hook: $loc"
+
+  # Create backup
+  local backup="${loc}.bak.$(date +%Y%m%d%H%M%S)"
+  cp "$loc" "$backup" 2>/dev/null || true
+
+  # Remove the script
+  rm -f "$loc"
+
+  # Remove hooks directory if empty
+  if [ -d "$dir" ] && [ -z "$(ls -A "$dir" 2>/dev/null)" ]; then
+    rmdir "$dir" 2>/dev/null || true
+  fi
+
+  ok "Removed: $loc (backup: $backup)"
+}
+
+update_settings_json() {
+  local settings_file="$1"
+  local backup="${settings_file}.bak.$(date +%Y%m%d%H%M%S)"
+
+  if [ ! -f "$settings_file" ]; then
+    return 1
+  fi
+
+  # Check if it references git_safety_guard.py
+  if grep -q "$PREDECESSOR_SCRIPT" "$settings_file" 2>/dev/null; then
+    info "Updating settings to replace predecessor with dcg..."
+    cp "$settings_file" "$backup"
+
+    # Use sed to replace git_safety_guard.py references with dcg path
+    # This handles the command path in the hooks configuration
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - "$settings_file" "$DEST/dcg" "$backup" <<'PYEOF'
+import json
+import sys
+import os
+
+settings_file = sys.argv[1]
+dcg_path = sys.argv[2]
+backup_file = sys.argv[3]
+
+try:
+    with open(settings_file, 'r') as f:
+        settings = json.load(f)
+except:
+    sys.exit(1)
+
+modified = False
+
+# Navigate to hooks.PreToolUse
+if 'hooks' in settings and 'PreToolUse' in settings['hooks']:
+    for matcher_entry in settings['hooks']['PreToolUse']:
+        if 'hooks' in matcher_entry:
+            new_hooks = []
+            for hook in matcher_entry['hooks']:
+                if isinstance(hook, dict) and 'command' in hook:
+                    cmd = hook['command']
+                    if 'git_safety_guard.py' in cmd:
+                        # Replace with dcg
+                        hook['command'] = dcg_path
+                        modified = True
+                new_hooks.append(hook)
+            matcher_entry['hooks'] = new_hooks
+
+if modified:
+    with open(settings_file, 'w') as f:
+        json.dump(settings, f, indent=2)
+    print(f"Updated {settings_file}")
+else:
+    # Restore backup since no changes were made
+    os.rename(backup_file, settings_file)
+PYEOF
+      ok "Updated $settings_file (backup: $backup)"
+    else
+      warn "Python3 not available for JSON update; manual update required"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Claude Code / Codex Auto-Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+CLAUDE_SETTINGS="$HOME/.claude/settings.json"
+CODEX_CONFIG="$HOME/.codex/config.json"
+AUTO_CONFIGURED=0
+
+configure_claude_code() {
+  local settings_file="$1"
+  local settings_dir=$(dirname "$settings_file")
+
+  if [ ! -d "$settings_dir" ]; then
+    info "Creating Claude Code config directory: $settings_dir"
+    mkdir -p "$settings_dir"
+  fi
+
+  if [ -f "$settings_file" ]; then
+    # Check if dcg is already configured
+    if grep -q '"command".*dcg' "$settings_file" 2>/dev/null; then
+      ok "Claude Code already configured with dcg"
+      return 0
+    fi
+
+    # Settings file exists, need to merge
+    info "Merging dcg hook into existing Claude Code settings..."
+    local backup="${settings_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$settings_file" "$backup"
+
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - "$settings_file" "$DEST/dcg" <<'PYEOF'
+import json
+import sys
+
+settings_file = sys.argv[1]
+dcg_path = sys.argv[2]
+
+try:
+    with open(settings_file, 'r') as f:
+        settings = json.load(f)
+except:
+    settings = {}
+
+# Ensure hooks structure exists
+if 'hooks' not in settings:
+    settings['hooks'] = {}
+if 'PreToolUse' not in settings['hooks']:
+    settings['hooks']['PreToolUse'] = []
+
+# Check if Bash matcher already exists
+bash_matcher = None
+for entry in settings['hooks']['PreToolUse']:
+    if entry.get('matcher') == 'Bash':
+        bash_matcher = entry
+        break
+
+dcg_hook = {"type": "command", "command": dcg_path}
+
+if bash_matcher:
+    # Add dcg to existing Bash matcher
+    if 'hooks' not in bash_matcher:
+        bash_matcher['hooks'] = []
+    # Check if dcg is already there
+    dcg_exists = any('dcg' in h.get('command', '') for h in bash_matcher['hooks'] if isinstance(h, dict))
+    if not dcg_exists:
+        # Insert at beginning for priority
+        bash_matcher['hooks'].insert(0, dcg_hook)
+else:
+    # Create new Bash matcher
+    settings['hooks']['PreToolUse'].append({
+        "matcher": "Bash",
+        "hooks": [dcg_hook]
+    })
+
+with open(settings_file, 'w') as f:
+    json.dump(settings, f, indent=2)
+PYEOF
+      ok "Configured Claude Code (backup: $backup)"
+      AUTO_CONFIGURED=1
+    else
+      warn "Python3 not available; showing manual instructions"
+      return 1
+    fi
+  else
+    # Create new settings file
+    info "Creating Claude Code settings with dcg hook..."
+    cat > "$settings_file" <<EOFSET
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$DEST/dcg"
+          }
+        ]
+      }
+    ]
+  }
+}
+EOFSET
+    ok "Created $settings_file"
+    AUTO_CONFIGURED=1
+  fi
+}
+
+configure_codex() {
+  local config_file="$1"
+  local config_dir=$(dirname "$config_file")
+
+  # Codex uses a different config format - check if it exists
+  if [ ! -d "$config_dir" ]; then
+    # Codex not installed
+    return 1
+  fi
+
+  if [ -f "$config_file" ]; then
+    if grep -q '"command".*dcg' "$config_file" 2>/dev/null; then
+      ok "Codex already configured with dcg"
+      return 0
+    fi
+
+    info "Configuring Codex with dcg hook..."
+    local backup="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$config_file" "$backup"
+
+    if command -v python3 >/dev/null 2>&1; then
+      python3 - "$config_file" "$DEST/dcg" <<'PYEOF'
+import json
+import sys
+
+config_file = sys.argv[1]
+dcg_path = sys.argv[2]
+
+try:
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+except:
+    config = {}
+
+# Codex uses similar hook structure
+if 'hooks' not in config:
+    config['hooks'] = {}
+if 'PreToolUse' not in config['hooks']:
+    config['hooks']['PreToolUse'] = []
+
+dcg_hook = {"type": "command", "command": dcg_path}
+
+# Check if Bash matcher exists
+bash_matcher = None
+for entry in config['hooks']['PreToolUse']:
+    if entry.get('matcher') == 'Bash':
+        bash_matcher = entry
+        break
+
+if bash_matcher:
+    if 'hooks' not in bash_matcher:
+        bash_matcher['hooks'] = []
+    dcg_exists = any('dcg' in h.get('command', '') for h in bash_matcher['hooks'] if isinstance(h, dict))
+    if not dcg_exists:
+        bash_matcher['hooks'].insert(0, dcg_hook)
+else:
+    config['hooks']['PreToolUse'].append({
+        "matcher": "Bash",
+        "hooks": [dcg_hook]
+    })
+
+with open(config_file, 'w') as f:
+    json.dump(config, f, indent=2)
+PYEOF
+      ok "Configured Codex (backup: $backup)"
+      AUTO_CONFIGURED=1
+    fi
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Run Auto-Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Detect predecessor
+detect_predecessor
+
+if [ "$PREDECESSOR_FOUND" -eq 1 ]; then
+  show_upgrade_banner
+
+  # Ask user if they want to remove predecessor
+  REMOVE_PREDECESSOR=0
+  if [ -t 0 ] && [ "$EASY" -ne 1 ]; then
+    if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
+      if gum confirm "Remove predecessor ($PREDECESSOR_SCRIPT) and upgrade to dcg?"; then
+        REMOVE_PREDECESSOR=1
+      fi
+    else
+      echo -n "Remove predecessor ($PREDECESSOR_SCRIPT) and upgrade to dcg? (Y/n): "
+      read -r ans
+      case "$ans" in
+        n|N|no|No|NO) REMOVE_PREDECESSOR=0;;
+        *) REMOVE_PREDECESSOR=1;;
+      esac
+    fi
+  elif [ "$EASY" -eq 1 ]; then
+    REMOVE_PREDECESSOR=1
+    info "Easy mode: auto-removing predecessor"
+  fi
+
+  if [ "$REMOVE_PREDECESSOR" -eq 1 ]; then
+    for loc in "${PREDECESSOR_LOCATIONS[@]}"; do
+      remove_predecessor "$loc"
+    done
+
+    # Update settings.json to use dcg instead
+    if [ -f "$CLAUDE_SETTINGS" ]; then
+      update_settings_json "$CLAUDE_SETTINGS"
+    fi
+  else
+    warn "Keeping predecessor; dcg will run alongside it"
+    warn "Consider removing $PREDECESSOR_SCRIPT manually to avoid duplicate checks"
+  fi
+fi
+
+# Configure Claude Code
+if [ -d "$HOME/.claude" ] || [ "$EASY" -eq 1 ]; then
+  info "Detecting Claude Code..."
+  configure_claude_code "$CLAUDE_SETTINGS"
+fi
+
+# Configure Codex (if installed)
+if [ -d "$HOME/.codex" ]; then
+  info "Detecting Codex..."
+  configure_codex "$CODEX_CONFIG"
+fi
+
+# Show final status
+echo ""
+if [ "$AUTO_CONFIGURED" -eq 1 ]; then
+  if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
+    gum style \
+      --border normal \
+      --border-foreground 42 \
+      --padding "1 2" \
+      "$(gum style --foreground 42 --bold '🛡️  dcg is now active!')" \
+      "" \
+      "$(gum style --foreground 245 'All Bash commands will be scanned for destructive patterns.')" \
+      "$(gum style --foreground 245 'Use \"dcg explain <command>\" to see why a command was blocked.')"
+  else
+    echo -e "\033[0;32m╔══════════════════════════════════════════════════════════════╗\033[0m"
+    echo -e "\033[0;32m║\033[0m  \033[1;32m🛡️  dcg is now active!\033[0m                                      \033[0;32m║\033[0m"
+    echo -e "\033[0;32m╠══════════════════════════════════════════════════════════════╣\033[0m"
+    echo -e "\033[0;32m║\033[0m  All Bash commands will be scanned for destructive patterns. \033[0;32m║\033[0m"
+    echo -e "\033[0;32m║\033[0m  Use \"dcg explain <cmd>\" to see why a command was blocked.   \033[0;32m║\033[0m"
+    echo -e "\033[0;32m╚══════════════════════════════════════════════════════════════╝\033[0m"
+  fi
+else
+  info "To manually configure Claude Code, add to ~/.claude/settings.json:"
+  cat <<EOF
 {
   "hooks": {
     "PreToolUse": [
@@ -369,3 +770,4 @@ cat <<EOF
   }
 }
 EOF
+fi
