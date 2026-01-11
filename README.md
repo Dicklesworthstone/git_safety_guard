@@ -18,6 +18,58 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_comm
 
 ---
 
+## TL;DR
+
+**The Problem**: AI coding agents (Claude, GPT, etc.) occasionally run catastrophic commands like `git reset --hard`, `rm -rf ./src`, or `DROP TABLE users`—destroying hours of uncommitted work in seconds.
+
+**The Solution**: dcg is a high-performance hook that intercepts destructive commands *before* they execute, blocking them with clear explanations and safer alternatives.
+
+### Why Use dcg?
+
+| Feature | What It Does |
+|---------|--------------|
+| **Zero-Config Protection** | Blocks dangerous git/filesystem commands out of the box |
+| **49+ Security Packs** | Databases, Kubernetes, Docker, AWS/GCP/Azure, Terraform, and more |
+| **Sub-Millisecond Latency** | SIMD-accelerated filtering—you won't notice it's there |
+| **Heredoc/Inline Script Scanning** | Catches `python -c "os.remove(...)"` and embedded shell scripts |
+| **Smart Context Detection** | Won't block `grep "rm -rf"` (data) but will block `rm -rf /` (execution) |
+| **Scan Mode for CI** | Pre-commit hooks and CI integration to catch dangerous commands in code review |
+| **Fail-Open Design** | Never blocks your workflow due to timeouts or parse errors |
+| **Explain Mode** | `dcg explain "command"` shows exactly why something is blocked |
+
+### Quick Example
+
+```bash
+# AI agent tries to run:
+$ git reset --hard HEAD~5
+
+# dcg intercepts and blocks:
+════════════════════════════════════════════════════════════════
+BLOCKED  dcg
+────────────────────────────────────────────────────────────────
+Reason:  git reset --hard destroys uncommitted changes
+
+Command: git reset --hard HEAD~5
+
+Tip: Consider using 'git stash' first to save your changes.
+════════════════════════════════════════════════════════════════
+```
+
+### Enable More Protection
+
+```toml
+# ~/.config/dcg/config.toml
+[packs]
+enabled = [
+    "database.postgresql",    # Blocks DROP TABLE, TRUNCATE
+    "kubernetes.kubectl",     # Blocks kubectl delete namespace
+    "cloud.aws",              # Blocks aws ec2 terminate-instances
+    "containers.docker",      # Blocks docker system prune
+]
+```
+
+---
+
 ## Origins & Authors
 
 This project began as a Python script by Jeffrey Emanuel, who recognized that AI coding agents, while incredibly useful, occasionally run catastrophic commands that destroy hours of uncommitted work. The original implementation was a simple but effective hook that intercepted dangerous git and filesystem commands before execution.
@@ -274,6 +326,110 @@ Heredoc documentation:
 - `docs/patterns.md` (pattern authoring + inventory)
 - `docs/security.md` (threat model and incident response)
 
+#### Heredoc Three-Tier Architecture
+
+Heredoc and inline script scanning uses a three-tier pipeline designed for performance and accuracy:
+
+```
+Command Input
+     │
+     ▼
+┌─────────────────┐
+│ Tier 1: Trigger │ ─── No match ──► ALLOW (fast path, <100μs)
+│   (RegexSet)    │
+└────────┬────────┘
+         │ Match
+         ▼
+┌─────────────────┐
+│ Tier 2: Extract │ ─── Error/Timeout ──► ALLOW + fallback check
+│   (<1ms)        │
+└────────┬────────┘
+         │ Success
+         ▼
+┌─────────────────┐
+│ Tier 3: AST     │ ─── No match ──► ALLOW
+│   (<5ms)        │ ─── Match ──► BLOCK
+└─────────────────┘
+```
+
+**Tier 1: Trigger Detection** (<100μs)
+
+Ultra-fast regex screening to detect heredoc indicators. Uses a compiled `RegexSet` for O(n) matching against all trigger patterns simultaneously:
+
+```rust
+static HEREDOC_TRIGGERS: LazyLock<RegexSet> = LazyLock::new(|| {
+    RegexSet::new([
+        r"<<-?\s*(?:['\x22][^'\x22]*['\x22]|[\w.-]+)",  // Heredocs
+        r"<<<",                                          // Here-strings
+        r"\bpython[0-9.]*\b.*\s+-[A-Za-z]*[ce]",        // python -c/-e
+        r"\bruby[0-9.]*\b.*\s+-[A-Za-z]*e",             // ruby -e
+        r"\bnode(js)?[0-9.]*\b.*\s+-[A-Za-z]*[ep]",     // node -e/-p
+        r"\b(sh|bash|zsh)\b.*\s+-[A-Za-z]*c",           // bash -c
+        // ... more patterns
+    ])
+});
+```
+
+Commands without any trigger patterns skip directly to ALLOW—no further processing needed.
+
+**Tier 2: Content Extraction** (<1ms)
+
+For commands that trigger, extract the actual content to be evaluated:
+
+- **Heredocs**: `cat <<EOF ... EOF` → extracts body between delimiters
+- **Here-strings**: `cat <<< "content"` → extracts quoted content
+- **Inline scripts**: `python -c "code"` → extracts the code argument
+
+Extraction is bounded by configurable limits:
+- Maximum body size (default: 1MB)
+- Maximum lines (default: 10,000)
+- Maximum heredocs per command (default: 10)
+- Timeout (default: 50ms)
+
+```rust
+pub struct ExtractionLimits {
+    pub max_body_bytes: usize,
+    pub max_body_lines: usize,
+    pub max_heredocs: usize,
+    pub timeout_ms: u64,
+}
+```
+
+**Tier 3: AST Pattern Matching** (<5ms)
+
+Extracted content is parsed using language-specific AST grammars (via tree-sitter/ast-grep) and matched against structural patterns:
+
+```rust
+// Example: detect subprocess.run with shell=True and rm -rf
+let pattern = r#"
+    call_expression {
+        function: attribute { object: "subprocess" attr: "run" }
+        arguments: argument_list {
+            contains string { contains "rm -rf" }
+            contains keyword_argument { keyword: "shell" value: "True" }
+        }
+    }
+"#;
+```
+
+**Recursive Shell Analysis**:
+
+When extracted content is itself a shell script (e.g., `bash -c "git reset --hard"`), Tier 3 recursively extracts inner commands and re-evaluates them through the full pipeline:
+
+```rust
+if content.language == ScriptLanguage::Bash {
+    let inner_commands = extract_shell_commands(&content.content);
+    for inner in inner_commands {
+        // Re-evaluate inner command against all packs
+        if let Some(result) = evaluate_command(&inner, ...) {
+            if result.decision == Deny {
+                return result; // Block the outer command
+            }
+        }
+    }
+}
+```
+
 If you encounter commands that should be blocked, please file an issue.
 
 ### Environment Variables
@@ -285,6 +441,118 @@ Environment variables override config files (highest priority):
 - `DCG_VERBOSE=1`: verbose output
 - `DCG_COLOR=auto|always|never`: color mode
 - `DCG_BYPASS=1`: bypass dcg entirely (escape hatch; use sparingly)
+- `DCG_CONFIG=/path/to/config.toml`: use explicit config file
+- `DCG_HEREDOC_ENABLED=true|false`: enable/disable heredoc scanning
+- `DCG_HEREDOC_TIMEOUT=50`: heredoc extraction timeout (milliseconds)
+- `DCG_HEREDOC_LANGUAGES=python,bash`: filter heredoc languages
+- `DCG_POLICY_DEFAULT_MODE=deny|warn|log`: global default decision mode
+
+### Configuration Hierarchy
+
+dcg supports layered configuration from multiple sources, with higher-priority sources overriding lower ones:
+
+```
+1. Environment Variables (DCG_* prefix)           [HIGHEST PRIORITY]
+2. Explicit Config File (DCG_CONFIG env var)
+3. Project Config (.dcg.toml in repo root)
+4. User Config (~/.config/dcg/config.toml)
+5. System Config (/etc/dcg/config.toml)
+6. Compiled Defaults                              [LOWEST PRIORITY]
+```
+
+**Configuration File Locations**:
+
+| Level | Path | Use Case |
+|-------|------|----------|
+| System | `/etc/dcg/config.toml` | Organization-wide defaults |
+| User | `~/.config/dcg/config.toml` | Personal preferences |
+| Project | `.dcg.toml` (repo root) | Project-specific settings |
+| Explicit | `DCG_CONFIG=/path/to/file` | Testing or override |
+
+**Merging Behavior**:
+
+Configuration layers are merged additively, with higher-priority sources overriding specific fields:
+
+```rust
+// Only fields explicitly set in higher-priority configs override
+// Missing fields retain values from lower-priority sources
+fn merge_layer(&mut self, other: ConfigLayer) {
+    if let Some(verbose) = other.general.verbose {
+        self.general.verbose = verbose;  // Override if present
+    }
+    // Unset fields retain previous values
+}
+```
+
+This means you can set organization defaults in `/etc/dcg/config.toml`, personal preferences in `~/.config/dcg/config.toml`, and project-specific overrides in `.dcg.toml`—each layer only needs to specify the settings that differ from defaults.
+
+**Project-Specific Pack Configuration**:
+
+The `[projects]` section allows different pack configurations for different repositories:
+
+```toml
+[projects."/home/user/work/production-api"]
+packs = { enabled = ["database.postgresql", "cloud.aws"], disabled = [] }
+
+[projects."/home/user/personal/experiments"]
+packs = { enabled = [], disabled = ["core.git"] }  # More permissive for experiments
+```
+
+### Fail-Open Philosophy
+
+dcg is designed with a **fail-open** philosophy: when the tool cannot safely analyze a command (due to timeouts, parse errors, or resource limits), it allows the command to proceed rather than blocking it and breaking the user's workflow.
+
+**Why Fail-Open?**
+
+1. **Workflow Continuity**: A blocked legitimate command is more disruptive than a missed dangerous one
+2. **Performance Guarantees**: The hook must never become a bottleneck
+3. **Graceful Degradation**: Partial analysis is better than no analysis
+
+**Fail-Open Scenarios**:
+
+| Scenario | Behavior | Rationale |
+|----------|----------|-----------|
+| Parse error in heredoc | ALLOW + warn | Malformed input shouldn't block work |
+| Extraction timeout | ALLOW + warn | Slow inputs shouldn't hang terminal |
+| Size limit exceeded | ALLOW + fallback check | Large inputs get reduced analysis |
+| Regex engine timeout | ALLOW + warn | Pathological patterns shouldn't block |
+| AST matching error | Skip that heredoc | Continue evaluating other content |
+| Deadline exceeded | ALLOW immediately | Hard cap prevents runaway processing |
+
+**Configurable Strictness**:
+
+For high-security environments, fail-open can be disabled:
+
+```toml
+[heredoc]
+fallback_on_parse_error = false  # Block on parse errors
+fallback_on_timeout = false      # Block on timeouts
+```
+
+With strict mode enabled, dcg will block commands when analysis fails, providing detailed error messages explaining why.
+
+**Fallback Pattern Checking**:
+
+Even when full analysis is skipped, dcg performs a lightweight fallback check for critical destructive patterns:
+
+```rust
+static FALLBACK_PATTERNS: LazyLock<RegexSet> = LazyLock::new(|| {
+    RegexSet::new([
+        r"shutil\.rmtree",
+        r"os\.remove",
+        r"fs\.rmSync",
+        r"\brm\s+-[a-zA-Z]*r[a-zA-Z]*f",
+        r"\bgit\s+reset\s+--hard\b",
+        // ... other critical patterns
+    ])
+});
+```
+
+This ensures that even oversized or malformed inputs are checked for the most dangerous operations before being allowed.
+
+**Absolute Timeout**:
+
+To prevent any single command from blocking indefinitely, dcg enforces an absolute maximum processing time of **200ms**. Any command exceeding this threshold is immediately allowed with a warning logged.
 
 ## Installation
 
@@ -528,6 +796,60 @@ While the hook protects **interactive** command execution, teams also need prote
 - A static analysis tool for arbitrary languages
 
 The key difference from grep: `dcg scan` understands that `"rm -rf /"` in a comment is data, not code. It uses extractors that understand file structure (shell scripts, Dockerfiles, GitHub Actions, Makefiles) to find only actually-executed commands.
+
+### Supported File Formats
+
+dcg scan includes specialized extractors for each file format, understanding which parts contain executable commands:
+
+| File Type | Detection | Executable Contexts |
+|-----------|-----------|---------------------|
+| **Shell Scripts** | `*.sh`, `*.bash`, `*.zsh` | All non-comment, non-assignment lines |
+| **Dockerfile** | `Dockerfile`, `*.dockerfile` | `RUN` instructions (shell and exec forms) |
+| **GitHub Actions** | `.github/workflows/*.yml` | `run:` fields in steps |
+| **GitLab CI** | `.gitlab-ci.yml` | `script:`, `before_script:`, `after_script:` |
+| **Makefile** | `Makefile` | Tab-indented recipe lines |
+| **Terraform** | `*.tf` | `provisioner` blocks (`local-exec`, `remote-exec`) |
+| **Docker Compose** | `docker-compose.yml`, `compose.yml` | `command:` and `entrypoint:` fields |
+
+**Context-Aware Extraction**:
+
+Each extractor understands its format's semantics:
+
+```yaml
+# GitHub Actions - only 'run:' is extracted
+- name: Build
+  run: |                    # ← Extracted
+    npm install
+    npm run build
+  env:
+    NODE_ENV: production    # ← Skipped (not executable)
+```
+
+```dockerfile
+# Dockerfile - only RUN instructions
+FROM node:18
+COPY . /app                 # ← Skipped
+RUN npm install             # ← Extracted
+RUN ["node", "server.js"]   # ← Extracted (exec form)
+ENV PORT=3000               # ← Skipped
+```
+
+```makefile
+# Makefile - tab-indented lines under targets
+build:
+	npm install             # ← Extracted (recipe line)
+	npm run build           # ← Extracted
+SOURCES = $(wildcard *.js)  # ← Skipped (variable assignment)
+```
+
+**Non-Executable Context Filtering**:
+
+Extractors intelligently skip data-only sections:
+
+- **Shell**: Assignment-only lines (`export VAR=value`)
+- **YAML**: `environment:`, `labels:`, `volumes:`, `variables:` blocks
+- **Terraform**: Everything outside `provisioner` blocks
+- **All formats**: Comments (format-appropriate: `#`, `//`, etc.)
 
 ### Quick Start
 
@@ -1190,6 +1512,80 @@ Evaluation Trace:
   [ 15.2μs] Tier 3: Destructive patterns (PASS - below 50μs target)
   [ 15.4μs] Total: 15.4μs (PASS - below 5ms target)
 ```
+
+### Keyword-Based Pack Pre-filtering
+
+Before expensive regex matching, dcg uses a multi-level keyword filtering system to quickly skip irrelevant packs. This is critical for performance—with 49+ packs available, checking every pattern against every command would be prohibitively slow.
+
+**How Keyword Filtering Works**:
+
+Each pack declares a set of keywords that must appear in a command for that pack to be relevant:
+
+```rust
+Pack {
+    id: "database.postgresql".to_string(),
+    keywords: &["psql", "dropdb", "createdb", "DROP", "TRUNCATE", "DELETE"],
+    // ...
+}
+```
+
+**Two-Level Filtering**:
+
+1. **Global Quick Reject**: Before any pack evaluation, dcg checks if the command contains *any* keyword from *any* enabled pack. If not, the entire pack evaluation is skipped.
+
+2. **Per-Pack Quick Reject**: For each enabled pack, dcg checks if the command contains any of that pack's keywords before running expensive regex patterns.
+
+**Aho-Corasick Automaton**:
+
+For packs with multiple keywords, dcg builds an [Aho-Corasick automaton](https://en.wikipedia.org/wiki/Aho%E2%80%93Corasick_algorithm) that matches all keywords in a single O(n) pass:
+
+```rust
+// Built lazily on first pack access
+pub keyword_matcher: Option<aho_corasick::AhoCorasick>,
+
+pub fn might_match(&self, cmd: &str) -> bool {
+    if self.keywords.is_empty() {
+        return true; // No keywords = always check patterns
+    }
+
+    // O(n) matching regardless of keyword count
+    if let Some(ref ac) = self.keyword_matcher {
+        return ac.is_match(cmd);
+    }
+
+    // Fallback: sequential memchr search
+    self.keywords.iter()
+        .any(|kw| memmem::find(cmd.as_bytes(), kw.as_bytes()).is_some())
+}
+```
+
+**Context-Aware Keyword Matching**:
+
+Keywords are only matched within executable spans (not in comments, quoted strings, or data):
+
+```rust
+pub fn pack_aware_quick_reject(cmd: &str, enabled_keywords: &[&str]) -> bool {
+    // First: fast substring check
+    let any_substring = enabled_keywords.iter()
+        .any(|kw| memmem::find(cmd.as_bytes(), kw.as_bytes()).is_some());
+
+    if !any_substring {
+        return true; // Safe to skip all pack evaluation
+    }
+
+    // Second: verify keyword appears in executable context
+    let spans = classify_command(cmd);
+    for span in spans.executable_spans() {
+        if span_matches_any_keyword(span.text(cmd), enabled_keywords) {
+            return false; // Must evaluate packs
+        }
+    }
+
+    true // Keywords only in non-executable contexts, safe to skip
+}
+```
+
+This approach ensures that a command like `echo "psql" | grep DROP` doesn't trigger PostgreSQL pack evaluation just because keywords appear in the data being processed.
 
 ### 1. Lazy Static Initialization
 
