@@ -62,7 +62,8 @@ fn allow_once_doc_contains_key_concepts() -> std::io::Result<()> {
     // Key concepts that must be documented
     let required_concepts = [
         "24 hour",           // Expiry time
-        "working directory", // Scope explanation
+        "current directory", // Scope explanation (cwd scope)
+        "project root",      // Scope explanation (project scope)
         "redact",            // Redaction behavior
         "single-use",        // Single-use semantics
         "config blocklist",  // Force override context

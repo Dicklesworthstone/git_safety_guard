@@ -9,7 +9,7 @@ This guide explains how to use the allow-once feature to temporarily override dc
 When dcg blocks a command, it prints a short code that can be used to temporarily allow that exact command. This provides an escape hatch for false positives without permanently weakening your security policy.
 
 **Key properties:**
-- Exceptions are scoped to the exact command + working directory
+- Exceptions are scoped to the exact command + directory (project root in git repos, cwd otherwise)
 - Exceptions expire after 24 hours
 - By default, exceptions are reusable until expiry
 - All exceptions are logged for audit
@@ -53,7 +53,7 @@ dcg allow-once ab12
 
 This creates a temporary exception that:
 - Allows the exact command that was blocked
-- Is scoped to the current working directory
+- Is scoped to the project root (if in a git repo) or current directory (otherwise)
 - Expires after 24 hours
 - Can be used multiple times until expiry
 
@@ -77,19 +77,12 @@ All allow-once exceptions expire after **24 hours** from creation. This cannot b
 
 ### Directory Scope
 
-Exceptions are bound to the working directory where the command was blocked:
+Exceptions are scoped based on whether the command was blocked inside a git repository:
 
-- **cwd scope** (default): The exception only applies in the exact directory where the command was blocked.
-- **project scope**: The exception applies anywhere within the project (git repository root and subdirectories). Use `--project` flag when applying.
+- **project scope** (automatic in git repos): If the blocked command was inside a git repository, the exception applies anywhere within that repository (root and all subdirectories).
+- **cwd scope** (outside git repos): If blocked outside a git repository, the exception only applies in the exact directory where the command was blocked.
 
-Example:
-```bash
-# Only allows in /home/user/myproject
-dcg allow-once ab12
-
-# Allows in /home/user/myproject and all subdirectories
-dcg allow-once ab12 --project
-```
+The scope is automatically determined—you cannot override it. This ensures exceptions are appropriately scoped: broad enough to be useful within a project, but not so broad that they leak across unrelated directories.
 
 ### Exact Command Match
 
