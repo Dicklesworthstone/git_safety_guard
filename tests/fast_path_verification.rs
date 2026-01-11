@@ -18,6 +18,8 @@ mod tests {
             safe_patterns: vec![],
             destructive_patterns: vec![],
             keyword_matcher: None,
+            safe_regex_set: None,
+            safe_regex_set_is_complete: false,
         }
     }
 

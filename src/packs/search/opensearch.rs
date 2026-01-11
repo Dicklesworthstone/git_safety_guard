@@ -31,6 +31,8 @@ pub fn create_pack() -> Pack {
         safe_patterns: create_safe_patterns(),
         destructive_patterns: create_destructive_patterns(),
         keyword_matcher: None,
+        safe_regex_set: None,
+        safe_regex_set_is_complete: false,
     }
 }
 
