@@ -20,6 +20,8 @@ pub fn create_pack() -> Pack {
         safe_patterns: create_safe_patterns(),
         destructive_patterns: create_destructive_patterns(),
         keyword_matcher: None,
+        safe_regex_set: None,
+        safe_regex_set_is_complete: false,
     }
 }
 
@@ -62,51 +64,51 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
             r"deck\s+(?:gateway\s+)?sync\b.*--select-tag\b",
             "deck sync with --select-tag can remove entities not matching the tag."
         ),
-        // Kong Admin API - DELETE requests
+        // Kong Admin API - DELETE requests (supports both DELETE-first and URL-first ordering)
         destructive_pattern!(
             "kong-admin-delete-services",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/services",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/services|(?:localhost|127\.0\.0\.1):8001/services.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API removes services."
         ),
         destructive_pattern!(
             "kong-admin-delete-routes",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/routes",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/routes|(?:localhost|127\.0\.0\.1):8001/routes.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API removes routes."
         ),
         destructive_pattern!(
             "kong-admin-delete-plugins",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/plugins",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/plugins|(?:localhost|127\.0\.0\.1):8001/plugins.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API removes plugins."
         ),
         destructive_pattern!(
             "kong-admin-delete-consumers",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/consumers",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/consumers|(?:localhost|127\.0\.0\.1):8001/consumers.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API removes consumers."
         ),
         destructive_pattern!(
             "kong-admin-delete-upstreams",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/upstreams",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/upstreams|(?:localhost|127\.0\.0\.1):8001/upstreams.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API removes upstreams."
         ),
         destructive_pattern!(
             "kong-admin-delete-targets",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/.*targets",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/.*targets|(?:localhost|127\.0\.0\.1):8001/.*targets.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API removes targets."
         ),
         destructive_pattern!(
             "kong-admin-delete-certificates",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/certificates",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/certificates|(?:localhost|127\.0\.0\.1):8001/certificates.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API removes certificates."
         ),
         destructive_pattern!(
             "kong-admin-delete-snis",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/snis",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/snis|(?:localhost|127\.0\.0\.1):8001/snis.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API removes SNIs."
         ),
         // Generic DELETE to any Kong Admin API endpoint
         destructive_pattern!(
             "kong-admin-delete-generic",
-            r"curl\s+.*(?:-X\s+DELETE|--request\s+DELETE)\s+.*(?:localhost|127\.0\.0\.1):8001/",
+            r"curl\s+.*(?:(?:-X\s+DELETE|--request\s+DELETE).*(?:localhost|127\.0\.0\.1):8001/|(?:localhost|127\.0\.0\.1):8001/.*(?:-X\s+DELETE|--request\s+DELETE))",
             "DELETE request to Kong Admin API can remove configuration."
         ),
     ]
@@ -290,5 +292,32 @@ mod tests {
             "curl -X DELETE 127.0.0.1:8001/services/test",
             "kong-admin-delete-services",
         );
+    }
+
+    #[test]
+    fn blocks_url_first_ordering() {
+        let pack = create_pack();
+        // URL before -X DELETE flag (common curl pattern)
+        assert_blocks_with_pattern(
+            &pack,
+            "curl localhost:8001/services/my-service -X DELETE",
+            "kong-admin-delete-services",
+        );
+        assert_blocks_with_pattern(
+            &pack,
+            "curl localhost:8001/routes/my-route -X DELETE",
+            "kong-admin-delete-routes",
+        );
+        assert_blocks_with_pattern(
+            &pack,
+            "curl 127.0.0.1:8001/plugins/rate-limit -X DELETE",
+            "kong-admin-delete-plugins",
+        );
+    }
+
+    #[test]
+    fn allows_non_curl_strings_with_kong_admin_tokens() {
+        let pack = create_pack();
+        assert_allows(&pack, "echo localhost:8001/services/my-service -X DELETE");
     }
 }
