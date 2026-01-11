@@ -176,6 +176,99 @@ echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | cargo run --
 
 ---
 
+## CI/CD Pipeline
+
+### Jobs Overview
+
+| Job | Trigger | Purpose | Blocking |
+|-----|---------|---------|----------|
+| `check` | PR, push | Format, clippy, UBS, tests | Yes |
+| `coverage` | PR, push | Coverage thresholds | Yes |
+| `memory-tests` | PR, push | Memory leak detection | Yes |
+| `benchmarks` | push to master | Performance budgets | Warn only |
+| `e2e` | PR, push | End-to-end shell tests | Yes |
+| `scan-regression` | PR, push | Scan output stability | Yes |
+| `perf-regression` | PR, push | Process-per-invocation perf | Yes |
+
+### Check Job
+
+Runs format, clippy, UBS static analysis, and unit tests. Includes:
+- `cargo fmt --check` - Code formatting
+- `cargo clippy --all-targets -- -D warnings` - Lints (pedantic + nursery enabled)
+- UBS analysis on changed Rust files (warning-only, non-blocking)
+- `cargo nextest run` - Full test suite with JUnit XML report
+
+### Coverage Job
+
+Runs `cargo llvm-cov` and enforces thresholds:
+- **Overall:** ≥ 70%
+- **src/evaluator.rs:** ≥ 80%
+- **src/hook.rs:** ≥ 80%
+
+Coverage is uploaded to Codecov for trend tracking. Dashboard: https://codecov.io/gh/Dicklesworthstone/destructive_command_guard
+
+### Memory Tests Job
+
+Runs dedicated memory leak tests with:
+- `--test-threads=1` for accurate measurements
+- Release mode for realistic performance
+- 1-2MB growth budgets per test
+
+Tests include: hook input parsing, pattern evaluation, heredoc extraction, file extractors, full pipeline, and a self-test that verifies the framework catches leaks.
+
+### Benchmarks Job
+
+Runs on push to master only (benchmarks are noisy on PRs). Checks performance budgets from `src/perf.rs`:
+- Quick reject: < 50μs panic
+- Fast path: < 500μs panic
+- Pattern match: < 1ms panic
+- Heredoc extract: < 2ms panic
+- Full pipeline: < 50ms panic
+
+### UBS Static Analysis
+
+Ultimate Bug Scanner runs on changed Rust files. Currently warning-only (non-blocking) to tune for false positives. Configuration in `.ubsignore` excludes test/bench/fuzz directories.
+
+### Dependabot
+
+Automated dependency updates configured in `.github/dependabot.yml`:
+- **Cargo dependencies:** Weekly (Monday 9am EST), 5 PR limit
+- **GitHub Actions:** Weekly (Monday 9am EST), 3 PR limit
+- **Grouping:** Minor/patch updates grouped; serde updates separate (more careful review)
+
+### Debugging CI Failures
+
+#### Coverage Threshold Failure
+1. Check which file(s) dropped below threshold in CI output
+2. Run `cargo llvm-cov --html` locally to see uncovered lines
+3. Add tests for uncovered code paths
+4. Download `coverage-report` artifact for full details
+
+#### Memory Test Failure
+1. Download `memory-test-output` artifact
+2. Check which test failed and growth amount
+3. Run locally: `cargo test --test memory_tests --release -- --nocapture --test-threads=1`
+4. Profile with valgrind if needed
+
+#### UBS Warnings
+1. Check ubs-output.log in CI summary
+2. Review flagged issues - may be false positives
+3. If valid issues, fix them; if false positives, add to `.ubsignore`
+
+#### E2E Test Failure
+1. Download `e2e-artifacts` artifact
+2. Check `e2e_output.json` for failing test details
+3. Run locally: `./scripts/e2e_test.sh --verbose`
+4. The step summary shows the first failure with output
+
+#### Benchmark Regression
+1. Download `benchmark-results` artifact
+2. Compare against budgets in `src/perf.rs`
+3. Profile locally with `cargo bench --bench heredoc_perf`
+4. Check for algorithmic regressions in hot path
+
+---
+
 ## Heredoc Detection Notes (for contributors)
 
 - **Rule IDs**: Heredoc patterns use stable IDs like `heredoc.python.shutil_rmtree` for allowlisting.
