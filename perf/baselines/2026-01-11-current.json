@@ -1,0 +1,111 @@
+{
+  "binary": {
+    "git_sha": "e421227b3a2a6a0edd8b236074b76081747e25e5",
+    "path": "./target/release/dcg",
+    "version_output": "\u256d\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e\n  \u2502  \ud83d\udee1  Destructive Command Guard               \u2502\n  \u2502     dcg v0.2.0                           \u2502\n  \u2502                                         \u2502\n  \u2502  Built: 2026-01-11                   \u2502\n  \u2502  Rustc: 1.94.0-nightly                      \u2502\n  \u2502  Target: x86_64-unknown-linux-gnu         \u2502\n  \u2502                                         \u2502\n  \u2502  Protecting your code from destructive ops  \u2502\n  \u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256f"
+  },
+  "cases": [
+    {
+      "command": "ls -la",
+      "description": "No pack keywords (fast allow)",
+      "env": {},
+      "id": "quick_reject",
+      "metrics": {
+        "max_rss_kb": 5776,
+        "mean_ms": 13.23816265,
+        "p50_ms": 12.446116499999999,
+        "p95_ms": 23.49414,
+        "p99_ms": 27.945568,
+        "sample_count": 100,
+        "throughput_per_s": 75.5391836796929
+      },
+      "trace": null
+    },
+    {
+      "command": "git status",
+      "description": "Keyword present, safe path",
+      "env": {},
+      "id": "safe_keyword",
+      "metrics": {
+        "max_rss_kb": 6292,
+        "mean_ms": 35.949251239999995,
+        "p50_ms": 35.091463,
+        "p95_ms": 47.138533,
+        "p99_ms": 50.329957,
+        "sample_count": 100,
+        "throughput_per_s": 27.816991050075625
+      },
+      "trace": null
+    },
+    {
+      "command": "git reset --hard",
+      "description": "Keyword present, destructive match",
+      "env": {},
+      "id": "destructive_keyword",
+      "metrics": {
+        "max_rss_kb": 6380,
+        "mean_ms": 52.12132884,
+        "p50_ms": 50.9507515,
+        "p95_ms": 74.851863,
+        "p99_ms": 83.021157,
+        "sample_count": 100,
+        "throughput_per_s": 19.18600354702699
+      },
+      "trace": null
+    },
+    {
+      "command": "python -c \"import os; os.system('rm -rf /')\"",
+      "description": "Inline script trigger",
+      "env": {},
+      "id": "heredoc_inline",
+      "metrics": {
+        "max_rss_kb": 14472,
+        "mean_ms": 120.21892943,
+        "p50_ms": 119.381631,
+        "p95_ms": 139.044752,
+        "p99_ms": 146.375336,
+        "sample_count": 100,
+        "throughput_per_s": 8.318157587505976
+      },
+      "trace": null
+    },
+    {
+      "command": "git reset --hard",
+      "description": "Bypass hook via DCG_BYPASS",
+      "env": {
+        "DCG_BYPASS": "1"
+      },
+      "id": "bypass",
+      "metrics": {
+        "max_rss_kb": 4740,
+        "mean_ms": 6.08681294,
+        "p50_ms": 6.005050499999999,
+        "p95_ms": 12.739014,
+        "p99_ms": 14.338207,
+        "sample_count": 100,
+        "throughput_per_s": 164.28958961896404
+      },
+      "trace": null
+    }
+  ],
+  "errors": [],
+  "generated_at": "2026-01-11T10:01:28Z",
+  "host": {
+    "arch": "x86_64",
+    "os": "Linux",
+    "release": "6.17.0-8-generic"
+  },
+  "method": {
+    "mode": "process",
+    "notes": "Process-per-invocation timing. max_rss_kb measured via /usr/bin/time -v.",
+    "rss_method": "/usr/bin/time -v",
+    "runs": 100,
+    "timer": "perf_counter_ns",
+    "warmup": 10
+  },
+  "rustc": {
+    "host": "x86_64-unknown-linux-gnu",
+    "version_output": "rustc 1.94.0-nightly (fecb335cb 2026-01-07)\nbinary: rustc\ncommit-hash: fecb335cbad3d84ef3da39191ba094e6c726a5b4\ncommit-date: 2026-01-07\nhost: x86_64-unknown-linux-gnu\nrelease: 1.94.0-nightly\nLLVM version: 21.1.8"
+  },
+  "schema_version": 1
+}

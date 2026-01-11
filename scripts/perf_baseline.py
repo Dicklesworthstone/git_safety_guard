@@ -36,6 +36,29 @@ def run_one(bin_path: str, command: str, env: Optional[Dict[str, str]] = None) -
     return (end - start) / 1_000_000.0
 
 
+def measure_max_rss_kb(bin_path: str, command: str, env: Optional[Dict[str, str]] = None) -> Optional[int]:
+    """Measure max RSS in KB using /usr/bin/time -v."""
+    payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}).encode()
+    try:
+        result = subprocess.run(
+            ["/usr/bin/time", "-v", bin_path],
+            input=payload,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=env,
+        )
+        # Parse "Maximum resident set size (kbytes): NNNN" from stderr
+        for line in result.stderr.decode(errors="replace").splitlines():
+            if "Maximum resident set size" in line:
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    return int(parts[1].strip())
+        return None
+    except Exception:
+        return None
+
+
 def percentile(sorted_values: List[float], pct: float) -> float:
     if not sorted_values:
         return 0.0
@@ -50,6 +73,7 @@ def run_case(
     env: Optional[Dict[str, str]],
     warmup: int,
     runs: int,
+    measure_rss: bool = True,
 ) -> Dict[str, Any]:
     for _ in range(warmup):
         run_one(bin_path, command, env)
@@ -60,6 +84,11 @@ def run_case(
     mean_ms = sum(timings_sorted) / len(timings_sorted)
     throughput = 1000.0 / mean_ms if mean_ms > 0 else 0.0
 
+    # Measure max RSS (single measurement after warmup)
+    max_rss_kb = None
+    if measure_rss:
+        max_rss_kb = measure_max_rss_kb(bin_path, command, env)
+
     return {
         "p50_ms": statistics.median(timings_sorted),
         "p95_ms": percentile(timings_sorted, 95),
@@ -67,6 +96,7 @@ def run_case(
         "mean_ms": mean_ms,
         "throughput_per_s": throughput,
         "sample_count": len(timings_sorted),
+        "max_rss_kb": max_rss_kb,
     }
 
 
@@ -242,8 +272,8 @@ def main() -> int:
             "warmup": args.warmup,
             "runs": args.runs,
             "timer": "perf_counter_ns",
-            "rss_method": "none",
-            "notes": "Process-per-invocation timing. Stage timings populated if trace output includes steps.",
+            "rss_method": "/usr/bin/time -v",
+            "notes": "Process-per-invocation timing. max_rss_kb measured via /usr/bin/time -v.",
         },
         "cases": results,
         "errors": errors,
