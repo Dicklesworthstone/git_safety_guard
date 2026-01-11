@@ -1387,8 +1387,7 @@ fn evaluate_heredoc(
                     if let Some(mut info) = result.pattern_info {
                         info.reason = format!(
                             "Embedded shell command blocked: {} (line {} of heredoc)",
-                            info.reason,
-                            inner.line_number
+                            info.reason, inner.line_number
                         );
                         info.source = MatchSource::HeredocAst; // Mark as heredoc source
 

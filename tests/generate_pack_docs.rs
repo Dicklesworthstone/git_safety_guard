@@ -131,7 +131,10 @@ fn generate_category_doc(category: &str, packs: &[&Pack]) -> String {
     };
 
     let _ = writeln!(out, "# {category_title}\n");
-    let _ = writeln!(out, "This document describes packs in the `{category}` category.\n");
+    let _ = writeln!(
+        out,
+        "This document describes packs in the `{category}` category.\n"
+    );
 
     // Table of contents
     out.push_str("## Packs in this Category\n\n");
@@ -217,7 +220,9 @@ fn generate_all_docs() -> std::io::Result<()> {
 
     index.push_str("\n## Notes\n\n");
     index.push_str("- Enable a whole category by specifying its prefix (e.g., `kubernetes`).\n");
-    index.push_str("- Heredoc/inline-script scanning is configured under `[heredoc]`, not `[packs]`.\n");
+    index.push_str(
+        "- Heredoc/inline-script scanning is configured under `[heredoc]`, not `[packs]`.\n",
+    );
     index.push_str("- See `docs/configuration.md` for full configuration details.\n");
     index.push_str("\n---\n\n");
     index.push_str("*This documentation is auto-generated from PackRegistry metadata.*\n");

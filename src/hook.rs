@@ -829,7 +829,9 @@ mod tests {
         // Verify the explain hint comes after "BLOCKED" but before "Reason:"
         let msg = format_denial_message("rm -rf /", "dangerous filesystem operation");
         let blocked_pos = msg.find("BLOCKED").expect("should contain BLOCKED");
-        let tip_pos = msg.find("Tip: dcg explain").expect("should contain explain hint");
+        let tip_pos = msg
+            .find("Tip: dcg explain")
+            .expect("should contain explain hint");
         let reason_pos = msg.find("Reason:").expect("should contain Reason:");
 
         assert!(
@@ -847,7 +849,13 @@ mod tests {
         // Verify print_colorful_warning handles various inputs without panic
         // (the hint is printed to stderr which we can't easily capture in unit tests,
         // but we can verify it doesn't crash)
-        print_colorful_warning("git push --force", "force push", Some("git"), Some("force_push"), None);
+        print_colorful_warning(
+            "git push --force",
+            "force push",
+            Some("git"),
+            Some("force_push"),
+            None,
+        );
         print_colorful_warning("rm -rf /", "filesystem", Some("fs"), None, Some("abcd"));
         print_colorful_warning(r#"echo "quoted""#, "echo", None, None, None);
     }

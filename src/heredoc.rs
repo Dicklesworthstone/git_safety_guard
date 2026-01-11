@@ -42,6 +42,7 @@
 //! Uses ast-grep-core for structural pattern matching.
 //! Language-specific patterns for destructive operations.
 
+use memchr::memchr;
 use regex::RegexSet;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -56,47 +57,319 @@ use tracing::{debug, instrument, trace, warn};
 ///
 /// Uses [`RegexSet`] for parallel matching in a single pass over the input.
 /// Target latency: <10μs for non-matching, <100μs for matching.
+///
+/// Note: heredoc operators (e.g. `<<EOF`, `<<< "..."`) are detected via a small,
+/// quote-aware scanner so we can suppress obvious false positives inside quoted
+/// literals (commit messages, search patterns, etc.) without introducing false
+/// negatives for real shell syntax (including `$()`/backtick substitutions).
+const HEREDOC_TRIGGER_PATTERNS: [&str; 12] = [
+    // Inline interpreter execution. These patterns intentionally allow:
+    // - interleaved flags (python -I -c, bash --norc -c)
+    // - combined short-flag clusters (bash -lc, node -pe, perl -pi -e)
+    //
+    // Tier 1 MUST have zero false negatives for Tier 2 extraction.
+    //
+    // Python inline execution (matches python, python3, python3.11, python3.12.1, etc.)
+    r"\bpython[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[ce][A-Za-z]*\s",
+    // Ruby inline execution (matches ruby, ruby3, ruby3.0, etc.)
+    r"\bruby[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*e[A-Za-z]*\s",
+    r"\birb[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*e[A-Za-z]*\s",
+    // Perl inline execution (matches perl, perl5, perl5.36, etc.)
+    r"\bperl[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[eE][A-Za-z]*\s",
+    // Node.js inline execution (matches node, node18, nodejs, nodejs18, etc.)
+    r"\bnode(js)?[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[ep][A-Za-z]*\s",
+    // PHP inline execution
+    r"\bphp[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*r[A-Za-z]*\s",
+    // Lua inline execution
+    r"\blua[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*e[A-Za-z]*\s",
+    // Shell inline execution (sh -c, bash -c, zsh -c, fish -c, bash -lc, etc.)
+    r"\b(sh|bash|zsh|fish)\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*c[A-Za-z]*\s",
+    // Piped execution to interpreters (versioned)
+    r"\|\s*(python[0-9.]*|ruby[0-9.]*|perl[0-9.]*|node(js)?[0-9.]*|php[0-9.]*|lua[0-9.]*|sh|bash)\b",
+    // Piped to xargs (can execute arbitrary commands)
+    r"\|\s*xargs\s",
+    // exec/eval in various contexts
+    r#"\beval\s+['"]"#,
+    r#"\bexec\s+['"]"#,
+];
+
+const MANUAL_HEREDOC_TRIGGER_INDEX: usize = HEREDOC_TRIGGER_PATTERNS.len();
+
 static HEREDOC_TRIGGERS: LazyLock<RegexSet> = LazyLock::new(|| {
-    RegexSet::new([
-        // Heredoc operators (bash, sh, zsh)
-        // Supports quoted delimiters with spaces (e.g., << "EOF SPACE") or empty (<< "")
-        // Use r#""# to allow double quotes inside the pattern
-        r#"<<-?\s*(?:['"][^'"]*['"]|[^'"\s]+)"#, 
-        r"<<<",                        // Here-strings (bash)
-        // Inline interpreter execution. These patterns intentionally allow:
-        // - interleaved flags (python -I -c, bash --norc -c)
-        // - combined short-flag clusters (bash -lc, node -pe, perl -pi -e)
-        //
-        // Tier 1 MUST have zero false negatives for Tier 2 extraction.
-        //
-        // Python inline execution (matches python, python3, python3.11, python3.12.1, etc.)
-        r"\bpython[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[ce][A-Za-z]*\s",
-        // Ruby inline execution (matches ruby, ruby3, ruby3.0, etc.)
-        r"\bruby[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*e[A-Za-z]*\s",
-        r"\birb[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*e[A-Za-z]*\s",
-        // Perl inline execution (matches perl, perl5, perl5.36, etc.)
-        r"\bperl[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[eE][A-Za-z]*\s",
-        // Node.js inline execution (matches node, node18, nodejs, nodejs18, etc.)
-        r"\bnode(js)?[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*[ep][A-Za-z]*\s",
-        // PHP inline execution
-        r"\bphp[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*r[A-Za-z]*\s",
-        // Lua inline execution
-        r"\blua[0-9.]*\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*e[A-Za-z]*\s",
-        // Shell inline execution (sh -c, bash -c, zsh -c, fish -c, bash -lc, etc.)
-        r"\b(sh|bash|zsh|fish)\b(?:\s+(?:--\S+|-[A-Za-z]+))*\s+-[A-Za-z]*c[A-Za-z]*\s",
-        // Piped execution to interpreters (versioned)
-        r"\|\s*(python[0-9.]*|ruby[0-9.]*|perl[0-9.]*|node(js)?[0-9.]*|php[0-9.]*|lua[0-9.]*|sh|bash)\b",
-        // Piped to xargs (can execute arbitrary commands)
-        r"\|\s*xargs\s",
-        // exec/eval in various contexts
-        r#"\beval\s+['"]"#,
-        r#"\bexec\s+['"]"#,
-        // Additional heredoc variants
-        r"<<~",          // Ruby-style heredoc (indentation-stripping)
-        r#"<<['"]EOF"#, // Quoted delimiters (literal)
-    ])
-    .expect("heredoc trigger patterns should compile")
+    RegexSet::new(HEREDOC_TRIGGER_PATTERNS).expect("heredoc trigger patterns should compile")
 });
+
+#[inline]
+#[must_use]
+fn contains_active_heredoc_operator(command: &str) -> bool {
+    if memchr(b'<', command.as_bytes()).is_none() {
+        return false;
+    }
+    contains_active_heredoc_operator_recursive(command, 0, 0)
+}
+
+#[must_use]
+fn contains_active_heredoc_operator_recursive(
+    command: &str,
+    start: usize,
+    recursion_depth: usize,
+) -> bool {
+    // Prevent stack overflow on pathological input.
+    //
+    // Tier 1 must have zero false negatives; on recursion exhaustion we conservatively
+    // trigger (false positives are acceptable here).
+    if recursion_depth > 500 {
+        return true;
+    }
+
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+    let mut i = start.min(len);
+
+    while i < len {
+        match bytes[i] {
+            b'<' if i + 1 < len && bytes[i + 1] == b'<' => {
+                // Active shell heredoc/here-string operator.
+                return true;
+            }
+            b'\\' => {
+                // Handle CRLF escape (consumes 3 bytes: \, \r, \n)
+                if i + 2 < len && bytes[i + 1] == b'\r' && bytes[i + 2] == b'\n' {
+                    i += 3;
+                } else {
+                    // Skip escaped byte. Conservative for UTF-8 (see context.rs notes).
+                    i = (i + 2).min(len);
+                }
+            }
+            b'\'' => {
+                // Single-quoted segment (no escapes, no substitutions).
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                // Double-quoted segment: ignore literal `<<` inside, but scan nested `$()`/backticks.
+                let (found, next) = scan_double_quotes_for_heredoc(command, i + 1, recursion_depth);
+                if found {
+                    return true;
+                }
+                i = next;
+            }
+            b'$' if i + 1 < len && bytes[i + 1] == b'(' => {
+                let (found, next) =
+                    scan_dollar_paren_for_heredoc_recursive(command, i, recursion_depth + 1);
+                if found {
+                    return true;
+                }
+                i = next;
+            }
+            b'`' => {
+                let (found, next) =
+                    scan_backticks_for_heredoc_recursive(command, i, recursion_depth + 1);
+                if found {
+                    return true;
+                }
+                i = next;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    false
+}
+
+#[must_use]
+fn scan_double_quotes_for_heredoc(
+    command: &str,
+    start: usize,
+    recursion_depth: usize,
+) -> (bool, usize) {
+    if recursion_depth > 500 {
+        return (true, command.len());
+    }
+
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+    let mut i = start.min(len);
+
+    while i < len {
+        match bytes[i] {
+            b'"' => return (false, i + 1),
+            b'\\' => {
+                i = (i + 2).min(len);
+            }
+            b'$' if i + 1 < len && bytes[i + 1] == b'(' => {
+                let (found, next) =
+                    scan_dollar_paren_for_heredoc_recursive(command, i, recursion_depth + 1);
+                if found {
+                    return (true, next);
+                }
+                i = next;
+            }
+            b'`' => {
+                let (found, next) =
+                    scan_backticks_for_heredoc_recursive(command, i, recursion_depth + 1);
+                if found {
+                    return (true, next);
+                }
+                i = next;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    (false, len)
+}
+
+#[must_use]
+fn scan_dollar_paren_for_heredoc_recursive(
+    command: &str,
+    start: usize,
+    recursion_depth: usize,
+) -> (bool, usize) {
+    // Prevent stack overflow on pathological input.
+    if recursion_depth > 500 {
+        return (true, command.len());
+    }
+
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+
+    debug_assert!(bytes.get(start) == Some(&b'$'));
+    debug_assert!(bytes.get(start + 1) == Some(&b'('));
+
+    let mut i = start + 2;
+    let mut depth: u32 = 1;
+
+    while i < len {
+        match bytes[i] {
+            b'<' if i + 1 < len && bytes[i + 1] == b'<' => {
+                return (true, i + 2);
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                if depth == 1 {
+                    // End of command substitution.
+                    return (false, i + 1);
+                }
+                depth = depth.saturating_sub(1);
+                i += 1;
+            }
+            b'\\' => {
+                i = (i + 2).min(len);
+            }
+            b'\'' => {
+                // Single quotes inside: consume until closing.
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                let (found, next) = scan_double_quotes_for_heredoc(command, i + 1, recursion_depth);
+                if found {
+                    return (true, next);
+                }
+                i = next;
+            }
+            b'$' if i + 1 < len && bytes[i + 1] == b'(' => {
+                let (found, next) =
+                    scan_dollar_paren_for_heredoc_recursive(command, i, recursion_depth + 1);
+                if found {
+                    return (true, next);
+                }
+                i = next;
+            }
+            b'`' => {
+                let (found, next) =
+                    scan_backticks_for_heredoc_recursive(command, i, recursion_depth + 1);
+                if found {
+                    return (true, next);
+                }
+                i = next;
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    (false, len)
+}
+
+#[must_use]
+fn scan_backticks_for_heredoc_recursive(
+    command: &str,
+    start: usize,
+    recursion_depth: usize,
+) -> (bool, usize) {
+    if recursion_depth > 500 {
+        return (true, command.len());
+    }
+
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+
+    debug_assert!(bytes.get(start) == Some(&b'`'));
+
+    let mut i = start + 1;
+    while i < len {
+        match bytes[i] {
+            b'<' if i + 1 < len && bytes[i + 1] == b'<' => {
+                return (true, i + 2);
+            }
+            b'\\' => {
+                i = (i + 2).min(len);
+            }
+            b'\'' => {
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1;
+                }
+            }
+            b'"' => {
+                let (found, next) = scan_double_quotes_for_heredoc(command, i + 1, recursion_depth);
+                if found {
+                    return (true, next);
+                }
+                i = next;
+            }
+            b'$' if i + 1 < len && bytes[i + 1] == b'(' => {
+                let (found, next) =
+                    scan_dollar_paren_for_heredoc_recursive(command, i, recursion_depth + 1);
+                if found {
+                    return (true, next);
+                }
+                i = next;
+            }
+            b'`' => {
+                return (false, i + 1);
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    (false, len)
+}
 
 /// Result of Tier 1 trigger detection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +408,7 @@ pub enum TriggerResult {
 #[must_use]
 #[instrument(skip(command), fields(cmd_len = command.len()))]
 pub fn check_triggers(command: &str) -> TriggerResult {
-    if HEREDOC_TRIGGERS.is_match(command) {
+    if contains_active_heredoc_operator(command) || HEREDOC_TRIGGERS.is_match(command) {
         debug!("tier1_trigger: heredoc/inline script indicator detected");
         TriggerResult::Triggered
     } else {
@@ -149,7 +422,11 @@ pub fn check_triggers(command: &str) -> TriggerResult {
 /// Useful for debugging and logging which patterns triggered.
 #[must_use]
 pub fn matched_triggers(command: &str) -> Vec<usize> {
-    HEREDOC_TRIGGERS.matches(command).into_iter().collect()
+    let mut matches: Vec<usize> = HEREDOC_TRIGGERS.matches(command).into_iter().collect();
+    if contains_active_heredoc_operator(command) {
+        matches.push(MANUAL_HEREDOC_TRIGGER_INDEX);
+    }
+    matches
 }
 
 // ============================================================================
@@ -1643,6 +1920,31 @@ mod tests {
                 no_matches.is_empty(),
                 "should have no matches for git status"
             );
+        }
+
+        #[test]
+        fn heredoc_syntax_inside_quoted_literals_does_not_trigger() {
+            // Common false positives: heredoc syntax used as documentation or search patterns.
+            let commands = [
+                r#"git commit -m "docs: example heredoc: cat <<EOF rm -rf / EOF""#,
+                r#"rg "<<EOF" README.md"#,
+                "echo 'cat <<EOF (docs only)'",
+            ];
+
+            for cmd in commands {
+                assert_eq!(
+                    check_triggers(cmd),
+                    TriggerResult::NoTrigger,
+                    "should not trigger on quoted literal heredoc syntax: {cmd}"
+                );
+            }
+        }
+
+        #[test]
+        fn heredoc_inside_command_substitution_with_outer_quotes_still_triggers() {
+            // `$(...)` is executed even when the outer word is double-quoted.
+            let cmd = "echo \"$(cat <<EOF\nrm -rf /\nEOF)\"";
+            assert_eq!(check_triggers(cmd), TriggerResult::Triggered);
         }
 
         // Property: Zero false negatives - if content extraction would find

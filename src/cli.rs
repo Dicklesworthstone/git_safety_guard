@@ -2518,6 +2518,22 @@ struct CorpusTestResult {
     quick_rejected: bool,
     /// Evaluation duration in microseconds
     duration_us: u64,
+
+    /// Tier 1 heredoc/inline-script trigger indices on the raw command.
+    ///
+    /// This is intended for debugging false positives in the regression corpus.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    heredoc_triggers: Vec<usize>,
+
+    /// Tier 1 trigger indices after safe-string sanitization (only populated when
+    /// sanitization changes the command and triggers are re-evaluated).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    heredoc_triggers_sanitized: Vec<usize>,
+
+    /// If Tier 1 triggered on the raw command but sanitization removed all triggers,
+    /// records the suppression reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    heredoc_suppression_reason: Option<String>,
 }
 
 /// Category statistics.
@@ -2708,6 +2724,24 @@ fn run_single_corpus_test(
     let allowlists = crate::LayeredAllowlist::default();
     let heredoc_settings = effective_config.heredoc_settings();
 
+    // Capture Tier 1 trigger details for debugging false positives.
+    let mut heredoc_triggers = Vec::new();
+    let mut heredoc_triggers_sanitized = Vec::new();
+    let mut heredoc_suppression_reason = None;
+    if crate::heredoc::check_triggers(&case.command) == crate::heredoc::TriggerResult::Triggered {
+        heredoc_triggers = crate::heredoc::matched_triggers(&case.command);
+
+        let sanitized = crate::context::sanitize_for_pattern_matching(&case.command);
+        if matches!(sanitized, std::borrow::Cow::Owned(_)) {
+            let sanitized_str = sanitized.as_ref();
+            heredoc_triggers_sanitized = crate::heredoc::matched_triggers(sanitized_str);
+            if heredoc_triggers_sanitized.is_empty() {
+                heredoc_suppression_reason =
+                    Some("sanitized_removed_all_tier1_triggers".to_string());
+            }
+        }
+    }
+
     // Time the evaluation
     let start = Instant::now();
     let result = evaluate_command_with_pack_order(
@@ -2767,6 +2801,9 @@ fn run_single_corpus_test(
         match_source,
         quick_rejected,
         duration_us,
+        heredoc_triggers,
+        heredoc_triggers_sanitized,
+        heredoc_suppression_reason,
     }
 }
 
