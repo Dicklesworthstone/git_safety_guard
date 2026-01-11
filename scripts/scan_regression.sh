@@ -27,8 +27,8 @@ echo "Running scan regression test..."
 echo "Binary: $DCG"
 echo "Fixtures: $FIXTURES_DIR"
 
-# Run scan and capture output
-"$DCG" scan --paths "$FIXTURES_DIR" --format json --top 0 > "$ACTUAL" 2>&1 || true
+# Run scan and capture output (stderr goes to /dev/null to avoid corrupting JSON)
+"$DCG" scan --paths "$FIXTURES_DIR" --format json --top 0 > "$ACTUAL" 2>/dev/null || true
 
 # Compare key fields (ignore timestamps and elapsed_ms which vary)
 echo ""

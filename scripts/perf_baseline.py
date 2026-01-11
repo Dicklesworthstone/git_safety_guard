@@ -39,6 +39,11 @@ def run_one(bin_path: str, command: str, env: Optional[Dict[str, str]] = None) -
 def measure_max_rss_kb(bin_path: str, command: str, env: Optional[Dict[str, str]] = None) -> Optional[int]:
     """Measure max RSS in KB using /usr/bin/time -v."""
     payload = json.dumps({"tool_name": "Bash", "tool_input": {"command": command}}).encode()
+    # Merge custom env with current environment if provided
+    run_env = None
+    if env is not None:
+        run_env = os.environ.copy()
+        run_env.update(env)
     try:
         result = subprocess.run(
             ["/usr/bin/time", "-v", bin_path],
@@ -46,7 +51,7 @@ def measure_max_rss_kb(bin_path: str, command: str, env: Optional[Dict[str, str]
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             check=False,
-            env=env,
+            env=run_env,
         )
         # Parse "Maximum resident set size (kbytes): NNNN" from stderr
         for line in result.stderr.decode(errors="replace").splitlines():
