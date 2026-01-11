@@ -63,6 +63,51 @@ struct RmFlagState {
     saw_terminator: bool,
 }
 
+#[derive(Debug, Default)]
+#[allow(clippy::struct_excessive_bools)]
+struct RmFlagTracker {
+    combined_span: Option<Range<usize>>,
+    seen_r: bool,
+    r_span: Option<Range<usize>>,
+    seen_f: bool,
+    f_span: Option<Range<usize>>,
+    seen_long_recursive: bool,
+    recursive_span: Option<Range<usize>>,
+    seen_long_force: bool,
+    force_span: Option<Range<usize>>,
+    saw_terminator: bool,
+}
+
+impl RmFlagTracker {
+    fn resolve(self) -> Option<RmFlagState> {
+        if let Some(span) = self.combined_span {
+            return Some(RmFlagState {
+                style: RmFlagStyle::Combined,
+                span: Some(span),
+                saw_terminator: self.saw_terminator,
+            });
+        }
+
+        if self.seen_r && self.seen_f {
+            return Some(RmFlagState {
+                style: RmFlagStyle::Separate,
+                span: self.r_span.or(self.f_span),
+                saw_terminator: self.saw_terminator,
+            });
+        }
+
+        if self.seen_long_recursive && self.seen_long_force {
+            return Some(RmFlagState {
+                style: RmFlagStyle::Long,
+                span: self.recursive_span.or(self.force_span),
+                saw_terminator: self.saw_terminator,
+            });
+        }
+
+        None
+    }
+}
+
 pub(crate) fn parse_rm_command(command: &str) -> RmParseDecision {
     let tokens = tokenize_for_normalization(command);
     if tokens.is_empty() {
@@ -71,13 +116,13 @@ pub(crate) fn parse_rm_command(command: &str) -> RmParseDecision {
 
     let mut i = 0;
     while i < tokens.len() {
-        let token = &tokens[i];
-        if token.kind == NormalizeTokenKind::Separator {
+        let current = &tokens[i];
+        if current.kind == NormalizeTokenKind::Separator {
             i += 1;
             continue;
         }
 
-        let Some(text) = token.text(command) else {
+        let Some(text) = current.text(command) else {
             i += 1;
             continue;
         };
@@ -96,23 +141,14 @@ pub(crate) fn parse_rm_command(command: &str) -> RmParseDecision {
     RmParseDecision::NoMatch
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_rm_segment(
     command: &str,
     tokens: &[crate::normalize::NormalizeToken],
     start_idx: usize,
 ) -> RmParseDecision {
     let mut options_ended = false;
-    let mut saw_terminator = false;
-
-    let mut combined_span: Option<Range<usize>> = None;
-    let mut seen_r = false;
-    let mut r_span: Option<Range<usize>> = None;
-    let mut seen_f = false;
-    let mut f_span: Option<Range<usize>> = None;
-    let mut seen_long_recursive = false;
-    let mut recursive_span: Option<Range<usize>> = None;
-    let mut seen_long_force = false;
-    let mut force_span: Option<Range<usize>> = None;
+    let mut flags = RmFlagTracker::default();
 
     let mut paths: Vec<PathToken<'_>> = Vec::new();
 
@@ -128,41 +164,41 @@ fn parse_rm_segment(
         if !options_ended {
             if text == "--" {
                 options_ended = true;
-                saw_terminator = true;
+                flags.saw_terminator = true;
                 continue;
             }
 
             if text.starts_with('-') && text != "-" {
                 if text.starts_with("--") {
                     if text.starts_with("--recursive") {
-                        seen_long_recursive = true;
-                        if recursive_span.is_none() {
-                            recursive_span = Some(token.byte_range.clone());
+                        flags.seen_long_recursive = true;
+                        if flags.recursive_span.is_none() {
+                            flags.recursive_span = Some(token.byte_range.clone());
                         }
                     }
                     if text.starts_with("--force") {
-                        seen_long_force = true;
-                        if force_span.is_none() {
-                            force_span = Some(token.byte_range.clone());
+                        flags.seen_long_force = true;
+                        if flags.force_span.is_none() {
+                            flags.force_span = Some(token.byte_range.clone());
                         }
                     }
                 } else {
-                    let flags = text.trim_start_matches('-');
-                    if !flags.is_empty() {
-                        let has_r = flags.chars().any(|c| c == 'r' || c == 'R');
-                        let has_f = flags.chars().any(|c| c == 'f');
+                    let flag_text = text.trim_start_matches('-');
+                    if !flag_text.is_empty() {
+                        let has_r = flag_text.chars().any(|c| c == 'r' || c == 'R');
+                        let has_f = flag_text.chars().any(|c| c == 'f');
                         if has_r && has_f {
-                            if combined_span.is_none() {
-                                combined_span = Some(token.byte_range.clone());
+                            if flags.combined_span.is_none() {
+                                flags.combined_span = Some(token.byte_range.clone());
                             }
                         } else {
-                            if has_r && !seen_r {
-                                seen_r = true;
-                                r_span = Some(token.byte_range.clone());
+                            if has_r && !flags.seen_r {
+                                flags.seen_r = true;
+                                flags.r_span = Some(token.byte_range.clone());
                             }
-                            if has_f && !seen_f {
-                                seen_f = true;
-                                f_span = Some(token.byte_range.clone());
+                            if has_f && !flags.seen_f {
+                                flags.seen_f = true;
+                                flags.f_span = Some(token.byte_range.clone());
                             }
                         }
                     }
@@ -181,24 +217,16 @@ fn parse_rm_segment(
         });
     }
 
-    let flag_state = resolve_flag_state(
-        combined_span,
-        seen_r,
-        r_span,
-        seen_f,
-        f_span,
-        seen_long_recursive,
-        recursive_span,
-        seen_long_force,
-        force_span,
-        saw_terminator,
-    );
+    let flag_state = flags.resolve();
     let Some(flag_state) = flag_state else {
         return RmParseDecision::NoMatch;
     };
 
-    let safe_paths =
-        !paths.is_empty() && !flag_state.saw_terminator && paths.iter().all(path_is_safe);
+    let safe_paths = !paths.is_empty()
+        && !flag_state.saw_terminator
+        && paths
+            .iter()
+            .all(|path| path_is_safe_for_style(path, flag_state.style));
 
     if safe_paths {
         return RmParseDecision::Allow;
@@ -239,45 +267,6 @@ fn parse_rm_segment(
     })
 }
 
-fn resolve_flag_state(
-    combined_span: Option<Range<usize>>,
-    seen_r: bool,
-    r_span: Option<Range<usize>>,
-    seen_f: bool,
-    f_span: Option<Range<usize>>,
-    seen_long_recursive: bool,
-    recursive_span: Option<Range<usize>>,
-    seen_long_force: bool,
-    force_span: Option<Range<usize>>,
-    saw_terminator: bool,
-) -> Option<RmFlagState> {
-    if let Some(span) = combined_span {
-        return Some(RmFlagState {
-            style: RmFlagStyle::Combined,
-            span: Some(span),
-            saw_terminator,
-        });
-    }
-
-    if seen_r && seen_f {
-        return Some(RmFlagState {
-            style: RmFlagStyle::Separate,
-            span: r_span.or(f_span),
-            saw_terminator,
-        });
-    }
-
-    if seen_long_recursive && seen_long_force {
-        return Some(RmFlagState {
-            style: RmFlagStyle::Long,
-            span: recursive_span.or(force_span),
-            saw_terminator,
-        });
-    }
-
-    None
-}
-
 fn strip_outer_quotes(token: &str) -> (QuoteKind, &str) {
     if token.len() >= 2 {
         if token.starts_with('"') && token.ends_with('"') {
@@ -290,7 +279,11 @@ fn strip_outer_quotes(token: &str) -> (QuoteKind, &str) {
     (QuoteKind::None, token)
 }
 
-fn path_is_safe(path: &PathToken<'_>) -> bool {
+fn path_is_safe_for_style(path: &PathToken<'_>, style: RmFlagStyle) -> bool {
+    if path.quote == QuoteKind::Double && style != RmFlagStyle::Combined {
+        return false;
+    }
+
     match path.quote {
         QuoteKind::None => path_is_safe_unquoted(path.unquoted),
         QuoteKind::Double => path_is_safe_double_quoted(path.unquoted),
@@ -602,10 +595,11 @@ mod tests {
     }
 
     fn assert_rm_parser_allows(command: &str) {
-        match parse_rm_command(command) {
-            RmParseDecision::Allow => {}
-            other => panic!("Expected rm parser to allow '{command}', got {other:?}"),
-        }
+        let decision = parse_rm_command(command);
+        assert!(
+            matches!(decision, RmParseDecision::Allow),
+            "Expected rm parser to allow '{command}', got {decision:?}",
+        );
     }
 
     fn assert_rm_parser_denies(command: &str, expected_rule: &str, expected_severity: Severity) {
@@ -620,23 +614,52 @@ mod tests {
                     "Unexpected severity for '{command}'"
                 );
             }
-            other => panic!("Expected rm parser to deny '{command}', got {other:?}"),
+            other => unreachable!("Expected rm parser to deny '{command}', got {other:?}"),
         }
     }
 
     fn assert_rm_parser_no_match(command: &str) {
         match parse_rm_command(command) {
             RmParseDecision::NoMatch => {}
-            other => panic!("Expected rm parser to return NoMatch for '{command}', got {other:?}"),
+            other => {
+                unreachable!("Expected rm parser to return NoMatch for '{command}', got {other:?}")
+            }
         }
     }
 
     #[test]
     fn test_rm_parser_allows_tmpdir_quotes() {
         assert_rm_parser_allows(r#"rm -rf "$TMPDIR/foo""#);
+        assert_rm_parser_allows(r#"rm -rf "${TMPDIR}/foo""#);
+        assert_rm_parser_denies(r"rm -rf '$TMPDIR/foo'", RM_RF_GENERAL_NAME, Severity::High);
         assert_rm_parser_denies(
-            r#"rm -rf '$TMPDIR/foo'"#,
-            RM_RF_GENERAL_NAME,
+            r#"rm -r -f "$TMPDIR/foo""#,
+            RM_R_F_SEPARATE_NAME,
+            Severity::High,
+        );
+        assert_rm_parser_denies(
+            r#"rm -r -f "${TMPDIR}/foo""#,
+            RM_R_F_SEPARATE_NAME,
+            Severity::High,
+        );
+        assert_rm_parser_denies(
+            r#"rm --recursive --force "$TMPDIR/foo""#,
+            RM_RECURSIVE_FORCE_NAME,
+            Severity::High,
+        );
+        assert_rm_parser_denies(
+            r#"rm --recursive --force "${TMPDIR}/foo""#,
+            RM_RECURSIVE_FORCE_NAME,
+            Severity::High,
+        );
+        assert_rm_parser_denies(
+            r#"rm --force --recursive "$TMPDIR/foo""#,
+            RM_RECURSIVE_FORCE_NAME,
+            Severity::High,
+        );
+        assert_rm_parser_denies(
+            r#"rm --force --recursive "${TMPDIR}/foo""#,
+            RM_RECURSIVE_FORCE_NAME,
             Severity::High,
         );
     }

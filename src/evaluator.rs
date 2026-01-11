@@ -825,6 +825,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
     result
 }
 
+#[allow(clippy::too_many_lines)]
 fn evaluate_packs_with_allowlists(
     normalized: &str,
     ordered_packs: &[String],
@@ -870,19 +871,40 @@ fn evaluate_packs_with_allowlists(
         },
     );
 
+    let has_filesystem_pack = candidate_packs
+        .iter()
+        .any(|(pack_id, _)| pack_id.as_str() == "core.filesystem");
+    let rm_parse =
+        has_filesystem_pack.then(|| crate::packs::core::filesystem::parse_rm_command(normalized));
+
     // Two-pass evaluation for cross-pack safe pattern support.
     //
     // Pass 1: Check safe patterns across ALL enabled packs first.
     // If any pack's safe pattern matches, allow the command immediately.
 
     // that would otherwise be blocked by other packs (like core.filesystem).
-    for (_pack_id, pack) in &candidate_packs {
+    if matches!(
+        rm_parse.as_ref(),
+        Some(crate::packs::core::filesystem::RmParseDecision::Allow)
+    ) {
+        return EvaluationResult::allowed();
+    }
+
+    for (pack_id, pack) in &candidate_packs {
         if deadline_exceeded(deadline) || remaining_below(deadline, &crate::perf::PATTERN_MATCH) {
             return EvaluationResult::allowed_due_to_budget();
         }
 
         // If any safe pattern matches, allow immediately (cross-pack override).
-        if pack.matches_safe(normalized) {
+        if pack_id.as_str() == "core.filesystem" {
+            if matches!(
+                rm_parse.as_ref(),
+                Some(crate::packs::core::filesystem::RmParseDecision::NoMatch)
+            ) && pack.matches_safe(normalized)
+            {
+                return EvaluationResult::allowed();
+            }
+        } else if pack.matches_safe(normalized) {
             return EvaluationResult::allowed();
         }
     }
@@ -895,6 +917,63 @@ fn evaluate_packs_with_allowlists(
     for &(pack_id, pack) in &candidate_packs {
         if deadline_exceeded(deadline) || remaining_below(deadline, &crate::perf::PATTERN_MATCH) {
             return EvaluationResult::allowed_due_to_budget();
+        }
+
+        if pack_id == "core.filesystem" {
+            match rm_parse.as_ref() {
+                Some(crate::packs::core::filesystem::RmParseDecision::Allow) => {
+                    continue;
+                }
+                Some(crate::packs::core::filesystem::RmParseDecision::NoMatch) | None => {}
+                Some(crate::packs::core::filesystem::RmParseDecision::Deny(hit)) => {
+                    if let Some(allow_hit) = allowlists.match_rule(pack_id, hit.pattern_name) {
+                        if first_allowlist_hit.is_none() {
+                            let span = hit.span.as_ref().map(|span| MatchSpan {
+                                start: span.start,
+                                end: span.end,
+                            });
+                            let preview = span
+                                .as_ref()
+                                .map(|span| extract_match_preview(normalized, span));
+                            first_allowlist_hit = Some((
+                                PatternMatch {
+                                    pack_id: Some(pack_id.clone()),
+                                    pattern_name: Some(hit.pattern_name.to_string()),
+                                    severity: Some(hit.severity),
+                                    reason: hit.reason.to_string(),
+                                    source: MatchSource::Pack,
+                                    matched_span: span,
+                                    matched_text_preview: preview,
+                                },
+                                allow_hit.layer,
+                                allow_hit.entry.reason.clone(),
+                            ));
+                        }
+                        continue;
+                    }
+
+                    if let Some(span) = hit.span.as_ref() {
+                        return EvaluationResult::denied_by_pack_pattern_with_span(
+                            pack_id,
+                            hit.pattern_name,
+                            hit.reason,
+                            hit.severity,
+                            normalized,
+                            MatchSpan {
+                                start: span.start,
+                                end: span.end,
+                            },
+                        );
+                    }
+
+                    return EvaluationResult::denied_by_pack_pattern(
+                        pack_id,
+                        hit.pattern_name,
+                        hit.reason,
+                        hit.severity,
+                    );
+                }
+            }
         }
 
         for pattern in &pack.destructive_patterns {

@@ -1516,6 +1516,22 @@ mod tests {
             "rm -rf build should NOT be quick-rejected"
         );
         assert!(
+            !pack_aware_quick_reject("rm -rf /tmp/foo", &keywords),
+            "rm -rf /tmp/foo should NOT be quick-rejected"
+        );
+        assert!(
+            !pack_aware_quick_reject(r#"rm -rf "$TMPDIR/foo""#, &keywords),
+            "rm -rf \"$TMPDIR/foo\" should NOT be quick-rejected"
+        );
+        assert!(
+            !pack_aware_quick_reject(r#"rm -r -f "$TMPDIR/foo""#, &keywords),
+            "rm -r -f \"$TMPDIR/foo\" should NOT be quick-rejected"
+        );
+        assert!(
+            !pack_aware_quick_reject(r#"rm --recursive --force "$TMPDIR/foo""#, &keywords),
+            "rm --recursive --force \"$TMPDIR/foo\" should NOT be quick-rejected"
+        );
+        assert!(
             !pack_aware_quick_reject("rm -rf src", &keywords),
             "rm -rf src should NOT be quick-rejected"
         );

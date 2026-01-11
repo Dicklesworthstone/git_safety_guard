@@ -204,9 +204,9 @@ fn golden_full_corpus_verification() {
         for (i, failure) in failures.iter().enumerate() {
             println!("--- Failure {} ---\n{}\n", i + 1, failure);
         }
-        panic!(
-            "Golden isomorphism test failed: {} of {} cases failed",
-            failed,
+        assert!(
+            failed == 0,
+            "Golden isomorphism test failed: {failed} of {} cases failed",
             passed + failed
         );
     }
@@ -233,6 +233,77 @@ fn golden_rule_id_verification() {
     assert_denies_with_rule("rm -rf /*", "core.filesystem:rm-rf-root-home");
 
     println!("All rule_id verifications passed!");
+}
+
+/// Verify rm parser parity across flag/quoting/path variants.
+#[test]
+fn golden_rm_variant_parity() {
+    let allowed = [
+        "rm -rf /tmp/test",
+        "rm -fr /var/tmp/stuff",
+        "rm -r -f /tmp/test",
+        "rm -f -r /tmp/test",
+        "rm --recursive --force /tmp/test",
+        "rm --force --recursive /var/tmp/stuff",
+        "rm -rf $TMPDIR/junk",
+        "rm -rf ${TMPDIR}/junk",
+        r#"rm -rf "$TMPDIR/foo""#,
+        r#"rm -rf "${TMPDIR}/foo""#,
+        "rm -rf /tmp/a /tmp/b",
+        "rm -- -rf /tmp/test",
+    ];
+
+    for cmd in &allowed {
+        assert_allows_command(cmd);
+    }
+
+    let denied = [
+        ("rm -rf /etc", "core.filesystem:rm-rf-root-home"),
+        ("rm -rf /tmp/../etc", "core.filesystem:rm-rf-root-home"),
+        ("rm -rf ~/stuff", "core.filesystem:rm-rf-root-home"),
+        ("rm -rf ./build", "core.filesystem:rm-rf-general"),
+        ("rm -r -f ./build", "core.filesystem:rm-r-f-separate"),
+        ("rm -f -r ./build", "core.filesystem:rm-r-f-separate"),
+        (
+            r#"rm -r -f "$TMPDIR/foo""#,
+            "core.filesystem:rm-r-f-separate",
+        ),
+        (
+            r#"rm -r -f "${TMPDIR}/foo""#,
+            "core.filesystem:rm-r-f-separate",
+        ),
+        (
+            "rm --recursive --force ./build",
+            "core.filesystem:rm-recursive-force-long",
+        ),
+        (
+            r#"rm --recursive --force "$TMPDIR/foo""#,
+            "core.filesystem:rm-recursive-force-long",
+        ),
+        (
+            r#"rm --recursive --force "${TMPDIR}/foo""#,
+            "core.filesystem:rm-recursive-force-long",
+        ),
+        (
+            "rm --force --recursive ./build",
+            "core.filesystem:rm-recursive-force-long",
+        ),
+        (
+            r#"rm --force --recursive "$TMPDIR/foo""#,
+            "core.filesystem:rm-recursive-force-long",
+        ),
+        (
+            r#"rm --force --recursive "${TMPDIR}/foo""#,
+            "core.filesystem:rm-recursive-force-long",
+        ),
+        ("rm -rf /tmp/a /etc", "core.filesystem:rm-rf-root-home"),
+    ];
+
+    for (cmd, rule) in &denied {
+        assert_denies_with_rule(cmd, rule);
+    }
+
+    println!("All rm variant parity checks passed!");
 }
 
 /// Test that safe commands are correctly allowed.

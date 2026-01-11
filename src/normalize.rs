@@ -147,16 +147,16 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
     let trimmed = command.trim_start();
 
     // Check for "sudo" or "/path/to/sudo"
-    let first_token_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
-    let first_token = &trimmed[..first_token_end];
-    let basename = first_token.rsplit('/').next().unwrap_or(first_token);
+    let first_word_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let first_word = &trimmed[..first_word_end];
+    let basename = first_word.rsplit('/').next().unwrap_or(first_word);
 
     if basename != "sudo" {
         return None;
     }
 
     // Must be followed by whitespace or end
-    let after_sudo = &trimmed[first_token.len()..];
+    let after_sudo = &trimmed[first_word.len()..];
     if !after_sudo.is_empty() && !after_sudo.starts_with(char::is_whitespace) {
         return None;
     }
@@ -190,27 +190,27 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
             break;
         }
 
-        // Parse one option token (e.g., -E, -EH, -uuser)
-        let token_start = idx;
-        let mut token_end = idx + 1;
-        while token_end < bytes.len() && !bytes[token_end].is_ascii_whitespace() {
-            token_end += 1;
+        // Parse one option word (e.g., -E, -EH, -uuser)
+        let word_start = idx;
+        let mut word_end = idx + 1;
+        while word_end < bytes.len() && !bytes[word_end].is_ascii_whitespace() {
+            word_end += 1;
         }
 
-        if token_end <= token_start + 1 {
+        if word_end <= word_start + 1 {
             break;
         }
 
-        let token = &rest[token_start..token_end];
-        if token == "--" {
-            idx = token_end;
+        let word = &rest[word_start..word_end];
+        if word == "--" {
+            idx = word_end;
             while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
                 idx += 1;
             }
             break;
         }
 
-        if token.starts_with("--") {
+        if word.starts_with("--") {
             // Unknown long option - stop parsing sudo options
             break;
         }
@@ -218,7 +218,7 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
         let mut needs_arg = false;
         let mut unknown_flag = false;
         let mut saw_arg_inline = false;
-        let mut chars = token[1..].chars().peekable();
+        let mut chars = word[1..].chars().peekable();
 
         while let Some(flag) = chars.next() {
             if SIMPLE_FLAGS.contains(&flag) {
@@ -242,7 +242,7 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
             break;
         }
 
-        idx = token_end;
+        idx = word_end;
 
         if saw_arg_inline {
             continue;
@@ -297,16 +297,16 @@ fn strip_env(command: &str) -> Option<(String, StrippedWrapper)> {
 
     // Check for "env" or "/path/to/env"
     // We split on whitespace to check the first token.
-    let first_token_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
-    let first_token = &trimmed[..first_token_end];
-    let basename = first_token.rsplit('/').next().unwrap_or(first_token);
+    let first_word_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let first_word = &trimmed[..first_word_end];
+    let basename = first_word.rsplit('/').next().unwrap_or(first_word);
 
     if basename != "env" {
         return None;
     }
 
     // Must be followed by whitespace or end
-    let after_env = &trimmed[first_token.len()..];
+    let after_env = &trimmed[first_word.len()..];
     if !after_env.is_empty() && !after_env.starts_with(char::is_whitespace) {
         return None;
     }
@@ -544,32 +544,32 @@ fn strip_command_wrapper(command: &str) -> Option<(String, StrippedWrapper)> {
             break;
         }
 
-        // Parse one option token (e.g., -p, -pv, --)
-        let token_start = idx;
-        let mut token_end = idx + 1;
-        while token_end < bytes.len() && !bytes[token_end].is_ascii_whitespace() {
-            token_end += 1;
+        // Parse one option word (e.g., -p, -pv, --)
+        let word_start = idx;
+        let mut word_end = idx + 1;
+        while word_end < bytes.len() && !bytes[word_end].is_ascii_whitespace() {
+            word_end += 1;
         }
 
-        if token_end <= token_start + 1 {
+        if word_end <= word_start + 1 {
             break;
         }
 
-        let token = &rest[token_start..token_end];
-        if token == "--" {
-            idx = token_end;
+        let word = &rest[word_start..word_end];
+        if word == "--" {
+            idx = word_end;
             while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
                 idx += 1;
             }
             break;
         }
-        if token.starts_with("--") {
+        if word.starts_with("--") {
             // Unknown long option - stop
             break;
         }
 
         let mut unknown = false;
-        for flag in token[1..].chars() {
+        for flag in word[1..].chars() {
             match flag {
                 'v' | 'V' => {
                     // Query mode - NOT a wrapper
@@ -586,7 +586,7 @@ fn strip_command_wrapper(command: &str) -> Option<(String, StrippedWrapper)> {
             break;
         }
 
-        idx = token_end;
+        idx = word_end;
     }
 
     // Skip any remaining whitespace
@@ -784,14 +784,14 @@ pub fn consume_separator_token(
 
 #[inline]
 #[must_use]
-pub fn is_env_assignment(token: &str) -> bool {
-    // Rough heuristic for KEY=VALUE tokens used as env assignments.
-    let Some((key, _value)) = token.split_once('=') else {
+pub fn is_env_assignment(word: &str) -> bool {
+    // Rough heuristic for KEY=VALUE words used as env assignments.
+    let Some((key, _value)) = word.split_once('=') else {
         return false;
     };
     !key.is_empty()
         && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-        && !token.starts_with('-')
+        && !word.starts_with('-')
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -826,7 +826,7 @@ impl NormalizeWrapper {
 
     #[inline]
     #[must_use]
-    pub fn should_skip_token(self, token: &str) -> bool {
+    pub fn should_skip_token(self, word: &str) -> bool {
         match self {
             Self::None | Self::CommandQuery => false,
             Self::Sudo {
@@ -844,17 +844,17 @@ impl NormalizeWrapper {
                 if skip_next > 0 {
                     return true;
                 }
-                if !options_ended && token == "--" {
+                if !options_ended && word == "--" {
                     return true;
                 }
-                !options_ended && token.starts_with('-')
+                !options_ended && word.starts_with('-')
             }
         }
     }
 
     #[inline]
     #[must_use]
-    fn advance_sudo(mut options_ended: bool, mut skip_next: u8, token: &str) -> Self {
+    fn advance_sudo(mut options_ended: bool, mut skip_next: u8, word: &str) -> Self {
         if skip_next > 0 {
             skip_next = skip_next.saturating_sub(1);
             return Self::Sudo {
@@ -862,22 +862,22 @@ impl NormalizeWrapper {
                 skip_next,
             };
         }
-        if !options_ended && token == "--" {
+        if !options_ended && word == "--" {
             options_ended = true;
             return Self::Sudo {
                 options_ended,
                 skip_next,
             };
         }
-        if !options_ended && token.starts_with('-') {
+        if !options_ended && word.starts_with('-') {
             // Options that take an argument: -u USER, -g GROUP, -h HOST, -p PROMPT
             // Also support attached args: -uUSER, -gGROUP, etc (no extra token to skip).
-            let takes_value = matches!(token, "-u" | "-g" | "-h" | "-p")
-                || token.starts_with("-u")
-                || token.starts_with("-g")
-                || token.starts_with("-h")
-                || token.starts_with("-p");
-            if takes_value && token.len() == 2 {
+            let takes_value = matches!(word, "-u" | "-g" | "-h" | "-p")
+                || word.starts_with("-u")
+                || word.starts_with("-g")
+                || word.starts_with("-h")
+                || word.starts_with("-p");
+            if takes_value && word.len() == 2 {
                 skip_next = 1;
             }
             return Self::Sudo {
@@ -893,7 +893,7 @@ impl NormalizeWrapper {
 
     #[inline]
     #[must_use]
-    fn advance_env(mut options_ended: bool, mut skip_next: u8, token: &str) -> Self {
+    fn advance_env(mut options_ended: bool, mut skip_next: u8, word: &str) -> Self {
         if skip_next > 0 {
             skip_next = skip_next.saturating_sub(1);
             return Self::Env {
@@ -901,17 +901,17 @@ impl NormalizeWrapper {
                 skip_next,
             };
         }
-        if !options_ended && token == "--" {
+        if !options_ended && word == "--" {
             options_ended = true;
             return Self::Env {
                 options_ended,
                 skip_next,
             };
         }
-        if !options_ended && token.starts_with('-') {
+        if !options_ended && word.starts_with('-') {
             // `env -u NAME ...` unsets a variable (takes an argument).
-            let takes_value = token == "-u" || token == "--unset" || token.starts_with("-u");
-            if takes_value && (token == "-u" || token == "--unset") {
+            let takes_value = word == "-u" || word == "--unset" || word.starts_with("-u");
+            if takes_value && (word == "-u" || word == "--unset") {
                 skip_next = 1;
             }
             return Self::Env {
@@ -927,7 +927,7 @@ impl NormalizeWrapper {
 
     #[inline]
     #[must_use]
-    fn advance_command(mut options_ended: bool, skip_next: u8, token: &str) -> Self {
+    fn advance_command(mut options_ended: bool, skip_next: u8, word: &str) -> Self {
         let mut skip_next = skip_next;
         if skip_next > 0 {
             skip_next = skip_next.saturating_sub(1);
@@ -936,16 +936,16 @@ impl NormalizeWrapper {
                 skip_next,
             };
         }
-        if !options_ended && token == "--" {
+        if !options_ended && word == "--" {
             options_ended = true;
             return Self::Command {
                 options_ended,
                 skip_next,
             };
         }
-        if !options_ended && token.starts_with('-') {
+        if !options_ended && word.starts_with('-') {
             // `command -v/-V` queries command resolution (not a wrapper execution).
-            if matches!(token, "-v" | "-V") {
+            if matches!(word, "-v" | "-V") {
                 return Self::CommandQuery;
             }
             // `command -p` is wrapper-like (no value).
@@ -962,20 +962,20 @@ impl NormalizeWrapper {
 
     #[inline]
     #[must_use]
-    pub fn advance(self, token: &str) -> Self {
+    pub fn advance(self, word: &str) -> Self {
         match self {
             Self::Sudo {
                 options_ended,
                 skip_next,
-            } => Self::advance_sudo(options_ended, skip_next, token),
+            } => Self::advance_sudo(options_ended, skip_next, word),
             Self::Env {
                 options_ended,
                 skip_next,
-            } => Self::advance_env(options_ended, skip_next, token),
+            } => Self::advance_env(options_ended, skip_next, word),
             Self::Command {
                 options_ended,
                 skip_next,
-            } => Self::advance_command(options_ended, skip_next, token),
+            } => Self::advance_command(options_ended, skip_next, word),
             Self::None | Self::CommandQuery => self,
         }
     }
@@ -1029,14 +1029,70 @@ pub fn normalize_command_word_token(token: &str) -> Option<String> {
     if changed { Some(out) } else { None }
 }
 
+#[inline]
+fn looks_like_subcommand_word(token: &str) -> bool {
+    // Treat only simple alnum/underscore/dash words as subcommands.
+    //
+    // This intentionally excludes common path-like/expansion-like tokens (/, ., ~, $),
+    // because stripping their quotes can change semantics for downstream parsers (e.g. rm).
+    if token.is_empty() {
+        return false;
+    }
+
+    let first = token.as_bytes()[0];
+    if matches!(first, b'/' | b'.' | b'~' | b'$') {
+        return false;
+    }
+
+    token
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+}
+
+#[must_use]
+fn normalize_subcommand_token(token: &str) -> Option<String> {
+    let mut out = token.to_string();
+    // Strip line continuations (backslash + newline) anywhere in the token
+    let mut changed = if out.contains("\\\n") || out.contains("\\\r\n") {
+        out = out.replace("\\\n", "").replace("\\\r\n", "");
+        true
+    } else {
+        false
+    };
+
+    if let Some((quote, inner)) = out.strip_prefix(['\'', '"']).and_then(|rest| {
+        rest.strip_suffix(['\'', '"'])
+            .map(|inner| (out.as_bytes()[0], inner))
+    }) {
+        // Only unquote when it's clearly a single-token command-ish word (no whitespace/separators).
+        let inner_bytes = inner.as_bytes();
+        let is_safe = !inner_bytes.is_empty()
+            && !inner_bytes.iter().any(u8::is_ascii_whitespace)
+            && !inner_bytes
+                .iter()
+                .any(|b| matches!(b, b'|' | b';' | b'&' | b'(' | b')'))
+            && inner_bytes.first().is_some_and(|b| *b != quote)
+            && looks_like_subcommand_word(inner);
+
+        if is_safe {
+            out = inner.to_string();
+            changed = true;
+        }
+    }
+
+    if changed { Some(out) } else { None }
+}
+
 /// Normalize wrapper/segment command words for matching.
 ///
 /// This removes harmless quoting around *executed* command tokens:
 /// - `"git" reset --hard` → `git reset --hard`
 /// - `sudo "/bin/rm" -rf /etc` → `sudo /bin/rm -rf /etc`
 ///
-/// Quoted **arguments** are intentionally left alone to avoid creating new
-/// "dangerous substring" matches in data contexts.
+/// Quoted **arguments** are intentionally left alone *unless* they look like
+/// subcommand words (e.g., `git "reset" --hard`). Path-like tokens (e.g. quoted
+/// `/tmp/...` or `$TMPDIR/...`) keep their quoting, because stripping it can
+/// change semantics for downstream parsers (notably `rm`).
 #[must_use]
 pub fn dequote_segment_command_words(command: &str) -> Cow<'_, str> {
     // Fast path: most commands contain no quotes or backslashes.
@@ -1058,15 +1114,15 @@ pub fn dequote_segment_command_words(command: &str) -> Cow<'_, str> {
     let mut current_cmd_word: Option<String> = None;
     let mut wrapper: NormalizeWrapper = NormalizeWrapper::None;
 
-    for token in &tokens {
-        if token.kind == NormalizeTokenKind::Separator {
+    for tok in &tokens {
+        if tok.kind == NormalizeTokenKind::Separator {
             segment_has_cmd = false;
             current_cmd_word = None;
             wrapper = NormalizeWrapper::None;
             continue;
         }
 
-        let Some(token_text) = token.text(command) else {
+        let Some(token_text) = tok.text(command) else {
             // If we can't safely slice, fail open.
             return Cow::Borrowed(command);
         };
@@ -1079,9 +1135,10 @@ pub fn dequote_segment_command_words(command: &str) -> Cow<'_, str> {
                 }
             }
 
-            // Also normalize arguments that are simple quoted strings (e.g. git "reset" -> git reset)
-            if let Some(replacement) = normalize_command_word_token(token_text) {
-                replacements.push((token.byte_range.clone(), replacement));
+            // Normalize subcommand-like words (e.g. git "reset" -> git reset), but do NOT strip
+            // quoting from path-like tokens (e.g. rm "/tmp/foo", rm "$TMPDIR/foo").
+            if let Some(replacement) = normalize_subcommand_token(token_text) {
+                replacements.push((tok.byte_range.clone(), replacement));
             }
             continue;
         }
@@ -1207,13 +1264,13 @@ fn strip_leading_backslash(command: &str) -> Option<(String, StrippedWrapper)> {
     }
 
     // Find end of first token
-    let first_token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let first_word_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
 
-    let first_token = &rest[..first_token_end];
+    let first_word = &rest[..first_word_end];
 
     // Only strip if the token looks like a valid command name (alphanumeric + underscore/dash)
-    if first_token.is_empty()
-        || !first_token
+    if first_word.is_empty()
+        || !first_word
             .chars()
             .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
     {
@@ -1390,5 +1447,25 @@ mod tests {
         // Combined flags including -s
         let result = strip_wrapper_prefixes("sudo -EBs git reset --hard");
         assert_eq!(result.normalized, "git reset --hard");
+    }
+
+    #[test]
+    fn test_dequote_preserves_rm_quoted_paths() {
+        assert_eq!(
+            dequote_segment_command_words(r#"rm -rf "/tmp/foo""#).as_ref(),
+            r#"rm -rf "/tmp/foo""#
+        );
+        assert_eq!(
+            dequote_segment_command_words(r#"rm -r -f "$TMPDIR/foo""#).as_ref(),
+            r#"rm -r -f "$TMPDIR/foo""#
+        );
+    }
+
+    #[test]
+    fn test_dequote_normalizes_git_quoted_subcommand() {
+        assert_eq!(
+            dequote_segment_command_words(r#"git "reset" --hard"#).as_ref(),
+            "git reset --hard"
+        );
     }
 }
