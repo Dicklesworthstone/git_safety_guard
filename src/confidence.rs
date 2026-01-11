@@ -256,9 +256,11 @@ fn classify_match_span(
 ///
 /// Execution operators like |, ;, &&, || suggest the command will be executed.
 fn has_execution_operators_nearby(command: &str, match_start: usize, match_end: usize) -> bool {
-    // Look for operators within 20 bytes before the match
+    // Look for operators within 20 bytes before the match.
+    // Use get() to handle potential UTF-8 boundary issues if search_start
+    // lands in the middle of a multi-byte character.
     let search_start = match_start.saturating_sub(20);
-    let prefix = &command[search_start..match_start];
+    let prefix = command.get(search_start..match_start).unwrap_or("");
 
     // Look for operators within 20 bytes after the match
     let search_end = (match_end + 20).min(command.len());
@@ -385,5 +387,33 @@ mod tests {
 
         score.add_signal(ConfidenceSignal::DataSpan);
         assert!(score.should_warn(), "Low confidence should warn");
+    }
+
+    #[test]
+    fn test_utf8_multibyte_handling() {
+        // Test that we don't panic with multi-byte UTF-8 characters near the match.
+        // The emoji "🔥" is 4 bytes. If we subtract 20 bytes from position 4,
+        // we'd get a negative index or land in the middle of the emoji.
+        let command = "🔥🔥🔥 rm -rf /";
+        // "🔥" is 4 bytes each, so "🔥🔥🔥 " is 13 bytes (12 + 1 space)
+        // "rm -rf /" starts at byte 13
+        let ctx = ConfidenceContext {
+            command,
+            sanitized_command: None,
+            match_start: 13, // Start of "rm"
+            match_end: 21,   // End of "rm -rf /"
+        };
+        // This should not panic
+        let score = compute_match_confidence(&ctx);
+        assert!(score.value > 0.0, "Should compute a valid score");
+    }
+
+    #[test]
+    fn test_operators_nearby_with_unicode() {
+        // Test execution operator detection with unicode in prefix
+        let command = "écho café | rm -rf /";
+        // "écho café | " has multi-byte chars, "rm" starts somewhere in the middle
+        let result = has_execution_operators_nearby(command, 14, 22);
+        assert!(result, "Should detect pipe operator even with unicode prefix");
     }
 }

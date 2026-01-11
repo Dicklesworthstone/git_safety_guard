@@ -1642,7 +1642,7 @@ pub struct ConfidenceResult {
 ///
 /// * `command` - The original command being evaluated
 /// * `sanitized_command` - The sanitized version (with safe data masked), if available
-/// * `result` - The evaluation result (must have pattern_info for confidence to apply)
+/// * `result` - The evaluation result (must have `pattern_info` for confidence to apply)
 /// * `current_mode` - The decision mode from policy resolution
 /// * `config` - Confidence scoring configuration
 ///
