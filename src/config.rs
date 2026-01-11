@@ -2182,6 +2182,61 @@ allow = false
     }
 
     #[test]
+    fn test_compiled_overrides_engine_selection_lookahead_vs_linear() {
+        let overrides = OverridesConfig {
+            allow: vec![
+                // Lookahead -> must use backtracking engine.
+                AllowOverride::Simple(r"git\s+push\s+.*--force(?![-a-z])".to_string()),
+                // No lookaround/backrefs -> should use linear engine.
+                AllowOverride::Simple(r"test-\d+".to_string()),
+            ],
+            block: vec![],
+        };
+        let compiled = overrides.compile();
+
+        assert_eq!(compiled.allow.len(), 2);
+        assert!(compiled.invalid_patterns.is_empty());
+
+        assert!(
+            compiled.allow[0].regex.uses_backtracking(),
+            "lookahead patterns must route to fancy_regex"
+        );
+        assert!(
+            !compiled.allow[1].regex.uses_backtracking(),
+            "patterns without lookaround/backrefs should route to regex::Regex"
+        );
+
+        assert!(compiled.check_allow("git push --force"));
+        assert!(compiled.check_allow("git push origin main --force"));
+        assert!(!compiled.check_allow("git push --force-with-lease"));
+
+        assert!(compiled.check_allow("test-123"));
+        assert!(!compiled.check_allow("test-abc"));
+    }
+
+    #[test]
+    fn test_compiled_block_override_engine_selection_backreference() {
+        let overrides = OverridesConfig {
+            allow: vec![],
+            block: vec![BlockOverride {
+                pattern: r"(\w+)\s+\1".to_string(),
+                reason: "duplicate word".to_string(),
+            }],
+        };
+        let compiled = overrides.compile();
+
+        assert_eq!(compiled.block.len(), 1);
+        assert!(compiled.invalid_patterns.is_empty());
+        assert!(
+            compiled.block[0].regex.uses_backtracking(),
+            "backreference patterns must route to fancy_regex"
+        );
+
+        assert_eq!(compiled.check_block("hello hello"), Some("duplicate word"));
+        assert_eq!(compiled.check_block("hello world"), None);
+    }
+
+    #[test]
     fn test_compiled_overrides_check_order() {
         // Allow takes precedence (checked first in evaluator)
         let overrides = OverridesConfig {
