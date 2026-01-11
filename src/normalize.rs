@@ -142,12 +142,18 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
     const ARG_FLAGS: &[char] = &['u', 'g', 'h', 'p', 'C', 'r', 'U', 'D', 't', 'a', 'T'];
 
     let trimmed = command.trim_start();
-    if !trimmed.starts_with("sudo") {
+
+    // Check for "sudo" or "/path/to/sudo"
+    let first_token_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let first_token = &trimmed[..first_token_end];
+    let basename = first_token.rsplit('/').next().unwrap_or(first_token);
+
+    if basename != "sudo" {
         return None;
     }
 
     // Must be followed by whitespace or end
-    let after_sudo = &trimmed[4..];
+    let after_sudo = &trimmed[first_token.len()..];
     if !after_sudo.is_empty() && !after_sudo.starts_with(char::is_whitespace) {
         return None;
     }
@@ -279,15 +285,25 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
 
 /// Strip `env` prefix with options and environment variable assignments.
 ///
-/// Handles: `-i`, `-u <name>`, `--ignore-environment`, and `NAME=VALUE` assignments.
+/// Handles:
+/// - optional path prefix (e.g., `/usr/bin/env`)
+/// - options: `-i`, `-u <name>`, `--ignore-environment`
+/// - `NAME=VALUE` assignments
 fn strip_env(command: &str) -> Option<(String, StrippedWrapper)> {
     let trimmed = command.trim_start();
-    if !trimmed.starts_with("env") {
+
+    // Check for "env" or "/path/to/env"
+    // We split on whitespace to check the first token.
+    let first_token_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
+    let first_token = &trimmed[..first_token_end];
+    let basename = first_token.rsplit('/').next().unwrap_or(first_token);
+
+    if basename != "env" {
         return None;
     }
 
     // Must be followed by whitespace or end
-    let after_env = &trimmed[3..];
+    let after_env = &trimmed[first_token.len()..];
     if !after_env.is_empty() && !after_env.starts_with(char::is_whitespace) {
         return None;
     }
