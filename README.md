@@ -594,7 +594,8 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_comm
 Easy mode automatically:
 - Updates your PATH in shell rc files
 - Removes the legacy Python predecessor (if present)
-- Configures Claude Code and Gemini CLI hooks
+- Configures Claude Code hooks (creates config if needed)
+- Configures Gemini CLI hooks (if Gemini CLI is installed)
 
 **Other options:**
 
@@ -620,7 +621,8 @@ The install script:
 - Verifies SHA256 checksums for security
 - Falls back to building from source if no prebuilt is available
 - Detects and removes legacy Python predecessor (`git_safety_guard.py`)
-- Configures Claude Code and Gemini CLI hooks automatically
+- Configures Claude Code hooks (creates config directory if needed)
+- Configures Gemini CLI hooks (if already installed)
 - Offers to update your PATH
 
 ### From source (requires Rust nightly)

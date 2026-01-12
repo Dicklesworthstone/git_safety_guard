@@ -629,7 +629,9 @@ PYEOF
         mv "$backup" "$settings_file" 2>/dev/null || true
       fi
     else
-      warn "Python3 not available; showing manual instructions"
+      warn "Python3 not available for JSON merging"
+      warn "Add this to ~/.claude/settings.json manually:"
+      echo '  {"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"'"$DEST/dcg"'"}]}]}}'
       return 1
     fi
   else
@@ -729,7 +731,9 @@ PYEOF
         mv "$backup" "$settings_file" 2>/dev/null || true
       fi
     else
-      warn "Python3 not available; showing manual instructions"
+      warn "Python3 not available for JSON merging"
+      warn "Add this to ~/.gemini/settings.json manually:"
+      echo '  {"hooks":{"BeforeTool":[{"matcher":"run_shell_command","hooks":[{"name":"dcg","type":"command","command":"'"$DEST/dcg"'","timeout":5000}]}]}}'
       return 1
     fi
   else
