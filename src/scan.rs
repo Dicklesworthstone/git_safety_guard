@@ -1326,6 +1326,7 @@ fn is_github_actions_workflow_path(path: &Path) -> bool {
         .any(|w| w[0] == ".github" && w[1] == "workflows")
 }
 
+#[allow(clippy::too_many_lines)]
 fn extract_github_actions_workflow_from_str(
     file: &str,
     content: &str,
@@ -1336,6 +1337,7 @@ fn extract_github_actions_workflow_from_str(
     let lines: Vec<&str> = content.lines().collect();
     let mut out = Vec::new();
     let mut steps_indent: Option<usize> = None;
+    let mut skip_indent: Option<usize> = None;
 
     let mut idx = 0usize;
     while idx < lines.len() {
@@ -1349,6 +1351,15 @@ fn extract_github_actions_workflow_from_str(
         }
 
         let indent = raw_line.len() - trimmed_start.len();
+
+        if let Some(skip) = skip_indent {
+            if indent <= skip {
+                skip_indent = None;
+            } else {
+                idx += 1;
+                continue;
+            }
+        }
 
         if let Some(steps) = steps_indent {
             // Exit steps block when indentation returns to the steps key level (or less).
@@ -1380,6 +1391,15 @@ fn extract_github_actions_workflow_from_str(
         let mut candidate = trimmed_start;
         if let Some(after_dash) = candidate.strip_prefix('-') {
             candidate = after_dash.trim_start();
+        }
+
+        if yaml_key_value(candidate, "env").is_some()
+            || yaml_key_value(candidate, "with").is_some()
+            || yaml_key_value(candidate, "secrets").is_some()
+        {
+            skip_indent = Some(indent);
+            idx += 1;
+            continue;
         }
 
         let Some(run_value) = yaml_key_value(candidate, "run") else {
@@ -2997,6 +3017,25 @@ resource "null_resource" "test" {
 
         // Only `steps[].run` is executable context. This fixture includes `rm` only in
         // data fields; the extractor must return nothing.
+        let extracted =
+            extract_github_actions_workflow_from_str(".github/workflows/ci.yml", content, &["rm"]);
+        assert!(
+            extracted.is_empty(),
+            "Expected no extracted commands, got: {extracted:?}"
+        );
+    }
+
+    #[test]
+    fn github_actions_extractor_ignores_run_key_inside_env_block() {
+        let content = r#"jobs:
+  test:
+    steps:
+      - name: "env run key"
+        env:
+          run: "rm -rf /"
+        run: echo ok
+"#;
+
         let extracted =
             extract_github_actions_workflow_from_str(".github/workflows/ci.yml", content, &["rm"]);
         assert!(
