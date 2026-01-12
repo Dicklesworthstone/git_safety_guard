@@ -99,7 +99,7 @@ Scan the entire repository:
 ```yaml
 - uses: Dicklesworthstone/destructive_command_guard/action@v0
   with:
-    dcg-version: v0.2.1
+    dcg-version: v0.2.2
 ```
 
 ## What Gets Scanned

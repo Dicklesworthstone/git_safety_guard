@@ -86,7 +86,7 @@ runs:
 
         if [ "$VERSION" = "latest" ]; then
           # Get latest release tag
-          VERSION=$(curl -sL https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/latest | jq -r '.tag_name // "v0.2.1"')
+          VERSION=$(curl -sL https://api.github.com/repos/Dicklesworthstone/destructive_command_guard/releases/latest | jq -r '.tag_name // "v0.2.2"')
         fi
 
         echo "Installing DCG version: $VERSION"
