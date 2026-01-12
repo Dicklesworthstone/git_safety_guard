@@ -539,8 +539,8 @@ PYEOF
       if [ $exit_code -eq 0 ]; then
         ok "Updated $settings_file (backup: $backup)"
       elif [ $exit_code -eq 2 ]; then
-        # No changes needed, backup was restored
-        rm -f "$backup" 2>/dev/null || true
+        # No changes needed (predecessor not in hooks), backup already renamed back
+        : # Nothing to do - Python renamed backup to settings_file
       else
         warn "Failed to update $settings_file; restoring backup"
         mv "$backup" "$settings_file" 2>/dev/null || true
