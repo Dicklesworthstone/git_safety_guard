@@ -40,7 +40,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact_name: dcg
           # macOS Intel
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact_name: dcg
           # macOS Apple Silicon
