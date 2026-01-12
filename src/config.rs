@@ -1207,7 +1207,7 @@ impl Config {
     /// 6. Compiled defaults
     #[must_use]
     pub fn load() -> Self {
-        let mut config = Self::default();
+        let mut config = Self::generate_default();
         let cwd = env::current_dir().ok();
 
         // Optional explicit config path override (highest-priority file config).

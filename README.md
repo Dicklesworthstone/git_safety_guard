@@ -149,6 +149,10 @@ dcg uses a modular "pack" system to organize destructive command patterns by cat
 - `core.filesystem` - Protects against dangerous rm -rf commands outside temp directories
 - `core.git` - Protects against destructive git commands that can lose uncommitted work, rewrite history, or destroy stashes
 
+**Common packs enabled by default:**
+- `database.postgresql` - Protects against destructive PostgreSQL operations
+- `containers.docker` - Protects against destructive Docker operations like system prune
+
 ### Storage Packs
 - `storage.s3` - Protects against destructive S3 operations like bucket removal, recursive deletes, and sync --delete.
 - `storage.gcs` - Protects against destructive GCS operations like bucket removal, object deletion, and recursive deletes.
