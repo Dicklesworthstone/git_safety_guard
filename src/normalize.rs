@@ -581,17 +581,37 @@ fn parse_env_assignments(bytes: &[u8], mut idx: usize) -> usize {
 
 fn token_has_inline_code(token: &[u8]) -> bool {
     let mut i = 0;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
     while i < token.len() {
-        match token[i] {
-            b'`' => return true,
-            b'$' if i + 1 < token.len() && token[i + 1] == b'(' => return true,
-            b'\\' => {
-                i = (i + 2).min(token.len());
-            }
-            _ => {
-                i += 1;
-            }
+        let byte = token[i];
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
         }
+
+        if byte == b'\\' && !in_single {
+            escaped = true;
+            i = (i + 1).min(token.len());
+            continue;
+        }
+
+        match byte {
+            b'\'' if !in_double => {
+                in_single = !in_single;
+            }
+            b'"' if !in_single => {
+                in_double = !in_double;
+            }
+            b'`' if !in_single => return true,
+            b'$' if !in_single && i + 1 < token.len() && token[i + 1] == b'(' => return true,
+            _ => {}
+        }
+
+        i += 1;
     }
 
     false
@@ -1461,6 +1481,12 @@ mod tests {
             result.normalized.contains("rm -rf /"),
             "assignment with inline code should remain visible"
         );
+    }
+
+    #[test]
+    fn test_env_assignment_with_single_quoted_backticks_skipped() {
+        let result = strip_wrapper_prefixes("env FOO='`rm -rf /`' git status");
+        assert_eq!(result.normalized, "git status");
     }
 
     #[test]
