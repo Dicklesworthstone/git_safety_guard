@@ -212,8 +212,8 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
         }
 
         if word.starts_with("--") {
-            // Unknown long option - stop parsing sudo options
-            break;
+            // Unknown long option - not safe to strip
+            return None;
         }
 
         let mut needs_arg = false;
@@ -240,7 +240,7 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
         }
 
         if unknown_flag {
-            break;
+            return None;
         }
 
         idx = word_end;
@@ -1448,6 +1448,18 @@ mod tests {
     fn test_sudo_with_user() {
         let result = strip_wrapper_prefixes("sudo -u root git reset --hard");
         assert_eq!(result.normalized, "git reset --hard");
+    }
+
+    #[test]
+    fn test_sudo_unknown_flag_does_not_strip() {
+        let result = strip_wrapper_prefixes("sudo -l rm -rf /");
+        assert!(!result.was_normalized());
+    }
+
+    #[test]
+    fn test_sudo_unknown_long_flag_does_not_strip() {
+        let result = strip_wrapper_prefixes("sudo --list rm -rf /");
+        assert!(!result.was_normalized());
     }
 
     #[test]
