@@ -12,7 +12,9 @@
 
 </div>
 
-A high-performance Claude Code hook that blocks destructive commands before they execute, protecting your work from accidental deletion by AI coding agents.
+A high-performance hook for AI coding agents that blocks destructive commands before they execute, protecting your work from accidental deletion.
+
+**Supported:** [Claude Code](https://claude.ai/code) and [Gemini CLI](https://github.com/google-gemini/gemini-cli)
 
 <div align="center">
 <h3>Quick Install</h3>
@@ -592,7 +594,7 @@ curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_comm
 Easy mode automatically:
 - Updates your PATH in shell rc files
 - Removes the legacy Python predecessor (if present)
-- Configures Claude Code hooks
+- Configures Claude Code and Gemini CLI hooks
 
 **Other options:**
 
@@ -618,7 +620,7 @@ The install script:
 - Verifies SHA256 checksums for security
 - Falls back to building from source if no prebuilt is available
 - Detects and removes legacy Python predecessor (`git_safety_guard.py`)
-- Configures Claude Code hooks automatically
+- Configures Claude Code and Gemini CLI hooks automatically
 - Offers to update your PATH
 
 ### From source (requires Rust nightly)
@@ -695,6 +697,34 @@ Add to `~/.claude/settings.json`:
 ```
 
 **Important:** Restart Claude Code after adding the hook configuration.
+
+## Gemini CLI Configuration
+
+Add to `~/.gemini/settings.json`:
+
+```json
+{
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "shell_command",
+        "hooks": [
+          {
+            "name": "dcg",
+            "type": "command",
+            "command": "dcg",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Important:** Restart Gemini CLI after adding the hook configuration.
+
+> **Note:** OpenAI Codex CLI uses a different architecture (sandbox modes and approval policies) and does not support pre-execution hooks like dcg.
 
 ## CLI Usage
 

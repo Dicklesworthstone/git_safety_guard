@@ -102,12 +102,14 @@ draw_box() {
   shift
   local lines=("$@")
   local max_width=0
-  local strip_ansi_sed=$'s/\033\\[[0-9;]*m//g'
+  local esc
+  esc=$(printf '\033')
+  local strip_ansi_sed="s/${esc}\\[[0-9;]*m//g"
 
   # Calculate max width (strip ANSI codes for accurate measurement)
   for line in "${lines[@]}"; do
     local stripped
-    stripped=$(printf '%b' "$line" | sed "$strip_ansi_sed")
+    stripped=$(printf '%b' "$line" | LC_ALL=C sed "$strip_ansi_sed")
     local len=${#stripped}
     if [ "$len" -gt "$max_width" ]; then
       max_width=$len
@@ -127,7 +129,7 @@ draw_box() {
   # Draw each line with padding
   for line in "${lines[@]}"; do
     local stripped
-    stripped=$(printf '%b' "$line" | sed "$strip_ansi_sed")
+    stripped=$(printf '%b' "$line" | LC_ALL=C sed "$strip_ansi_sed")
     local len=${#stripped}
     local padding=$((max_width - len))
     local pad_str=""
@@ -543,11 +545,11 @@ PYEOF
 }
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Claude Code / Codex Auto-Configuration
+# Claude Code / Gemini CLI Auto-Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
 
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
-CODEX_CONFIG="$HOME/.codex/config.json"
+GEMINI_SETTINGS="$HOME/.gemini/settings.json"
 AUTO_CONFIGURED=0
 
 configure_claude_code() {
@@ -650,73 +652,101 @@ EOFSET
   fi
 }
 
-configure_codex() {
-  local config_file="$1"
-  local config_dir=$(dirname "$config_file")
+configure_gemini() {
+  local settings_file="$1"
+  local settings_dir=$(dirname "$settings_file")
 
-  # Codex uses a different config format - check if it exists
-  if [ ! -d "$config_dir" ]; then
-    # Codex not installed
+  # Check if Gemini CLI is installed
+  if [ ! -d "$settings_dir" ]; then
+    # Gemini CLI not installed
     return 1
   fi
 
-  if [ -f "$config_file" ]; then
-    if grep -q '"command".*dcg' "$config_file" 2>/dev/null; then
-      ok "Codex already configured with dcg"
+  if [ -f "$settings_file" ]; then
+    if grep -q '"command".*dcg' "$settings_file" 2>/dev/null; then
+      ok "Gemini CLI already configured with dcg"
       return 0
     fi
 
-    info "Configuring Codex with dcg hook..."
-    local backup="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
-    cp "$config_file" "$backup"
+    info "Configuring Gemini CLI with dcg hook..."
+    local backup="${settings_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$settings_file" "$backup"
 
     if command -v python3 >/dev/null 2>&1; then
-      python3 - "$config_file" "$DEST/dcg" <<'PYEOF'
+      python3 - "$settings_file" "$DEST/dcg" <<'PYEOF'
 import json
 import sys
 
-config_file = sys.argv[1]
+settings_file = sys.argv[1]
 dcg_path = sys.argv[2]
 
 try:
-    with open(config_file, 'r') as f:
-        config = json.load(f)
+    with open(settings_file, 'r') as f:
+        settings = json.load(f)
 except:
-    config = {}
+    settings = {}
 
-# Codex uses similar hook structure
-if 'hooks' not in config:
-    config['hooks'] = {}
-if 'PreToolUse' not in config['hooks']:
-    config['hooks']['PreToolUse'] = []
+# Gemini CLI uses BeforeTool instead of PreToolUse
+if 'hooks' not in settings:
+    settings['hooks'] = {}
+if 'BeforeTool' not in settings['hooks']:
+    settings['hooks']['BeforeTool'] = []
 
-dcg_hook = {"type": "command", "command": dcg_path}
+dcg_hook = {"name": "dcg", "type": "command", "command": dcg_path, "timeout": 5000}
 
-# Check if Bash matcher exists
-bash_matcher = None
-for entry in config['hooks']['PreToolUse']:
-    if entry.get('matcher') == 'Bash':
-        bash_matcher = entry
+# Check if shell_command matcher exists
+shell_matcher = None
+for entry in settings['hooks']['BeforeTool']:
+    if entry.get('matcher') == 'shell_command':
+        shell_matcher = entry
         break
 
-if bash_matcher:
-    if 'hooks' not in bash_matcher:
-        bash_matcher['hooks'] = []
-    dcg_exists = any('dcg' in h.get('command', '') for h in bash_matcher['hooks'] if isinstance(h, dict))
+if shell_matcher:
+    if 'hooks' not in shell_matcher:
+        shell_matcher['hooks'] = []
+    dcg_exists = any('dcg' in h.get('command', '') for h in shell_matcher['hooks'] if isinstance(h, dict))
     if not dcg_exists:
-        bash_matcher['hooks'].insert(0, dcg_hook)
+        shell_matcher['hooks'].insert(0, dcg_hook)
 else:
-    config['hooks']['PreToolUse'].append({
-        "matcher": "Bash",
+    settings['hooks']['BeforeTool'].append({
+        "matcher": "shell_command",
         "hooks": [dcg_hook]
     })
 
-with open(config_file, 'w') as f:
-    json.dump(config, f, indent=2)
+with open(settings_file, 'w') as f:
+    json.dump(settings, f, indent=2)
 PYEOF
-      ok "Configured Codex (backup: $backup)"
+      ok "Configured Gemini CLI (backup: $backup)"
       AUTO_CONFIGURED=1
+    else
+      warn "Python3 not available; showing manual instructions"
+      return 1
     fi
+  else
+    # Create new settings file with dcg hook
+    info "Creating Gemini CLI settings with dcg hook..."
+    mkdir -p "$settings_dir"
+    cat > "$settings_file" <<EOFSET
+{
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "shell_command",
+        "hooks": [
+          {
+            "name": "dcg",
+            "type": "command",
+            "command": "$DEST/dcg",
+            "timeout": 5000
+          }
+        ]
+      }
+    ]
+  }
+}
+EOFSET
+    ok "Created $settings_file"
+    AUTO_CONFIGURED=1
   fi
 }
 
@@ -771,10 +801,10 @@ if [ -d "$HOME/.claude" ] || [ "$EASY" -eq 1 ]; then
   configure_claude_code "$CLAUDE_SETTINGS"
 fi
 
-# Configure Codex (if installed)
-if [ -d "$HOME/.codex" ]; then
-  info "Detecting Codex..."
-  configure_codex "$CODEX_CONFIG"
+# Configure Gemini CLI (if installed)
+if [ -d "$HOME/.gemini" ]; then
+  info "Detecting Gemini CLI..."
+  configure_gemini "$GEMINI_SETTINGS"
 fi
 
 # Show final status
