@@ -662,7 +662,7 @@ dcg update
 Optional flags mirror the installer scripts (examples):
 
 ```bash
-dcg update --version v0.2.4
+dcg update --version v0.2.5
 dcg update --system
 dcg update --verify
 ```
