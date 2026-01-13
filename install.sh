@@ -410,9 +410,13 @@ PREDECESSOR_FOUND=0
 PREDECESSOR_LOCATIONS=()
 
 detect_predecessor() {
+  # Check common file locations
   local locations=(
     "$HOME/.claude/hooks/$PREDECESSOR_SCRIPT"
     ".claude/hooks/$PREDECESSOR_SCRIPT"
+    # ACSF project locations (if installed from source)
+    "/data/projects/agentic_coding_flywheel_setup/scripts/hooks/$PREDECESSOR_SCRIPT"
+    "$HOME/agentic_coding_flywheel_setup/scripts/hooks/$PREDECESSOR_SCRIPT"
   )
 
   for loc in "${locations[@]}"; do
@@ -421,6 +425,11 @@ detect_predecessor() {
       PREDECESSOR_LOCATIONS+=("$loc")
     fi
   done
+
+  # Also check if settings.json references the predecessor (even if file missing)
+  if [ -f "$CLAUDE_SETTINGS" ] && grep -q 'git_safety_guard' "$CLAUDE_SETTINGS" 2>/dev/null; then
+    PREDECESSOR_FOUND=1
+  fi
 }
 
 show_upgrade_banner() {
@@ -563,6 +572,7 @@ AUTO_CONFIGURED=0
 
 configure_claude_code() {
   local settings_file="$1"
+  local cleanup_predecessor="${2:-1}"  # Default to cleaning up predecessor
   local settings_dir=$(dirname "$settings_file")
 
   if [ ! -d "$settings_dir" ]; then
@@ -573,8 +583,15 @@ configure_claude_code() {
   if [ -f "$settings_file" ]; then
     # Check if dcg is already configured
     if grep -q '"command".*dcg' "$settings_file" 2>/dev/null; then
-      ok "Claude Code already configured with dcg"
-      return 0
+      # Also check if predecessor is still present (needs cleanup)
+      if grep -q 'git_safety_guard' "$settings_file" 2>/dev/null; then
+        info "Found both dcg and predecessor in settings; cleaning up..."
+        # Fall through to cleanup logic below
+      else
+        ok "Claude Code already configured with dcg"
+        AUTO_CONFIGURED=1
+        return 0
+      fi
     fi
 
     # Settings file exists, need to merge
@@ -583,12 +600,13 @@ configure_claude_code() {
     cp "$settings_file" "$backup"
 
     if command -v python3 >/dev/null 2>&1; then
-      python3 - "$settings_file" "$DEST/dcg" <<'PYEOF'
+      python3 - "$settings_file" "$DEST/dcg" "$cleanup_predecessor" <<'PYEOF'
 import json
 import sys
 
 settings_file = sys.argv[1]
 dcg_path = sys.argv[2]
+cleanup_predecessor = sys.argv[3] == "1" if len(sys.argv) > 3 else True
 
 try:
     with open(settings_file, 'r') as f:
@@ -602,33 +620,55 @@ if 'hooks' not in settings:
 if 'PreToolUse' not in settings['hooks']:
     settings['hooks']['PreToolUse'] = []
 
-# Check if Bash matcher already exists
-bash_matcher = None
+# First pass: process Bash matchers, optionally removing predecessor hooks
+# and consolidate all Bash matchers into one
+bash_hooks = []
+new_pre_tool_use = []
+predecessor_removed = False
+
 for entry in settings['hooks']['PreToolUse']:
     if entry.get('matcher') == 'Bash':
-        bash_matcher = entry
-        break
+        # Collect hooks from this Bash matcher
+        if 'hooks' in entry:
+            for hook in entry['hooks']:
+                if isinstance(hook, dict) and 'command' in hook:
+                    cmd = hook.get('command', '')
+                    if 'git_safety_guard' in cmd:
+                        if cleanup_predecessor:
+                            predecessor_removed = True
+                            continue  # Skip predecessor
+                        else:
+                            bash_hooks.append(hook)  # Keep predecessor
+                    elif 'dcg' not in cmd:  # Don't duplicate dcg
+                        bash_hooks.append(hook)
+                    elif 'dcg' in cmd:
+                        # Keep existing dcg hook but ensure path is updated
+                        bash_hooks.append({"type": "command", "command": dcg_path})
+                else:
+                    bash_hooks.append(hook)
+    else:
+        new_pre_tool_use.append(entry)
 
+# Add dcg hook at the beginning if not already present
 dcg_hook = {"type": "command", "command": dcg_path}
+dcg_exists = any('dcg' in h.get('command', '') for h in bash_hooks if isinstance(h, dict))
+if not dcg_exists:
+    bash_hooks.insert(0, dcg_hook)
 
-if bash_matcher:
-    # Add dcg to existing Bash matcher
-    if 'hooks' not in bash_matcher:
-        bash_matcher['hooks'] = []
-    # Check if dcg is already there
-    dcg_exists = any('dcg' in h.get('command', '') for h in bash_matcher['hooks'] if isinstance(h, dict))
-    if not dcg_exists:
-        # Insert at beginning for priority
-        bash_matcher['hooks'].insert(0, dcg_hook)
-else:
-    # Create new Bash matcher
-    settings['hooks']['PreToolUse'].append({
+# Create consolidated Bash matcher with dcg first
+if bash_hooks:
+    new_pre_tool_use.insert(0, {
         "matcher": "Bash",
-        "hooks": [dcg_hook]
+        "hooks": bash_hooks
     })
+
+settings['hooks']['PreToolUse'] = new_pre_tool_use
 
 with open(settings_file, 'w') as f:
     json.dump(settings, f, indent=2)
+
+if predecessor_removed:
+    print("PREDECESSOR_CLEANED", file=sys.stderr)
 PYEOF
       if [ $? -eq 0 ]; then
         ok "Configured Claude Code (backup: $backup)"
@@ -681,6 +721,7 @@ configure_gemini() {
   if [ -f "$settings_file" ]; then
     if grep -q '"command".*dcg' "$settings_file" 2>/dev/null; then
       ok "Gemini CLI already configured with dcg"
+      AUTO_CONFIGURED=1
       return 0
     fi
 
@@ -807,11 +848,7 @@ if [ "$PREDECESSOR_FOUND" -eq 1 ]; then
     for loc in "${PREDECESSOR_LOCATIONS[@]}"; do
       remove_predecessor "$loc"
     done
-
-    # Update settings.json to use dcg instead
-    if [ -f "$CLAUDE_SETTINGS" ]; then
-      update_settings_json "$CLAUDE_SETTINGS"
-    fi
+    # Note: settings.json cleanup is handled by configure_claude_code() below
   else
     warn "Keeping predecessor; dcg will run alongside it"
     warn "Consider removing $PREDECESSOR_SCRIPT manually to avoid duplicate checks"
@@ -821,7 +858,7 @@ fi
 # Configure Claude Code
 if [ -d "$HOME/.claude" ] || [ "$EASY" -eq 1 ]; then
   info "Detecting Claude Code..."
-  configure_claude_code "$CLAUDE_SETTINGS"
+  configure_claude_code "$CLAUDE_SETTINGS" "$REMOVE_PREDECESSOR"
 fi
 
 # Configure Gemini CLI (if installed)
