@@ -189,13 +189,13 @@ jobs:
           cargo llvm-cov report \
             --ignore-filename-regex='(tests/|benches/|\.cargo/)' \
             --lcov --output-path lcov.info
-          # Generate text summary from collected data
+          # Generate text summary (--summary-only gives file-level stats with TOTAL)
           cargo llvm-cov report \
             --ignore-filename-regex='(tests/|benches/|\.cargo/)' \
-            --text > coverage-summary.txt
+            --summary-only > coverage-summary.txt
           echo "## Coverage Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -20 coverage-summary.txt >> $GITHUB_STEP_SUMMARY
+          tail -30 coverage-summary.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Upload coverage to Codecov
