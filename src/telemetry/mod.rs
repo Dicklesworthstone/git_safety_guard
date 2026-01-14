@@ -93,14 +93,18 @@ impl TelemetryWriter {
         }
 
         let (sender, receiver) = mpsc::channel::<TelemetryMessage>();
-        let handle = thread::Builder::new()
+        let Ok(handle) = thread::Builder::new()
             .name("dcg-telemetry-writer".to_string())
             .spawn(move || telemetry_worker(db, receiver))
-            .ok();
+        else {
+            // Thread spawn failed - return disabled writer to avoid leaking
+            // messages into a channel with no receiver.
+            return Self::disabled();
+        };
 
         Self {
             sender: Some(sender),
-            handle,
+            handle: Some(handle),
             redaction_mode: config.redaction_mode,
         }
     }

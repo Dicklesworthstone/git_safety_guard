@@ -190,10 +190,15 @@ fn allow_once_header_line_with_color(code: &str, colorize: bool) -> String {
     let code_token = format!("[{code}]");
 
     if colorize {
+        // Force colorization for this call regardless of global SHOULD_COLORIZE
+        // (which is false when there's no TTY, e.g., in tests)
+        colored::control::set_override(true);
         let label = "ALLOW-24H CODE:".bright_white().bold();
         let highlighted = code_token.bright_yellow().bold();
         let hint = format!("run: {command}").bright_black();
-        format!("{label} {highlighted} | {hint}")
+        let result = format!("{label} {highlighted} | {hint}");
+        colored::control::unset_override();
+        result
     } else {
         format!("ALLOW-24H CODE: {code_token} | run: {command}")
     }

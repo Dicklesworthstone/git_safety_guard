@@ -521,9 +521,6 @@ impl TelemetryDb {
             });
         }
 
-        // Suppress unused variable warning (from_version will be used in future migrations)
-        let _ = from_version;
-
         Ok(())
     }
 
@@ -766,26 +763,22 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn test_try_open_permission_denied_returns_none() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp_dir = tempfile::tempdir().unwrap();
         let dir_path = temp_dir.path().join("readonly");
         std::fs::create_dir(&dir_path).unwrap();
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir_path, std::fs::Permissions::from_mode(0o444)).unwrap();
-        }
+        std::fs::set_permissions(&dir_path, std::fs::Permissions::from_mode(0o444)).unwrap();
 
         let db_path = dir_path.join("test.db");
         let result = TelemetryDb::try_open(Some(db_path));
         assert!(result.is_none());
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&dir_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        // Restore permissions so temp_dir cleanup can succeed
+        std::fs::set_permissions(&dir_path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[test]
