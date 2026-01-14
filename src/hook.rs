@@ -169,8 +169,39 @@ pub fn format_denial_message(command: &str, reason: &str) -> String {
     )
 }
 
+fn allow_once_should_colorize(base_colorize: bool) -> bool {
+    if !base_colorize {
+        return false;
+    }
+
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+
+    if matches!(std::env::var("TERM").as_deref(), Ok("dumb")) {
+        return false;
+    }
+
+    true
+}
+
+fn allow_once_header_line_with_color(code: &str, colorize: bool) -> String {
+    let command = format!("dcg allow-once {code}");
+    let code_token = format!("[{code}]");
+
+    if colorize {
+        let label = "ALLOW-24H CODE:".bright_white().bold();
+        let highlighted = code_token.bright_yellow().bold();
+        let hint = format!("run: {command}").bright_black();
+        format!("{label} {highlighted} | {hint}")
+    } else {
+        format!("ALLOW-24H CODE: {code_token} | run: {command}")
+    }
+}
+
 fn allow_once_header_line(code: &str) -> String {
-    format!("ALLOW-24H CODE: {code} | run: dcg allow-once {code}")
+    let colorize = allow_once_should_colorize(colored::control::SHOULD_COLORIZE.should_colorize());
+    allow_once_header_line_with_color(code, colorize)
 }
 
 /// Print a colorful warning to stderr for human visibility.
@@ -683,6 +714,47 @@ fn chrono_lite_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: We hold ENV_LOCK during all tests that use this guard,
+            // ensuring no concurrent access to environment variables.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, previous }
+        }
+
+        #[allow(dead_code)]
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            // SAFETY: We hold ENV_LOCK during all tests that use this guard,
+            // ensuring no concurrent access to environment variables.
+            unsafe { std::env::remove_var(key) };
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.previous.take() {
+                // SAFETY: We hold ENV_LOCK during all tests that use this guard,
+                // ensuring no concurrent access to environment variables.
+                unsafe { std::env::set_var(self.key, value) };
+            } else {
+                // SAFETY: We hold ENV_LOCK during all tests that use this guard,
+                // ensuring no concurrent access to environment variables.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
 
     #[test]
     fn test_parse_valid_bash_input() {
@@ -733,13 +805,13 @@ mod tests {
                 hook_event_name: "PreToolUse",
                 permission_decision: "deny",
                 permission_decision_reason: Cow::Borrowed("test reason"),
-                allow_once_code: Some("abcd".to_string()),
+                allow_once_code: Some("12345".to_string()),
                 allow_once_full_hash: Some("deadbeef".to_string()),
             },
         };
         let json = serde_json::to_string(&output).unwrap();
         assert!(json.contains("allowOnceCode"));
-        assert!(json.contains("abcd"));
+        assert!(json.contains("12345"));
         assert!(json.contains("allowOnceFullHash"));
         assert!(json.contains("deadbeef"));
     }
@@ -754,8 +826,44 @@ mod tests {
 
     #[test]
     fn test_allow_once_header_line() {
-        let line = allow_once_header_line("abcd");
-        assert_eq!(line, "ALLOW-24H CODE: abcd | run: dcg allow-once abcd");
+        let line = allow_once_header_line_with_color("12345", false);
+        assert_eq!(line, "ALLOW-24H CODE: [12345] | run: dcg allow-once 12345");
+    }
+
+    #[test]
+    fn test_allow_once_header_line_color_contains_ansi() {
+        let line = allow_once_header_line_with_color("12345", true);
+        assert!(line.contains("\x1b["), "expected ANSI escape codes");
+        assert!(line.contains("12345"));
+    }
+
+    #[test]
+    fn test_formatting_respects_no_color_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
+        let line = allow_once_header_line_with_color("12345", allow_once_should_colorize(true));
+        assert!(!line.contains("\x1b["));
+    }
+
+    #[test]
+    fn test_formatting_respects_term_dumb() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _term = EnvVarGuard::set("TERM", "dumb");
+        let line = allow_once_header_line_with_color("12345", allow_once_should_colorize(true));
+        assert!(!line.contains("\x1b["));
+    }
+
+    #[test]
+    fn test_bold_and_color_applied() {
+        let line = allow_once_header_line_with_color("12345", true);
+        assert!(
+            line.contains("\x1b[1m") || line.contains("\x1b[1;"),
+            "expected bold ANSI sequence"
+        );
+        assert!(
+            line.contains("\x1b[3") || line.contains("\x1b[9"),
+            "expected color ANSI sequence"
+        );
     }
 
     #[test]
@@ -856,7 +964,7 @@ mod tests {
             Some("force_push"),
             None,
         );
-        print_colorful_warning("rm -rf /", "filesystem", Some("fs"), None, Some("abcd"));
+        print_colorful_warning("rm -rf /", "filesystem", Some("fs"), None, Some("12345"));
         print_colorful_warning(r#"echo "quoted""#, "echo", None, None, None);
     }
 }

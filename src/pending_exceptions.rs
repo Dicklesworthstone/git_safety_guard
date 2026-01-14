@@ -1269,11 +1269,26 @@ fn compute_full_hash_with_secret(
     hex
 }
 
+/// Generate a 5-digit numeric short code from a hex hash.
+///
+/// Takes the last 8 hex characters (32 bits) and converts to a 5-digit
+/// decimal number (00000-99999). This provides 100,000 possible codes,
+/// which is more than the previous 65,536 (4 hex chars) while being
+/// easier to type and read.
 fn short_code_from_hash(full_hash: &str) -> String {
-    if full_hash.len() <= 4 {
-        return full_hash.to_string();
+    // Need at least 8 hex chars for a good distribution
+    if full_hash.len() < 8 {
+        // Fallback for edge cases: just use what we have as decimal
+        let value = u32::from_str_radix(full_hash, 16).unwrap_or(0);
+        return format!("{:05}", value % 100_000);
     }
-    full_hash[full_hash.len() - 4..].to_string()
+
+    // Take last 8 hex characters (32 bits) and convert to decimal
+    let hex_suffix = &full_hash[full_hash.len() - 8..];
+    let value = u32::from_str_radix(hex_suffix, 16).unwrap_or(0);
+
+    // Mod by 100000 to get 5-digit code (00000-99999)
+    format!("{:05}", value % 100_000)
 }
 
 fn redact_for_pending(command: &str, redaction: &RedactionConfig) -> String {
@@ -1317,7 +1332,10 @@ mod tests {
             false,
             None,
         );
-        assert_eq!(record.short_code.len(), 4);
+        // Short code should be 5 digits
+        assert_eq!(record.short_code.len(), 5);
+        // All characters should be numeric
+        assert!(record.short_code.chars().all(|c| c.is_ascii_digit()));
         assert_eq!(record.full_hash.len(), 64);
     }
 
@@ -1499,7 +1517,12 @@ mod tests {
             "17a268f67ce0aab3bc5015427e3ba8fd1d643d25f9f13dca1332c13818a5ac63"
         );
         assert_eq!(hash, hash.to_lowercase());
-        assert_eq!(short_code_from_hash(&hash), "ac63");
+        // Short code is now 5-digit numeric derived from last 8 hex chars
+        // 0x18a5ac63 = 413510755, 413510755 % 100000 = 10755
+        let short_code = short_code_from_hash(&hash);
+        assert_eq!(short_code.len(), 5);
+        assert!(short_code.chars().all(|c| c.is_ascii_digit()));
+        assert_eq!(short_code, "10755");
     }
 
     #[test]
@@ -2059,5 +2082,111 @@ mod tests {
             hash, "17a268f67ce0aab3bc5015427e3ba8fd1d643d25f9f13dca1332c13818a5ac63",
             "Hash without secret should match original implementation"
         );
+    }
+
+    // =========================================================================
+    // Numeric Short Code Tests (git_safety_guard-z72c)
+    // =========================================================================
+
+    #[test]
+    fn test_numeric_code_generation() {
+        // Generate many codes and verify all are 5-digit numeric
+        for i in 0..1000 {
+            // Create unique hashes by using different inputs
+            let hash = compute_full_hash(
+                "2099-01-01T00:00:00Z",
+                &format!("/repo/{i}"),
+                &format!("command {i}"),
+            );
+            let code = short_code_from_hash(&hash);
+            assert_eq!(
+                code.len(),
+                5,
+                "Code '{code}' should be 5 characters, got {}",
+                code.len()
+            );
+            assert!(
+                code.chars().all(|c| c.is_ascii_digit()),
+                "Code '{code}' should contain only digits"
+            );
+        }
+    }
+
+    #[test]
+    fn test_code_uniqueness() {
+        // Generate many codes and check collision rate
+        let mut codes = std::collections::HashSet::new();
+        for i in 0..10000 {
+            let hash = compute_full_hash(
+                "2099-01-01T00:00:00Z",
+                &format!("/repo/{i}"),
+                &format!("command {i}"),
+            );
+            codes.insert(short_code_from_hash(&hash));
+        }
+        // With 100000 possible codes, expect <1% collision rate for 10000 samples
+        // Birthday paradox: expected collisions ~500 for 10000 samples in 100000 space
+        // So we should have at least 9500 unique codes
+        assert!(
+            codes.len() > 9400,
+            "Expected >9400 unique codes, got {}",
+            codes.len()
+        );
+    }
+
+    #[test]
+    fn test_code_format_validation() {
+        // Valid 5-digit codes
+        fn is_valid_bypass_code(code: &str) -> bool {
+            code.len() == 5 && code.chars().all(|c| c.is_ascii_digit())
+        }
+
+        assert!(is_valid_bypass_code("12345"));
+        assert!(is_valid_bypass_code("00000"));
+        assert!(is_valid_bypass_code("99999"));
+        assert!(!is_valid_bypass_code("1234")); // Too short
+        assert!(!is_valid_bypass_code("123456")); // Too long
+        assert!(!is_valid_bypass_code("1234a")); // Contains letter
+        assert!(!is_valid_bypass_code("abcde")); // All letters
+    }
+
+    #[test]
+    fn test_short_code_edge_cases() {
+        // Test with very short hashes (edge case)
+        assert_eq!(short_code_from_hash("0").len(), 5);
+        assert_eq!(short_code_from_hash("abc").len(), 5);
+        assert_eq!(short_code_from_hash("1234567").len(), 5);
+
+        // All should be numeric
+        assert!(
+            short_code_from_hash("0")
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        );
+        assert!(
+            short_code_from_hash("abc")
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        );
+        assert!(
+            short_code_from_hash("1234567")
+                .chars()
+                .all(|c| c.is_ascii_digit())
+        );
+
+        // Test with exactly 8 characters
+        let code = short_code_from_hash("12345678");
+        assert_eq!(code.len(), 5);
+        assert!(code.chars().all(|c| c.is_ascii_digit()));
+    }
+
+    #[test]
+    fn test_short_code_leading_zeros_preserved() {
+        // Create a hash that produces a small number to verify leading zeros
+        // 0x00000001 % 100000 = 1, should format as "00001"
+        let code = short_code_from_hash("0000000000000001");
+        assert_eq!(code.len(), 5);
+        // The value is 1 % 100000 = 1, formatted as "00001"
+        assert_eq!(code, "00001");
     }
 }

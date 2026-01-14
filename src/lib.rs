@@ -1,4 +1,5 @@
-#![forbid(unsafe_code)]
+// Forbid unsafe code in production, but allow in tests for env var manipulation
+#![cfg_attr(not(test), forbid(unsafe_code))]
 //! Destructive Command Guard (dcg) library.
 //!
 //! This library provides the core functionality for blocking destructive commands
@@ -77,6 +78,7 @@ pub mod scan;
 pub mod simulate;
 pub mod stats;
 pub mod suggestions;
+pub mod telemetry;
 pub mod trace;
 
 // Re-export commonly used types
@@ -165,4 +167,10 @@ pub use normalize::{NormalizedCommand, StrippedWrapper, strip_wrapper_prefixes};
 pub use confidence::{
     ConfidenceContext, ConfidenceScore, ConfidenceSignal, DEFAULT_WARN_THRESHOLD,
     compute_match_confidence, should_downgrade_to_warn,
+};
+
+// Re-export telemetry types for command history tracking
+pub use telemetry::{
+    CURRENT_SCHEMA_VERSION, CommandEntry, DEFAULT_DB_FILENAME, ENV_TELEMETRY_DB_PATH,
+    ENV_TELEMETRY_DISABLED, Outcome as TelemetryOutcome, TelemetryDb, TelemetryError,
 };
