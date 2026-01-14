@@ -1,12 +1,12 @@
-//! Integration tests for the telemetry system.
+//! Integration tests for the history system.
 //!
-//! These tests verify the full telemetry pipeline from command logging
+//! These tests verify the full history pipeline from command logging
 //! to querying, ensuring all components work together correctly.
 //!
 //! # Running
 //!
 //! ```bash
-//! cargo test --test telemetry_integration
+//! cargo test --test history_integration
 //! ```
 
 mod common;
@@ -15,14 +15,14 @@ use chrono::Utc;
 use common::db::TestDb;
 use common::fixtures;
 use common::logging::init_test_logging;
-use destructive_command_guard::config::{TelemetryConfig, TelemetryRedactionMode};
-use destructive_command_guard::telemetry::{CommandEntry, Outcome, TelemetryDb, TelemetryWriter};
+use destructive_command_guard::config::{HistoryConfig, HistoryRedactionMode};
+use destructive_command_guard::history::{CommandEntry, HistoryDb, HistoryWriter, Outcome};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
-/// Test: Full telemetry pipeline - log -> query cycle
+/// Test: Full history pipeline - log -> query cycle
 #[test]
-fn test_full_telemetry_pipeline() {
+fn test_full_history_pipeline() {
     init_test_logging();
 
     let test_db = TestDb::new();
@@ -264,7 +264,7 @@ fn test_database_persistence() {
 
     // Create and populate
     {
-        let db = TelemetryDb::open(Some(db_path.clone())).unwrap();
+        let db = HistoryDb::open(Some(db_path.clone())).unwrap();
         for i in 0..5 {
             db.log_command(&CommandEntry {
                 command: format!("persist_cmd_{i}"),
@@ -277,7 +277,7 @@ fn test_database_persistence() {
 
     // Reopen and verify
     {
-        let db = TelemetryDb::open(Some(db_path)).unwrap();
+        let db = HistoryDb::open(Some(db_path)).unwrap();
         assert_eq!(db.count_commands().unwrap(), 5);
     }
 }
@@ -342,7 +342,7 @@ fn test_concurrent_writes() {
 
     // Create initial database
     {
-        let db = TelemetryDb::open(Some((*db_path).clone())).unwrap();
+        let db = HistoryDb::open(Some((*db_path).clone())).unwrap();
         db.log_command(&CommandEntry {
             command: "init".to_string(),
             ..Default::default()
@@ -355,7 +355,7 @@ fn test_concurrent_writes() {
         .map(|thread_id| {
             let path = Arc::clone(&db_path);
             thread::spawn(move || {
-                let db = TelemetryDb::open(Some((*path).clone())).unwrap();
+                let db = HistoryDb::open(Some((*path).clone())).unwrap();
                 for i in 0..25 {
                     db.log_command(&CommandEntry {
                         command: format!("thread_{thread_id}_cmd_{i}"),
@@ -374,7 +374,7 @@ fn test_concurrent_writes() {
     }
 
     // Verify all writes succeeded
-    let db = TelemetryDb::open(Some((*db_path).clone())).unwrap();
+    let db = HistoryDb::open(Some((*db_path).clone())).unwrap();
     let count = db.count_commands().unwrap();
 
     // 1 init + 4 threads * 25 commands = 101
@@ -412,14 +412,14 @@ fn test_telemetry_writer_logs_allow() {
 
     let temp_dir = TempDir::new().expect("temp dir");
     let db_path = temp_dir.path().join("telemetry_writer_allow.db");
-    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+    let db = HistoryDb::open(Some(db_path.clone())).expect("open db");
 
-    let config = TelemetryConfig {
+    let config = HistoryConfig {
         enabled: true,
-        redaction_mode: TelemetryRedactionMode::None,
+        redaction_mode: HistoryRedactionMode::None,
         ..Default::default()
     };
-    let writer = TelemetryWriter::new(db, &config);
+    let writer = HistoryWriter::new(db, &config);
 
     writer.log(CommandEntry {
         timestamp: Utc::now(),
@@ -431,7 +431,7 @@ fn test_telemetry_writer_logs_allow() {
     });
     writer.flush_sync();
 
-    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    let reader = HistoryDb::open(Some(db_path)).expect("open reader");
     assert_eq!(reader.count_commands().unwrap(), 1);
 }
 
@@ -441,13 +441,13 @@ fn test_telemetry_writer_respects_disabled() {
 
     let temp_dir = TempDir::new().expect("temp dir");
     let db_path = temp_dir.path().join("telemetry_writer_disabled.db");
-    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+    let db = HistoryDb::open(Some(db_path.clone())).expect("open db");
 
-    let config = TelemetryConfig {
+    let config = HistoryConfig {
         enabled: false,
         ..Default::default()
     };
-    let writer = TelemetryWriter::new(db, &config);
+    let writer = HistoryWriter::new(db, &config);
 
     writer.log(CommandEntry {
         timestamp: Utc::now(),
@@ -459,7 +459,7 @@ fn test_telemetry_writer_respects_disabled() {
     });
     writer.flush_sync();
 
-    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    let reader = HistoryDb::open(Some(db_path)).expect("open reader");
     assert_eq!(reader.count_commands().unwrap(), 0);
 }
 
@@ -469,14 +469,14 @@ fn test_telemetry_writer_full_redaction() {
 
     let temp_dir = TempDir::new().expect("temp dir");
     let db_path = temp_dir.path().join("telemetry_writer_redaction.db");
-    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+    let db = HistoryDb::open(Some(db_path.clone())).expect("open db");
 
-    let config = TelemetryConfig {
+    let config = HistoryConfig {
         enabled: true,
-        redaction_mode: TelemetryRedactionMode::Full,
+        redaction_mode: HistoryRedactionMode::Full,
         ..Default::default()
     };
-    let writer = TelemetryWriter::new(db, &config);
+    let writer = HistoryWriter::new(db, &config);
 
     writer.log(CommandEntry {
         timestamp: Utc::now(),
@@ -488,7 +488,7 @@ fn test_telemetry_writer_full_redaction() {
     });
     writer.flush_sync();
 
-    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    let reader = HistoryDb::open(Some(db_path)).expect("open reader");
     let stored: String = reader
         .connection()
         .query_row("SELECT command FROM commands LIMIT 1", [], |row| row.get(0))
@@ -502,14 +502,14 @@ fn test_telemetry_writer_logs_deny_with_match_info() {
 
     let temp_dir = TempDir::new().expect("temp dir");
     let db_path = temp_dir.path().join("telemetry_writer_deny.db");
-    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+    let db = HistoryDb::open(Some(db_path.clone())).expect("open db");
 
-    let config = TelemetryConfig {
+    let config = HistoryConfig {
         enabled: true,
-        redaction_mode: TelemetryRedactionMode::None,
+        redaction_mode: HistoryRedactionMode::None,
         ..Default::default()
     };
-    let writer = TelemetryWriter::new(db, &config);
+    let writer = HistoryWriter::new(db, &config);
 
     writer.log(CommandEntry {
         timestamp: Utc::now(),
@@ -523,7 +523,7 @@ fn test_telemetry_writer_logs_deny_with_match_info() {
     });
     writer.flush_sync();
 
-    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    let reader = HistoryDb::open(Some(db_path)).expect("open reader");
     let stored: (String, String, String) = reader
         .connection()
         .query_row(
@@ -543,16 +543,16 @@ fn test_telemetry_writer_flushes_on_drop() {
 
     let temp_dir = TempDir::new().expect("temp dir");
     let db_path = temp_dir.path().join("telemetry_writer_drop.db");
-    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+    let db = HistoryDb::open(Some(db_path.clone())).expect("open db");
 
-    let config = TelemetryConfig {
+    let config = HistoryConfig {
         enabled: true,
-        redaction_mode: TelemetryRedactionMode::None,
+        redaction_mode: HistoryRedactionMode::None,
         ..Default::default()
     };
 
     {
-        let writer = TelemetryWriter::new(db, &config);
+        let writer = HistoryWriter::new(db, &config);
         writer.log(CommandEntry {
             timestamp: Utc::now(),
             agent_type: "claude_code".to_string(),
@@ -563,7 +563,7 @@ fn test_telemetry_writer_flushes_on_drop() {
         });
     }
 
-    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    let reader = HistoryDb::open(Some(db_path)).expect("open reader");
     assert_eq!(reader.count_commands().unwrap(), 1);
 }
 
@@ -573,14 +573,14 @@ fn test_telemetry_writer_async_performance() {
 
     let temp_dir = TempDir::new().expect("temp dir");
     let db_path = temp_dir.path().join("telemetry_writer_perf.db");
-    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+    let db = HistoryDb::open(Some(db_path.clone())).expect("open db");
 
-    let config = TelemetryConfig {
+    let config = HistoryConfig {
         enabled: true,
-        redaction_mode: TelemetryRedactionMode::None,
+        redaction_mode: HistoryRedactionMode::None,
         ..Default::default()
     };
-    let writer = TelemetryWriter::new(db, &config);
+    let writer = HistoryWriter::new(db, &config);
 
     let start = Instant::now();
     for i in 0..1000 {
@@ -605,6 +605,6 @@ fn test_telemetry_writer_async_performance() {
     // Drop writer to ensure all writes are committed and WAL is checkpointed
     // before opening a new reader connection
     drop(writer);
-    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    let reader = HistoryDb::open(Some(db_path)).expect("open reader");
     assert_eq!(reader.count_commands().unwrap(), 1000);
 }

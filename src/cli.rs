@@ -8,13 +8,13 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::config::Config;
 use crate::evaluator::{EvaluationDecision, MatchSource, evaluate_command_with_pack_order};
+use crate::history::HistoryDb;
 use crate::load_default_allowlists;
 use crate::packs::REGISTRY;
 use crate::pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
     PendingExceptionStore,
 };
-use crate::telemetry::TelemetryDb;
 
 /// High-performance Claude Code hook for blocking destructive commands.
 ///
@@ -255,14 +255,14 @@ pub enum Command {
         action: DevAction,
     },
 
-    /// Query and manage the telemetry database
+    /// Query and manage the history database
     ///
     /// View command history, search for patterns, and analyze blocked commands.
-    /// Telemetry must be enabled in config (`telemetry.enabled = true`).
-    #[command(name = "telemetry")]
-    Telemetry {
+    /// History must be enabled in config (`history.enabled = true`).
+    #[command(name = "history")]
+    History {
         #[command(subcommand)]
-        action: Option<TelemetryAction>,
+        action: Option<HistoryAction>,
     },
 }
 
@@ -419,10 +419,10 @@ pub enum DevAction {
     },
 }
 
-/// Telemetry subcommand actions
+/// History subcommand actions
 #[derive(Subcommand, Debug)]
-pub enum TelemetryAction {
-    /// Show telemetry database status and statistics
+pub enum HistoryAction {
+    /// Show history database status and statistics
     #[command(name = "status")]
     Status,
 
@@ -498,7 +498,7 @@ pub enum TelemetryAction {
 
     /// Run a raw SQL query (read-only, SELECT only)
     ///
-    /// Execute arbitrary SELECT queries against the telemetry database.
+    /// Execute arbitrary SELECT queries against the history database.
     /// INSERT, UPDATE, DELETE, DROP, and other modification statements are blocked.
     #[command(name = "query")]
     Query {
@@ -1060,8 +1060,8 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::Dev { action }) => {
             handle_dev_command(&config, action)?;
         }
-        Some(Command::Telemetry { action }) => {
-            handle_telemetry_command(&config, action)?;
+        Some(Command::History { action }) => {
+            handle_history_command(&config, action)?;
         }
         None => {
             // No subcommand - run in hook mode (default behavior)
@@ -4734,7 +4734,8 @@ fn resolve_allow_once_revoke_target(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut matches: Vec<String> = Vec::new();
 
-    if target.len() <= 4 {
+    // Short codes are 5 digits (see short_code_from_hash in pending_exceptions.rs)
+    if target.len() <= 5 {
         matches.extend(
             pending
                 .iter()
@@ -5392,85 +5393,85 @@ fn is_expired(timestamp: &str) -> bool {
 }
 
 // ============================================================================
-// Telemetry Commands (dcg telemetry)
+// History Commands (dcg history)
 // ============================================================================
 
-/// Handle all `dcg telemetry` subcommands
-fn handle_telemetry_command(
+/// Handle all `dcg history` subcommands
+fn handle_history_command(
     config: &Config,
-    action: Option<TelemetryAction>,
+    action: Option<HistoryAction>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
 
     // Check if telemetry is enabled
-    if !config.telemetry.enabled {
-        println!("{}", "Telemetry is disabled.".yellow());
+    if !config.history.enabled {
+        println!("{}", "History is disabled.".yellow());
         println!();
-        println!("To enable telemetry, add to your config (~/.config/dcg/config.toml):");
+        println!("To enable history, add to your config (~/.config/dcg/config.toml):");
         println!();
-        println!("  [telemetry]");
+        println!("  [history]");
         println!("  enabled = true");
         return Ok(());
     }
 
-    // Open the telemetry database
-    let db_path = config.telemetry.expanded_database_path();
-    let db = match TelemetryDb::open(db_path) {
+    // Open the history database
+    let db_path = config.history.expanded_database_path();
+    let db = match HistoryDb::open(db_path) {
         Ok(db) => db,
         Err(e) => {
-            println!("{}: {}", "Error opening telemetry database".red(), e);
+            println!("{}: {}", "Error opening history database".red(), e);
             return Ok(());
         }
     };
 
     match action {
-        None | Some(TelemetryAction::Status) => {
-            telemetry_status(&db)?;
+        None | Some(HistoryAction::Status) => {
+            history_status(&db)?;
         }
-        Some(TelemetryAction::Recent {
+        Some(HistoryAction::Recent {
             limit,
             offset,
             json,
         }) => {
-            telemetry_recent(&db, limit, offset, json)?;
+            history_recent(&db, limit, offset, json)?;
         }
-        Some(TelemetryAction::Blocks {
+        Some(HistoryAction::Blocks {
             limit,
             offset,
             json,
         }) => {
-            telemetry_blocks(&db, limit, offset, json)?;
+            history_blocks(&db, limit, offset, json)?;
         }
-        Some(TelemetryAction::Search {
+        Some(HistoryAction::Search {
             pattern,
             limit,
             offset,
             json,
         }) => {
-            telemetry_search(&db, &pattern, limit, offset, json)?;
+            history_search(&db, &pattern, limit, offset, json)?;
         }
-        Some(TelemetryAction::Project {
+        Some(HistoryAction::Project {
             path,
             limit,
             offset,
             json,
         }) => {
-            telemetry_project(&db, &path, limit, offset, json)?;
+            history_project(&db, &path, limit, offset, json)?;
         }
-        Some(TelemetryAction::Query { sql }) => {
-            telemetry_query(&db, &sql)?;
+        Some(HistoryAction::Query { sql }) => {
+            history_query(&db, &sql)?;
         }
     }
 
     Ok(())
 }
 
-/// Show telemetry database status
+/// Show history database status
 #[allow(clippy::cast_precision_loss)] // Precision loss is acceptable for human-readable size display
-fn telemetry_status(db: &TelemetryDb) -> Result<(), Box<dyn std::error::Error>> {
+fn history_status(db: &HistoryDb) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
 
-    println!("{}", "Telemetry Database Status".bold().cyan());
+    println!("{}", "History Database Status".bold().cyan());
     println!();
 
     if let Some(path) = db.path() {
@@ -5500,8 +5501,8 @@ fn telemetry_status(db: &TelemetryDb) -> Result<(), Box<dyn std::error::Error>> 
 
 /// Show recent commands
 #[allow(clippy::fn_params_excessive_bools)]
-fn telemetry_recent(
-    db: &TelemetryDb,
+fn history_recent(
+    db: &HistoryDb,
     limit: usize,
     offset: usize,
     json: bool,
@@ -5510,13 +5511,13 @@ fn telemetry_recent(
         "SELECT id, timestamp, agent_type, working_dir, command, outcome, pack_id, pattern_name
          FROM commands ORDER BY timestamp DESC LIMIT {limit} OFFSET {offset}"
     );
-    execute_telemetry_query(db, &sql, json)
+    execute_history_query(db, &sql, json)
 }
 
 /// Show recently blocked commands
 #[allow(clippy::fn_params_excessive_bools)]
-fn telemetry_blocks(
-    db: &TelemetryDb,
+fn history_blocks(
+    db: &HistoryDb,
     limit: usize,
     offset: usize,
     json: bool,
@@ -5525,13 +5526,13 @@ fn telemetry_blocks(
         "SELECT id, timestamp, agent_type, working_dir, command, pack_id, pattern_name
          FROM commands WHERE outcome = 'deny' ORDER BY timestamp DESC LIMIT {limit} OFFSET {offset}"
     );
-    execute_telemetry_query(db, &sql, json)
+    execute_history_query(db, &sql, json)
 }
 
 /// Search commands by pattern
 #[allow(clippy::fn_params_excessive_bools)]
-fn telemetry_search(
-    db: &TelemetryDb,
+fn history_search(
+    db: &HistoryDb,
     pattern: &str,
     limit: usize,
     offset: usize,
@@ -5560,14 +5561,14 @@ fn telemetry_search(
     })?;
 
     let results: Vec<_> = rows.filter_map(Result::ok).collect();
-    display_telemetry_results(&results, json);
+    display_history_results(&results, json);
     Ok(())
 }
 
 /// Filter commands by project
 #[allow(clippy::fn_params_excessive_bools)]
-fn telemetry_project(
-    db: &TelemetryDb,
+fn history_project(
+    db: &HistoryDb,
     path: &str,
     limit: usize,
     offset: usize,
@@ -5594,12 +5595,12 @@ fn telemetry_project(
     })?;
 
     let results: Vec<_> = rows.filter_map(Result::ok).collect();
-    display_telemetry_results(&results, json);
+    display_history_results(&results, json);
     Ok(())
 }
 
 /// Execute raw SQL query
-fn telemetry_query(db: &TelemetryDb, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn history_query(db: &HistoryDb, sql: &str) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
 
     // Security: Only allow SELECT queries
@@ -5609,23 +5610,31 @@ fn telemetry_query(db: &TelemetryDb, sql: &str) -> Result<(), Box<dyn std::error
         return Ok(());
     }
 
-    // Block dangerous keywords
+    // Block dangerous SQL keywords (whole words only to avoid false positives
+    // like 'deleted' matching DELETE or 'updates_table' matching UPDATE)
     let blocked = [
         "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH", "DETACH",
     ];
+
+    // Tokenize SQL (split on non-alphanumeric, keeping underscores as part of identifiers)
+    let tokens: Vec<&str> = normalized
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|s| !s.is_empty())
+        .collect();
+
     for kw in blocked {
-        if normalized.contains(kw) {
-            println!("{}: {} is not allowed", "Error".red(), kw);
+        if tokens.contains(&kw) {
+            println!("{}: {} statements are not allowed", "Error".red(), kw);
             return Ok(());
         }
     }
 
-    execute_telemetry_query(db, sql, false)
+    execute_history_query(db, sql, false)
 }
 
 /// Execute SQL and display results
-fn execute_telemetry_query(
-    db: &TelemetryDb,
+fn execute_history_query(
+    db: &HistoryDb,
     sql: &str,
     json: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -5659,12 +5668,12 @@ fn execute_telemetry_query(
         results.push(serde_json::Value::Object(obj));
     }
 
-    display_telemetry_results(&results, json);
+    display_history_results(&results, json);
     Ok(())
 }
 
 /// Display results in JSON or table format
-fn display_telemetry_results(results: &[serde_json::Value], json: bool) {
+fn display_history_results(results: &[serde_json::Value], json: bool) {
     use colored::Colorize;
 
     if results.is_empty() {
@@ -7875,36 +7884,36 @@ exclude = ["target/**"]
     }
 
     // ========================================================================
-    // Telemetry CLI tests
+    // History CLI tests
     // ========================================================================
 
     #[test]
-    fn test_cli_parse_telemetry_status() {
-        let cli = Cli::parse_from(["dcg", "telemetry", "status"]);
-        if let Some(Command::Telemetry { action }) = cli.command {
-            assert!(matches!(action, Some(TelemetryAction::Status)));
+    fn test_cli_parse_history_status() {
+        let cli = Cli::parse_from(["dcg", "history", "status"]);
+        if let Some(Command::History { action }) = cli.command {
+            assert!(matches!(action, Some(HistoryAction::Status)));
         } else {
-            unreachable!("Expected Telemetry Status command");
+            unreachable!("Expected History Status command");
         }
     }
 
     #[test]
-    fn test_cli_parse_telemetry_default_to_status() {
-        // Running `dcg telemetry` without a subcommand should default to status
-        let cli = Cli::parse_from(["dcg", "telemetry"]);
-        if let Some(Command::Telemetry { action }) = cli.command {
+    fn test_cli_parse_history_default_to_status() {
+        // Running `dcg history` without a subcommand should default to status
+        let cli = Cli::parse_from(["dcg", "history"]);
+        if let Some(Command::History { action }) = cli.command {
             // action should be None, which is handled as Status in the handler
             assert!(action.is_none());
         } else {
-            unreachable!("Expected Telemetry command");
+            unreachable!("Expected History command");
         }
     }
 
     #[test]
-    fn test_cli_parse_telemetry_recent() {
-        let cli = Cli::parse_from(["dcg", "telemetry", "recent", "50"]);
-        if let Some(Command::Telemetry { action }) = cli.command {
-            if let Some(TelemetryAction::Recent {
+    fn test_cli_parse_history_recent() {
+        let cli = Cli::parse_from(["dcg", "history", "recent", "50"]);
+        if let Some(Command::History { action }) = cli.command {
+            if let Some(HistoryAction::Recent {
                 limit,
                 offset,
                 json,
@@ -7917,15 +7926,15 @@ exclude = ["target/**"]
                 unreachable!("Expected Recent action");
             }
         } else {
-            unreachable!("Expected Telemetry command");
+            unreachable!("Expected History command");
         }
     }
 
     #[test]
-    fn test_cli_parse_telemetry_recent_with_pagination() {
-        let cli = Cli::parse_from(["dcg", "telemetry", "recent", "--offset", "10", "--json"]);
-        if let Some(Command::Telemetry { action }) = cli.command {
-            if let Some(TelemetryAction::Recent {
+    fn test_cli_parse_history_recent_with_pagination() {
+        let cli = Cli::parse_from(["dcg", "history", "recent", "--offset", "10", "--json"]);
+        if let Some(Command::History { action }) = cli.command {
+            if let Some(HistoryAction::Recent {
                 limit,
                 offset,
                 json,
@@ -7938,15 +7947,15 @@ exclude = ["target/**"]
                 unreachable!("Expected Recent action");
             }
         } else {
-            unreachable!("Expected Telemetry command");
+            unreachable!("Expected History command");
         }
     }
 
     #[test]
-    fn test_cli_parse_telemetry_blocks() {
-        let cli = Cli::parse_from(["dcg", "telemetry", "blocks", "100", "--json"]);
-        if let Some(Command::Telemetry { action }) = cli.command {
-            if let Some(TelemetryAction::Blocks {
+    fn test_cli_parse_history_blocks() {
+        let cli = Cli::parse_from(["dcg", "history", "blocks", "100", "--json"]);
+        if let Some(Command::History { action }) = cli.command {
+            if let Some(HistoryAction::Blocks {
                 limit,
                 offset,
                 json,
@@ -7959,15 +7968,15 @@ exclude = ["target/**"]
                 unreachable!("Expected Blocks action");
             }
         } else {
-            unreachable!("Expected Telemetry command");
+            unreachable!("Expected History command");
         }
     }
 
     #[test]
-    fn test_cli_parse_telemetry_search() {
-        let cli = Cli::parse_from(["dcg", "telemetry", "search", "git reset"]);
-        if let Some(Command::Telemetry { action }) = cli.command {
-            if let Some(TelemetryAction::Search {
+    fn test_cli_parse_history_search() {
+        let cli = Cli::parse_from(["dcg", "history", "search", "git reset"]);
+        if let Some(Command::History { action }) = cli.command {
+            if let Some(HistoryAction::Search {
                 pattern,
                 limit,
                 offset: _,
@@ -7981,22 +7990,22 @@ exclude = ["target/**"]
                 unreachable!("Expected Search action");
             }
         } else {
-            unreachable!("Expected Telemetry command");
+            unreachable!("Expected History command");
         }
     }
 
     #[test]
-    fn test_cli_parse_telemetry_project() {
+    fn test_cli_parse_history_project() {
         let cli = Cli::parse_from([
             "dcg",
-            "telemetry",
+            "history",
             "project",
             "/path/to/project",
             "--limit",
             "10",
         ]);
-        if let Some(Command::Telemetry { action }) = cli.command {
-            if let Some(TelemetryAction::Project {
+        if let Some(Command::History { action }) = cli.command {
+            if let Some(HistoryAction::Project {
                 path,
                 limit,
                 offset: _,
@@ -8009,26 +8018,26 @@ exclude = ["target/**"]
                 unreachable!("Expected Project action");
             }
         } else {
-            unreachable!("Expected Telemetry command");
+            unreachable!("Expected History command");
         }
     }
 
     #[test]
-    fn test_cli_parse_telemetry_query() {
-        let cli = Cli::parse_from(["dcg", "telemetry", "query", "SELECT * FROM commands"]);
-        if let Some(Command::Telemetry { action }) = cli.command {
-            if let Some(TelemetryAction::Query { sql }) = action {
+    fn test_cli_parse_history_query() {
+        let cli = Cli::parse_from(["dcg", "history", "query", "SELECT * FROM commands"]);
+        if let Some(Command::History { action }) = cli.command {
+            if let Some(HistoryAction::Query { sql }) = action {
                 assert_eq!(sql, "SELECT * FROM commands");
             } else {
                 unreachable!("Expected Query action");
             }
         } else {
-            unreachable!("Expected Telemetry command");
+            unreachable!("Expected History command");
         }
     }
 
     #[test]
-    fn test_telemetry_sql_injection_protection() {
+    fn test_history_sql_injection_protection() {
         // Test that dangerous keywords are detected
         let dangerous_queries = [
             "DELETE FROM commands",
@@ -8060,7 +8069,7 @@ exclude = ["target/**"]
     }
 
     #[test]
-    fn test_telemetry_sql_select_requirement() {
+    fn test_history_sql_select_requirement() {
         // Test that queries must start with SELECT
         let valid_queries = [
             "SELECT * FROM commands",
@@ -8088,6 +8097,44 @@ exclude = ["target/**"]
                 !trimmed.starts_with("SELECT"),
                 "Query '{query}' should NOT be recognized as starting with SELECT"
             );
+        }
+    }
+
+    #[test]
+    fn test_history_sql_no_false_positives_on_substrings() {
+        // Regression test: ensure words containing blocked keywords as substrings
+        // are NOT flagged as dangerous (e.g., 'deleted' should not match 'DELETE')
+        let safe_queries = [
+            "SELECT * FROM commands WHERE outcome = 'deleted'",
+            "SELECT * FROM updates_table",
+            "SELECT creator_id FROM projects",
+            "SELECT * FROM commands WHERE status = 'undeleted'",
+            "SELECT droplet_id FROM servers",
+            "SELECT * FROM alterations",
+            "SELECT * FROM commands WHERE action = 'created'",
+            "SELECT attachment_id FROM files",
+            "SELECT * FROM detached_records",
+        ];
+
+        let blocked = [
+            "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH", "DETACH",
+        ];
+
+        for query in &safe_queries {
+            let normalized = query.to_uppercase();
+            // Tokenize SQL (split on non-alphanumeric, keeping underscores)
+            let tokens: Vec<&str> = normalized
+                .split(|c: char| !c.is_alphanumeric() && c != '_')
+                .filter(|s| !s.is_empty())
+                .collect();
+
+            for kw in &blocked {
+                let found = tokens.contains(kw);
+                assert!(
+                    !found,
+                    "Query '{query}' should NOT be flagged for containing '{kw}' (false positive)"
+                );
+            }
         }
     }
 }

@@ -10,7 +10,7 @@
 //! - Seed data support for pre-populating tests
 
 use chrono::{DateTime, Duration, Utc};
-use destructive_command_guard::telemetry::{CommandEntry, Outcome, TelemetryDb};
+use destructive_command_guard::history::{CommandEntry, HistoryDb, Outcome};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
 use tempfile::TempDir;
@@ -33,7 +33,7 @@ static TEST_DB_COUNTER: AtomicU32 = AtomicU32::new(0);
 /// ```
 pub struct TestDb {
     /// The telemetry database handle.
-    pub db: TelemetryDb,
+    pub db: HistoryDb,
     /// Path to the database file.
     pub path: PathBuf,
     /// Temporary directory (dropped = deleted).
@@ -54,8 +54,8 @@ impl TestDb {
         let id = TEST_DB_COUNTER.fetch_add(1, Ordering::SeqCst);
         let path = temp_dir.path().join(format!("test_telemetry_{id}.db"));
 
-        let db = TelemetryDb::open(Some(path.clone()))
-            .expect("Failed to create test telemetry database");
+        let db =
+            HistoryDb::open(Some(path.clone())).expect("Failed to create test telemetry database");
 
         Self {
             db,
@@ -102,8 +102,8 @@ impl TestDb {
     ///
     /// Faster than file-based but cannot test file operations.
     #[must_use]
-    pub fn in_memory() -> TelemetryDb {
-        TelemetryDb::open_in_memory().expect("Failed to create in-memory test database")
+    pub fn in_memory() -> HistoryDb {
+        HistoryDb::open_in_memory().expect("Failed to create in-memory test database")
     }
 }
 

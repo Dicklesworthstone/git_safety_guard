@@ -3,7 +3,7 @@
 //! Provides realistic command data for testing various telemetry scenarios.
 
 use super::db::TestCommand;
-use destructive_command_guard::telemetry::Outcome;
+use destructive_command_guard::history::Outcome;
 
 /// Standard mix of commands for comprehensive testing.
 ///

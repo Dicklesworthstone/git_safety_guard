@@ -1,14 +1,14 @@
-//! Integration test: full telemetry pipeline (log -> query -> fts).
+//! Integration test: full history pipeline (log -> query -> fts).
 
 mod common;
 
 use chrono::Utc;
 use common::db::TestDb;
 use common::logging::init_test_logging;
-use destructive_command_guard::telemetry::{CommandEntry, Outcome};
+use destructive_command_guard::history::{CommandEntry, Outcome};
 
 #[test]
-fn test_full_telemetry_pipeline() {
+fn test_full_history_pipeline() {
     init_test_logging();
 
     let test_db = TestDb::new();
@@ -34,7 +34,7 @@ fn test_full_telemetry_pipeline() {
         .query_row(
             "SELECT command, outcome FROM commands WHERE id = ?1",
             [id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row: &rusqlite::Row| Ok((row.get(0)?, row.get(1)?)),
         )
         .expect("query stored command");
 
@@ -47,7 +47,7 @@ fn test_full_telemetry_pipeline() {
         .query_row(
             "SELECT COUNT(*) FROM commands_fts WHERE commands_fts MATCH 'git'",
             [],
-            |row| row.get(0),
+            |row: &rusqlite::Row| row.get(0),
         )
         .expect("fts query");
     assert_eq!(fts_count, 1);
