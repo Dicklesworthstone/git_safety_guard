@@ -17,7 +17,7 @@ use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
 
 /// Current schema version for migrations.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Default database filename.
 pub const DEFAULT_DB_FILENAME: &str = "telemetry.db";
@@ -283,6 +283,14 @@ impl TelemetryDb {
         Ok(version)
     }
 
+    /// Attempt to open the telemetry database, returning None on failure.
+    ///
+    /// This is intended for fail-open paths (telemetry should never block the hook).
+    #[must_use]
+    pub fn try_open(path: Option<PathBuf>) -> Option<Self> {
+        Self::open(path).ok()
+    }
+
     /// Get the database file size in bytes.
     ///
     /// Returns 0 for in-memory databases.
@@ -370,7 +378,8 @@ impl TelemetryDb {
         self.conn.execute(
             r"CREATE TABLE IF NOT EXISTS schema_version (
                 version INTEGER PRIMARY KEY,
-                applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+                description TEXT NOT NULL DEFAULT 'Initial schema'
             )",
             [],
         )?;
@@ -489,8 +498,8 @@ impl TelemetryDb {
 
         // Record schema version
         self.conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?1)",
-            params![CURRENT_SCHEMA_VERSION],
+            "INSERT INTO schema_version (version, description) VALUES (?1, ?2)",
+            params![CURRENT_SCHEMA_VERSION, "Initial schema"],
         )?;
 
         Ok(())
@@ -498,11 +507,10 @@ impl TelemetryDb {
 
     /// Run migrations from a given version to current.
     fn run_migrations(&self, from_version: u32) -> Result<(), TelemetryError> {
-        // For now, we only have v1. Future migrations will be added here.
-        // Example:
-        // if from_version < 2 {
-        //     self.migrate_v1_to_v2()?;
-        // }
+        // Apply migrations in order.
+        if from_version < 2 {
+            self.migrate_v1_to_v2()?;
+        }
 
         // Ensure we're at the expected version
         let current = self.get_schema_version()?;
@@ -516,6 +524,30 @@ impl TelemetryDb {
         // Suppress unused variable warning (from_version will be used in future migrations)
         let _ = from_version;
 
+        Ok(())
+    }
+
+    fn schema_version_has_description(&self) -> Result<bool, TelemetryError> {
+        let columns: Vec<String> = self
+            .conn
+            .prepare("PRAGMA table_info(schema_version)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+        Ok(columns.iter().any(|col| col == "description"))
+    }
+
+    fn migrate_v1_to_v2(&self) -> Result<(), TelemetryError> {
+        if !self.schema_version_has_description()? {
+            self.conn.execute(
+                "ALTER TABLE schema_version ADD COLUMN description TEXT NOT NULL DEFAULT 'Initial schema'",
+                [],
+            )?;
+        }
+
+        self.conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (?1, ?2)",
+            params![2_u32, "Add schema version descriptions"],
+        )?;
         Ok(())
     }
 
@@ -539,6 +571,22 @@ mod tests {
         Option<String>,
         Option<String>,
     );
+
+    fn reset_schema_version_to_v1(db: &TelemetryDb) {
+        db.conn.execute("DROP TABLE schema_version", []).unwrap();
+        db.conn
+            .execute(
+                r"CREATE TABLE schema_version (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+                )",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute("INSERT INTO schema_version (version) VALUES (1)", [])
+            .unwrap();
+    }
 
     fn test_entry() -> CommandEntry {
         CommandEntry {
@@ -672,6 +720,93 @@ mod tests {
         let db = TelemetryDb::open_in_memory().unwrap();
         let version = db.get_schema_version().unwrap();
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn test_database_creation() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        assert!(!db_path.exists());
+        let _db = TelemetryDb::open(Some(db_path.clone())).unwrap();
+        assert!(db_path.exists());
+    }
+
+    #[test]
+    fn test_parent_directory_created() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("nested/deep/test.db");
+
+        let _db = TelemetryDb::open(Some(db_path.clone())).unwrap();
+        assert!(db_path.exists());
+    }
+
+    #[test]
+    fn test_wal_mode_enabled() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("wal.db");
+        let db = TelemetryDb::open(Some(db_path)).unwrap();
+
+        let mode: String = db
+            .conn
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    #[test]
+    fn test_try_open_corruption_returns_none() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db_path = temp_dir.path().join("corrupt.db");
+
+        std::fs::write(&db_path, b"not a valid sqlite db").unwrap();
+        let result = TelemetryDb::try_open(Some(db_path));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_try_open_permission_denied_returns_none() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir_path = temp_dir.path().join("readonly");
+        std::fs::create_dir(&dir_path).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir_path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        }
+
+        let db_path = dir_path.join("test.db");
+        let result = TelemetryDb::try_open(Some(db_path));
+        assert!(result.is_none());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_migration_adds_schema_version_description() {
+        let db = TelemetryDb::open_in_memory().unwrap();
+        reset_schema_version_to_v1(&db);
+
+        db.run_migrations(1).unwrap();
+
+        let version = db.get_schema_version().unwrap();
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+
+        let description_count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM schema_version WHERE description IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(description_count > 0);
     }
 
     #[test]
