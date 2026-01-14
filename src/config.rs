@@ -13,6 +13,7 @@ use std::collections::HashSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 /// Environment variable prefix for all config options.
 const ENV_PREFIX: &str = "DCG";
@@ -59,6 +60,9 @@ pub struct Config {
     /// Structured logging configuration.
     pub logging: crate::logging::LoggingConfig,
 
+    /// Command telemetry configuration.
+    pub telemetry: TelemetryConfig,
+
     /// Project-specific configurations (keyed by absolute path).
     #[serde(default)]
     pub projects: std::collections::HashMap<String, ProjectConfig>,
@@ -89,6 +93,7 @@ struct ConfigLayer {
     heredoc: Option<HeredocConfig>,
     confidence: Option<ConfidenceConfigLayer>,
     logging: Option<LoggingConfigLayer>,
+    telemetry: Option<TelemetryConfigLayer>,
     projects: Option<std::collections::HashMap<String, ProjectConfig>>,
 }
 
@@ -109,6 +114,15 @@ struct LoggingConfigLayer {
     format: Option<crate::logging::LogFormat>,
     redaction: Option<RedactionConfigLayer>,
     events: Option<LogEventFilterLayer>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct TelemetryConfigLayer {
+    enabled: Option<bool>,
+    redaction_mode: Option<TelemetryRedactionMode>,
+    retention_days: Option<u32>,
+    max_size_mb: Option<u32>,
+    database_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -995,6 +1009,106 @@ pub struct BlockOverride {
     pub reason: String,
 }
 
+/// Redaction mode for command telemetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TelemetryRedactionMode {
+    /// Store commands without redaction.
+    None,
+    /// Redact sensitive values using pattern-based filters.
+    #[default]
+    Pattern,
+    /// Fully redact command contents.
+    Full,
+}
+
+impl std::str::FromStr for TelemetryRedactionMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "none" => Ok(Self::None),
+            "pattern" => Ok(Self::Pattern),
+            "full" => Ok(Self::Full),
+            _ => Err(format!("invalid telemetry redaction mode: {value}")),
+        }
+    }
+}
+
+/// Telemetry configuration options.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TelemetryConfig {
+    /// Enable command telemetry collection.
+    pub enabled: bool,
+    /// Redaction mode for stored commands.
+    pub redaction_mode: TelemetryRedactionMode,
+    /// Retention window in days.
+    pub retention_days: u32,
+    /// Maximum database size in megabytes.
+    pub max_size_mb: u32,
+    /// Optional database file path override.
+    pub database_path: Option<String>,
+}
+
+impl TelemetryConfig {
+    /// Default retention window (days).
+    pub const DEFAULT_RETENTION_DAYS: u32 = 90;
+    /// Default maximum database size (MB).
+    pub const DEFAULT_MAX_SIZE_MB: u32 = 500;
+    /// Maximum allowed retention window (days).
+    pub const MAX_RETENTION_DAYS: u32 = 3650;
+
+    /// Expand the configured database path, if set.
+    #[must_use]
+    pub fn expanded_database_path(&self) -> Option<PathBuf> {
+        let raw = self.database_path.as_ref()?;
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        let had_tilde_prefix = trimmed.starts_with('~');
+        let (mut path, _tilde_expanded) = expand_tilde_path(trimmed);
+        if !had_tilde_prefix && path.is_relative() {
+            if let Ok(cwd) = env::current_dir() {
+                path = cwd.join(path);
+            }
+        }
+        Some(path)
+    }
+
+    /// Validate telemetry settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid retention values.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.retention_days == 0 {
+            return Err("telemetry retention_days must be at least 1".to_string());
+        }
+        if self.retention_days > Self::MAX_RETENTION_DAYS {
+            return Err(format!(
+                "telemetry retention_days must be <= {}",
+                Self::MAX_RETENTION_DAYS
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            redaction_mode: TelemetryRedactionMode::Pattern,
+            retention_days: Self::DEFAULT_RETENTION_DAYS,
+            max_size_mb: Self::DEFAULT_MAX_SIZE_MB,
+            database_path: None,
+        }
+    }
+}
+
 // ============================================================================
 // Compiled Overrides (Runtime-Only, Pre-compiled Regexes)
 // ============================================================================
@@ -1363,6 +1477,10 @@ impl Config {
             self.merge_logging_layer(logging);
         }
 
+        if let Some(telemetry) = other.telemetry {
+            self.merge_telemetry_layer(telemetry);
+        }
+
         // Merge project configs
         if let Some(projects) = other.projects {
             self.projects.extend(projects);
@@ -1494,6 +1612,24 @@ impl Config {
         }
     }
 
+    fn merge_telemetry_layer(&mut self, telemetry: TelemetryConfigLayer) {
+        if let Some(enabled) = telemetry.enabled {
+            self.telemetry.enabled = enabled;
+        }
+        if let Some(redaction_mode) = telemetry.redaction_mode {
+            self.telemetry.redaction_mode = redaction_mode;
+        }
+        if let Some(retention_days) = telemetry.retention_days {
+            self.telemetry.retention_days = retention_days;
+        }
+        if let Some(max_size_mb) = telemetry.max_size_mb {
+            self.telemetry.max_size_mb = max_size_mb;
+        }
+        if let Some(database_path) = telemetry.database_path {
+            self.telemetry.database_path = Some(database_path);
+        }
+    }
+
     /// Apply environment variable overrides.
     fn apply_env_overrides(&mut self) {
         self.apply_env_overrides_from(|key| env::var(key).ok());
@@ -1569,6 +1705,24 @@ impl Config {
         // DCG_POLICY_OBSERVE_UNTIL=2030-01-01T00:00:00Z
         if let Some(observe_until) = get_env(&format!("{ENV_PREFIX}_POLICY_OBSERVE_UNTIL")) {
             self.policy.observe_until = ObserveUntil::parse(&observe_until);
+        }
+
+        // -----------------------------------------------------------------
+        // Telemetry config (env overrides)
+        // -----------------------------------------------------------------
+
+        // DCG_TELEMETRY_ENABLED=true|false|1|0
+        if let Some(enabled) = get_env(&format!("{ENV_PREFIX}_TELEMETRY_ENABLED")) {
+            if let Some(parsed) = parse_env_bool(&enabled) {
+                self.telemetry.enabled = parsed;
+            }
+        }
+
+        // DCG_TELEMETRY_REDACTION_MODE=none|pattern|full
+        if let Some(mode) = get_env(&format!("{ENV_PREFIX}_TELEMETRY_REDACTION_MODE")) {
+            if let Ok(parsed) = TelemetryRedactionMode::from_str(&mode) {
+                self.telemetry.redaction_mode = parsed;
+            }
         }
     }
 
@@ -1671,6 +1825,7 @@ impl Config {
             heredoc: HeredocConfig::default(),
             confidence: ConfidenceConfig::default(),
             logging: crate::logging::LoggingConfig::default(),
+            telemetry: TelemetryConfig::default(),
             projects: std::collections::HashMap::new(),
         }
     }
@@ -1824,6 +1979,24 @@ fallback_on_parse_error = true
 fallback_on_timeout = true
 
 #─────────────────────────────────────────────────────────────
+# TELEMETRY
+#─────────────────────────────────────────────────────────────
+
+[telemetry]
+# Enable command telemetry (opt-in).
+enabled = false
+
+# Redaction mode for stored commands: "pattern" | "full" | "none"
+redaction_mode = "pattern"
+
+# Retention window and database size limits.
+retention_days = 90
+max_size_mb = 500
+
+# Optional database path override.
+# database_path = "~/.config/dcg/telemetry.db"
+
+#─────────────────────────────────────────────────────────────
 # PROJECT-SPECIFIC OVERRIDES
 #─────────────────────────────────────────────────────────────
 
@@ -1945,6 +2118,7 @@ fn parse_timestamp_as_utc(value: &str) -> Option<DateTime<Utc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn test_default_config() {
@@ -2021,6 +2195,113 @@ mod tests {
         // Remove comment lines for parsing test
         let _config: Result<Config, _> = toml::from_str(&sample);
         // Note: The sample has comments which toml handles fine
+    }
+
+    #[test]
+    fn test_telemetry_config_defaults() {
+        let config = TelemetryConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.redaction_mode, TelemetryRedactionMode::Pattern);
+        assert_eq!(
+            config.retention_days,
+            TelemetryConfig::DEFAULT_RETENTION_DAYS
+        );
+        assert_eq!(config.max_size_mb, TelemetryConfig::DEFAULT_MAX_SIZE_MB);
+    }
+
+    #[test]
+    fn test_telemetry_config_from_toml() {
+        let input = r#"
+[telemetry]
+enabled = true
+redaction_mode = "full"
+retention_days = 30
+max_size_mb = 250
+database_path = "/tmp/dcg-telemetry.db"
+"#;
+        let config: Config = toml::from_str(input).expect("config parses");
+        assert!(config.telemetry.enabled);
+        assert_eq!(
+            config.telemetry.redaction_mode,
+            TelemetryRedactionMode::Full
+        );
+        assert_eq!(config.telemetry.retention_days, 30);
+        assert_eq!(config.telemetry.max_size_mb, 250);
+        assert_eq!(
+            config.telemetry.database_path.as_deref(),
+            Some("/tmp/dcg-telemetry.db")
+        );
+    }
+
+    #[test]
+    fn test_telemetry_redaction_mode_parsing() {
+        assert_eq!(
+            TelemetryRedactionMode::from_str("none").expect("none"),
+            TelemetryRedactionMode::None
+        );
+        assert_eq!(
+            TelemetryRedactionMode::from_str("pattern").expect("pattern"),
+            TelemetryRedactionMode::Pattern
+        );
+        assert_eq!(
+            TelemetryRedactionMode::from_str("full").expect("full"),
+            TelemetryRedactionMode::Full
+        );
+        assert!(TelemetryRedactionMode::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_telemetry_env_overrides() {
+        let env_map: std::collections::HashMap<&str, &str> = std::collections::HashMap::from([
+            ("DCG_TELEMETRY_ENABLED", "true"),
+            ("DCG_TELEMETRY_REDACTION_MODE", "full"),
+        ]);
+        let mut config = Config::default();
+        config.apply_env_overrides_from(|key| env_map.get(key).map(|v| (*v).to_string()));
+
+        assert!(config.telemetry.enabled);
+        assert_eq!(
+            config.telemetry.redaction_mode,
+            TelemetryRedactionMode::Full
+        );
+    }
+
+    #[test]
+    fn test_telemetry_database_path_expansion() {
+        if dirs::home_dir().is_none() {
+            return;
+        }
+
+        let config = TelemetryConfig {
+            database_path: Some("~/.config/dcg/telemetry.db".to_string()),
+            ..Default::default()
+        };
+        let expanded = config
+            .expanded_database_path()
+            .expect("expanded database path");
+        assert!(!expanded.to_string_lossy().contains('~'));
+        assert!(expanded.to_string_lossy().contains("dcg"));
+    }
+
+    #[test]
+    fn test_telemetry_retention_validation() {
+        let config = TelemetryConfig {
+            retention_days: 0,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+
+        let config = TelemetryConfig {
+            retention_days: TelemetryConfig::MAX_RETENTION_DAYS + 1,
+            ..Default::default()
+        };
+        assert!(config.validate().is_err());
+
+        let config = TelemetryConfig {
+            retention_days: TelemetryConfig::DEFAULT_RETENTION_DAYS,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
     }
 
     #[test]
