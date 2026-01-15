@@ -556,20 +556,35 @@ MIIEpAIBAAKCAQEA...
         // Quoted with spaces
         let input = r#"export AWS_SECRET_ACCESS_KEY="secret with spaces""#;
         let redacted = redact_secrets(input);
-        assert!(!redacted.contains("with spaces"), "Secret part leaked (quoted)!");
+        assert!(
+            !redacted.contains("with spaces"),
+            "Secret part leaked (quoted)!"
+        );
         assert!(redacted.contains("[AWS_SECRET]"), "Missing label (quoted)");
 
         // Single quoted
-        let input = r#"export AWS_SECRET_ACCESS_KEY='secret with spaces'"#;
+        let input = r"export AWS_SECRET_ACCESS_KEY='secret with spaces'";
         let redacted = redact_secrets(input);
-        assert!(!redacted.contains("with spaces"), "Secret part leaked (single quoted)!");
-        assert!(redacted.contains("[AWS_SECRET]"), "Missing label (single quoted)");
+        assert!(
+            !redacted.contains("with spaces"),
+            "Secret part leaked (single quoted)!"
+        );
+        assert!(
+            redacted.contains("[AWS_SECRET]"),
+            "Missing label (single quoted)"
+        );
 
         // Unquoted (no spaces)
-        let input = r#"export AWS_SECRET_ACCESS_KEY=secret_no_spaces"#;
+        let input = r"export AWS_SECRET_ACCESS_KEY=secret_no_spaces";
         let redacted = redact_secrets(input);
-        assert!(!redacted.contains("secret_no_spaces"), "Secret part leaked (unquoted)!");
-        assert!(redacted.contains("[AWS_SECRET]"), "Missing label (unquoted)");
+        assert!(
+            !redacted.contains("secret_no_spaces"),
+            "Secret part leaked (unquoted)!"
+        );
+        assert!(
+            redacted.contains("[AWS_SECRET]"),
+            "Missing label (unquoted)"
+        );
 
         // Quoted password
         let input = r#"password="my secret password""#;
