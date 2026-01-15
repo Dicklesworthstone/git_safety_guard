@@ -265,7 +265,8 @@ fn main() {
     let deadline = Deadline::new(HOOK_EVALUATION_BUDGET);
 
     // Only process Bash tool invocations
-    if hook_input.tool_name.as_deref() != Some("Bash") {
+    let tool = hook_input.tool_name.as_deref();
+    if tool != Some("Bash") && tool != Some("run_shell_command") {
         return;
     }
 

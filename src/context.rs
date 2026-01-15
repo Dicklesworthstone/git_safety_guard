@@ -834,6 +834,32 @@ pub static SAFE_STRING_REGISTRY: SafeStringRegistry = SafeStringRegistry {
         // Cargo/npm - package descriptions
         SafeFlagEntry::long("cargo", "--message"),
         SafeFlagEntry::long("npm", "--message"),
+        // Search context flags (consume a value, safe to mask)
+        SafeFlagEntry::both("grep", "-A", "--after-context"),
+        SafeFlagEntry::both("grep", "-B", "--before-context"),
+        SafeFlagEntry::both("grep", "-C", "--context"),
+        SafeFlagEntry::both("grep", "-m", "--max-count"),
+        // rg context flags
+        SafeFlagEntry::both("rg", "-A", "--after-context"),
+        SafeFlagEntry::both("rg", "-B", "--before-context"),
+        SafeFlagEntry::both("rg", "-C", "--context"),
+        SafeFlagEntry::both("rg", "-m", "--max-count"),
+        // rg other flags taking values (to avoid shifting positional args)
+        SafeFlagEntry::both("rg", "-t", "--type"),
+        SafeFlagEntry::both("rg", "-g", "--glob"),
+        SafeFlagEntry::both("rg", "-f", "--file"),
+        SafeFlagEntry::both("rg", "-M", "--max-columns"),
+        // ag context flags
+        SafeFlagEntry::both("ag", "-A", "--after"),
+        SafeFlagEntry::both("ag", "-B", "--before"),
+        SafeFlagEntry::both("ag", "-C", "--context"),
+        SafeFlagEntry::both("ag", "-m", "--max-count"),
+        SafeFlagEntry::both("ag", "-G", "--file-search-regex"),
+        // ack context flags
+        SafeFlagEntry::both("ack", "-A", "--after-context"),
+        SafeFlagEntry::both("ack", "-B", "--before-context"),
+        SafeFlagEntry::both("ack", "-C", "--context"),
+        SafeFlagEntry::both("ack", "-m", "--max-count"),
     ],
 };
 
@@ -2774,7 +2800,7 @@ mod tests {
         let sanitized = sanitize_for_pattern_matching(cmd);
 
         assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
-        assert!(!sanitized.as_ref().contains("rm rf"));
+        assert!(!sanitized.as_ref().contains("rm -rf"));
         assert!(sanitized.as_ref().contains("--priority 2"));
     }
 

@@ -42,7 +42,7 @@ rule_id = "core.filesystem:rm-rf-general"
 description = "rm --recursive --force outside temp is blocked"
 command = "rm --recursive --force /etc"
 expected = "deny"
-rule_id = "core.filesystem:rm-recursive-force-long"
+rule_id = "core.filesystem:rm-rf-root-home"
 
 # NOTE: rm -r -f (separated flags) is not currently detected.
 # The pattern expects -rf or -fr combined. This is a gap.

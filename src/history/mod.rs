@@ -42,6 +42,7 @@ use crate::logging::{RedactionConfig, RedactionMode};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use tracing::warn;
 
 pub use schema::{
     CURRENT_SCHEMA_VERSION, CommandEntry, DEFAULT_DB_FILENAME, HistoryDb, HistoryError, Outcome,
@@ -129,7 +130,9 @@ impl HistoryWriter {
     pub fn log(&self, mut entry: CommandEntry) {
         entry.command = redact_for_history(&entry.command, self.redaction_mode);
         if let Some(sender) = &self.sender {
-            let _ = sender.send(HistoryMessage::Entry(Box::new(entry)));
+            if let Err(e) = sender.send(HistoryMessage::Entry(Box::new(entry))) {
+                warn!("Failed to queue history entry: {e}");
+            }
         }
     }
 
@@ -137,7 +140,9 @@ impl HistoryWriter {
     pub fn flush(&self) {
         if let Some(sender) = &self.sender {
             let (ack_tx, _ack_rx) = mpsc::channel();
-            let _ = sender.send(HistoryMessage::Flush(ack_tx));
+            if let Err(e) = sender.send(HistoryMessage::Flush(ack_tx)) {
+                warn!("Failed to send history flush request: {e}");
+            }
         }
     }
 
@@ -167,10 +172,13 @@ fn history_worker(db: HistoryDb, receiver: mpsc::Receiver<HistoryMessage>) {
     while let Ok(message) = receiver.recv() {
         match message {
             HistoryMessage::Entry(entry) => {
-                let _ = db.log_command(&entry);
+                if let Err(e) = db.log_command(&entry) {
+                    warn!("Failed to log command to history database: {e}");
+                }
             }
             HistoryMessage::Flush(ack) => {
                 let should_shutdown = drain_history_messages(&db, &receiver);
+                // Ack send failure is not critical - the caller will timeout
                 let _ = ack.send(());
                 if should_shutdown {
                     break;
@@ -188,7 +196,9 @@ fn drain_history_messages(db: &HistoryDb, receiver: &mpsc::Receiver<HistoryMessa
     for message in receiver.try_iter() {
         match message {
             HistoryMessage::Entry(entry) => {
-                let _ = db.log_command(&entry);
+                if let Err(e) = db.log_command(&entry) {
+                    warn!("Failed to log command to history database: {e}");
+                }
             }
             HistoryMessage::Flush(ack) => {
                 let _ = ack.send(());

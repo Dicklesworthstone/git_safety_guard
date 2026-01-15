@@ -114,12 +114,29 @@ impl AllowOnceEntry {
         self.consumed_at.is_some()
     }
 
+    /// Check if the given working directory matches the scope of this allow-once entry.
+    ///
+    /// For `Cwd` scope, the paths must match exactly.
+    /// For `Project` scope, the cwd must be within the scope path. When possible,
+    /// paths are canonicalized to prevent path traversal attacks via symlinks.
     #[must_use]
     pub fn matches_scope(&self, cwd: &Path) -> bool {
         let scope_path = Path::new(&self.scope_path);
         match self.scope_kind {
             AllowOnceScopeKind::Cwd => cwd == scope_path,
-            AllowOnceScopeKind::Project => cwd.starts_with(scope_path),
+            AllowOnceScopeKind::Project => {
+                // Try to canonicalize both paths to resolve symlinks and ../ sequences.
+                // This prevents path traversal attacks where an attacker creates
+                // symlinks or uses relative paths to bypass scope restrictions.
+                // If canonicalization fails (e.g., path doesn't exist), fall back
+                // to simple prefix matching for backward compatibility.
+                match (cwd.canonicalize(), scope_path.canonicalize()) {
+                    (Ok(cwd_canonical), Ok(scope_canonical)) => {
+                        cwd_canonical.starts_with(scope_canonical)
+                    }
+                    _ => cwd.starts_with(scope_path),
+                }
+            }
         }
     }
 }
@@ -1040,13 +1057,35 @@ fn redact_for_log(command: &str, redaction: &RedactionConfig) -> String {
 fn open_locked(path: &Path) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        // Secure parent directory permissions on Unix (owner-only access)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
+
+    // Build options with secure permissions on Unix
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .mode(0o600) // Owner read+write only
+            .open(path)?
+    };
+
+    #[cfg(not(unix))]
     let file = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
         .truncate(false)
         .open(path)?;
+
     file.lock_exclusive()?;
     Ok(file)
 }
