@@ -60,9 +60,6 @@ pub struct SimulateLimits {
     pub max_bytes: Option<usize>,
     /// Maximum command length in bytes (longer commands are truncated/skipped)
     pub max_command_bytes: Option<usize>,
-    /// Maximum line length in bytes (default: 1MB).
-    /// Lines exceeding this are treated as malformed or skipped to prevent OOM.
-    pub max_line_bytes: Option<usize>,
 }
 
 impl Default for SimulateLimits {
@@ -71,7 +68,6 @@ impl Default for SimulateLimits {
             max_lines: None,
             max_bytes: None,
             max_command_bytes: Some(64 * 1024), // 64KB default max command
-            max_line_bytes: Some(1024 * 1024),  // 1MB default max line
         }
     }
 }
@@ -165,44 +161,13 @@ impl<R: Read> SimulateParser<R> {
             }
         }
 
-        // Read next line with size limit
+        // Read next line
         let mut line = String::new();
-        let max_len = self.limits.max_line_bytes.unwrap_or(usize::MAX);
-
-        match read_line_bounded(&mut self.reader, &mut line, max_len) {
+        match self.reader.read_line(&mut line) {
             Ok(0) => return None, // EOF
             Ok(n) => {
                 self.stats.lines_read += 1;
                 self.stats.bytes_read += n;
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => {
-                // Line too long
-                self.stats.lines_read += 1;
-                self.stats.malformed_count += 1;
-                // consume remainder of line to recover sync?
-                // For now, just report error. The reader state is at max_len.
-                // We should probably consume past limit.
-
-                // Let's just return Malformed error.
-                if self.strict {
-                    return Some(Err(ParseError::Malformed {
-                        line: self.stats.lines_read,
-                        error: format!("line exceeds max length ({max_len} bytes)"),
-                    }));
-                }
-
-                // If not strict, we treat as Malformed but need to advance stream to next line
-                // to avoid re-reading the tail as a new line.
-                // However, simplistic recovery might be dangerous.
-                // Let's just return Malformed and let the loop continue (which might read tail).
-                // Actually, if we read partial line, next call reads tail.
-                // Tail might be valid command. This is bad for "Simulate".
-                // We should skip until newline.
-                consume_until_newline(&mut self.reader);
-
-                return Some(Ok(ParsedLine::Malformed {
-                    error: format!("line exceeds max length ({max_len} bytes)"),
-                }));
             }
             Err(e) => {
                 return Some(Err(ParseError::Io(e.to_string())));
@@ -1124,65 +1089,6 @@ pub fn format_json_output(
 }
 
 // =============================================================================
-// Helpers
-// =============================================================================
-
-fn read_line_bounded<R: BufRead>(
-    reader: &mut R,
-    buf: &mut String,
-    max_len: usize,
-) -> std::io::Result<usize> {
-    let mut total_read = 0;
-    loop {
-        let available = reader.fill_buf()?;
-        let available_len = available.len();
-        if available_len == 0 {
-            break;
-        }
-
-        let nl_pos = available.iter().position(|&b| b == b'\n');
-        let to_read = nl_pos.map_or(available_len, |pos| pos + 1);
-
-        if total_read + to_read > max_len {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "line too long",
-            ));
-        }
-
-        let chunk = &available[..to_read];
-        let chunk_str = std::str::from_utf8(chunk)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-        buf.push_str(chunk_str);
-        reader.consume(to_read);
-        total_read += to_read;
-
-        if nl_pos.is_some() {
-            break;
-        }
-    }
-    Ok(total_read)
-}
-
-fn consume_until_newline<R: BufRead>(reader: &mut R) {
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(buf) if !buf.is_empty() => buf,
-            _ => return,
-        };
-
-        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
-            reader.consume(pos + 1);
-            return;
-        }
-
-        let len = available.len();
-        reader.consume(len);
-    }
-}
-
-// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1689,29 +1595,5 @@ echo world
                 assert_eq!(a.count, b.count);
             }
         }
-    }
-
-    #[test]
-    fn parser_respects_line_length_limit() {
-        // 10 byte limit
-        let limits = SimulateLimits {
-            max_line_bytes: Some(10),
-            ..Default::default()
-        };
-
-        // "short" is 5 bytes + \n = 6 bytes (ok)
-        // "this is too long" is > 10 bytes (fail)
-        // "ok" is 2 bytes + \n = 3 bytes (ok)
-        let input = "short\nthis is too long\nok\n";
-
-        let parser = SimulateParser::new(input.as_bytes(), limits);
-        let (commands, stats) = parser.collect_commands().unwrap();
-
-        assert_eq!(commands.len(), 2);
-        assert_eq!(commands[0].command, "short");
-        assert_eq!(commands[1].command, "ok");
-
-        assert_eq!(stats.lines_read, 3);
-        assert_eq!(stats.malformed_count, 1);
     }
 }

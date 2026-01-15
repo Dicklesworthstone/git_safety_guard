@@ -4,7 +4,7 @@
 //!
 //! Run with: cargo bench --bench `regex_automata_comparison`
 
-use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use regex::Regex;
 use regex_automata::{Input, meta::Regex as MetaRegex};
 use std::time::Duration;
@@ -57,14 +57,14 @@ fn bench_compilation(c: &mut Criterion) {
 
     for (name, pattern) in TEST_PATTERNS {
         group.bench_with_input(BenchmarkId::new("regex", name), pattern, |b, pat| {
-            b.iter(|| Regex::new(std::hint::black_box(pat)).unwrap());
+            b.iter(|| Regex::new(black_box(pat)).unwrap());
         });
 
         group.bench_with_input(
             BenchmarkId::new("regex-automata", name),
             pattern,
             |b, pat| {
-                b.iter(|| MetaRegex::new(std::hint::black_box(pat)).unwrap());
+                b.iter(|| MetaRegex::new(black_box(pat)).unwrap());
             },
         );
     }
@@ -94,7 +94,7 @@ fn bench_single_match(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::new("regex", name), &regex, |b, re| {
             b.iter(|| {
                 for cmd in TEST_COMMANDS {
-                    std::hint::black_box(re.is_match(std::hint::black_box(cmd)));
+                    black_box(re.is_match(black_box(cmd)));
                 }
             });
         });
@@ -108,7 +108,7 @@ fn bench_single_match(c: &mut Criterion) {
             |b, re| {
                 b.iter(|| {
                     for cmd in TEST_COMMANDS {
-                        std::hint::black_box(re.is_match(std::hint::black_box(cmd)));
+                        black_box(re.is_match(black_box(cmd)));
                     }
                 });
             },
@@ -130,21 +130,21 @@ fn bench_find_match(c: &mut Criterion) {
     let automata = MetaRegex::new(pattern).unwrap();
 
     group.bench_function("regex_is_match", |b| {
-        b.iter(|| std::hint::black_box(regex.is_match(std::hint::black_box(command))));
+        b.iter(|| black_box(regex.is_match(black_box(command))));
     });
 
     group.bench_function("regex_find", |b| {
-        b.iter(|| std::hint::black_box(regex.find(std::hint::black_box(command))));
+        b.iter(|| black_box(regex.find(black_box(command))));
     });
 
     group.bench_function("automata_is_match", |b| {
-        b.iter(|| std::hint::black_box(automata.is_match(std::hint::black_box(command))));
+        b.iter(|| black_box(automata.is_match(black_box(command))));
     });
 
     group.bench_function("automata_find", |b| {
         b.iter(|| {
-            let input = Input::new(std::hint::black_box(command));
-            std::hint::black_box(automata.find(input))
+            let input = Input::new(black_box(command));
+            black_box(automata.find(input))
         });
     });
 
@@ -184,58 +184,54 @@ fn bench_multi_pattern(c: &mut Criterion) {
     group.bench_function("regex_sequential_match", |b| {
         b.iter(|| {
             for re in &regex_set {
-                if re.is_match(std::hint::black_box(matching_cmd)) {
-                    return std::hint::black_box(true);
+                if re.is_match(black_box(matching_cmd)) {
+                    return black_box(true);
                 }
             }
-            std::hint::black_box(false)
+            black_box(false)
         });
     });
 
     group.bench_function("automata_sequential_match", |b| {
         b.iter(|| {
             for re in &automata_set {
-                if re.is_match(std::hint::black_box(matching_cmd)) {
-                    return std::hint::black_box(true);
+                if re.is_match(black_box(matching_cmd)) {
+                    return black_box(true);
                 }
             }
-            std::hint::black_box(false)
+            black_box(false)
         });
     });
 
     // Combined pattern (single regex with alternation)
     group.bench_function("regex_combined_match", |b| {
-        b.iter(|| {
-            std::hint::black_box(regex_combined.is_match(std::hint::black_box(matching_cmd)))
-        });
+        b.iter(|| black_box(regex_combined.is_match(black_box(matching_cmd))));
     });
 
     group.bench_function("automata_combined_match", |b| {
-        b.iter(|| {
-            std::hint::black_box(automata_combined.is_match(std::hint::black_box(matching_cmd)))
-        });
+        b.iter(|| black_box(automata_combined.is_match(black_box(matching_cmd))));
     });
 
     // Non-matching command (tests fast rejection)
     group.bench_function("regex_sequential_nomatch", |b| {
         b.iter(|| {
             for re in &regex_set {
-                if re.is_match(std::hint::black_box(non_matching_cmd)) {
-                    return std::hint::black_box(true);
+                if re.is_match(black_box(non_matching_cmd)) {
+                    return black_box(true);
                 }
             }
-            std::hint::black_box(false)
+            black_box(false)
         });
     });
 
     group.bench_function("automata_sequential_nomatch", |b| {
         b.iter(|| {
             for re in &automata_set {
-                if re.is_match(std::hint::black_box(non_matching_cmd)) {
-                    return std::hint::black_box(true);
+                if re.is_match(black_box(non_matching_cmd)) {
+                    return black_box(true);
                 }
             }
-            std::hint::black_box(false)
+            black_box(false)
         });
     });
 
@@ -261,7 +257,7 @@ fn bench_worst_case(c: &mut Criterion) {
         // regex crate should handle this in O(n) due to Thompson NFA
         if let Ok(regex) = Regex::new(pattern) {
             group.bench_with_input(BenchmarkId::new("regex", name), &evil_input, |b, input| {
-                b.iter(|| std::hint::black_box(regex.is_match(std::hint::black_box(input))));
+                b.iter(|| black_box(regex.is_match(black_box(input))));
             });
         }
 
@@ -271,7 +267,7 @@ fn bench_worst_case(c: &mut Criterion) {
                 BenchmarkId::new("regex-automata", name),
                 &evil_input,
                 |b, input| {
-                    b.iter(|| std::hint::black_box(automata.is_match(std::hint::black_box(input))));
+                    b.iter(|| black_box(automata.is_match(black_box(input))));
                 },
             );
         }
@@ -299,14 +295,14 @@ fn bench_long_input(c: &mut Criterion) {
         group.throughput(Throughput::Bytes(input_len as u64));
 
         group.bench_with_input(BenchmarkId::new("regex", size), &input, |b, inp| {
-            b.iter(|| std::hint::black_box(regex.is_match(std::hint::black_box(inp))));
+            b.iter(|| black_box(regex.is_match(black_box(inp))));
         });
 
         group.bench_with_input(
             BenchmarkId::new("regex-automata", size),
             &input,
             |b, inp| {
-                b.iter(|| std::hint::black_box(automata.is_match(std::hint::black_box(inp))));
+                b.iter(|| black_box(automata.is_match(black_box(inp))));
             },
         );
     }

@@ -24,9 +24,6 @@ use destructive_command_guard::config::Config;
 use destructive_command_guard::evaluator::{
     EvaluationDecision, MatchSource, evaluate_command_with_pack_order_deadline,
 };
-use destructive_command_guard::history::{
-    CommandEntry, ENV_HISTORY_DB_PATH, HistoryDb, HistoryWriter, Outcome as HistoryOutcome,
-};
 use destructive_command_guard::hook;
 use destructive_command_guard::load_default_allowlists;
 use destructive_command_guard::normalize::normalize_command;
@@ -36,6 +33,9 @@ use destructive_command_guard::packs::{DecisionMode, REGISTRY};
 use destructive_command_guard::pending_exceptions::{PendingExceptionStore, log_maintenance};
 use destructive_command_guard::perf::{Deadline, HOOK_EVALUATION_BUDGET};
 use destructive_command_guard::sanitize_for_pattern_matching;
+use destructive_command_guard::telemetry::{
+    CommandEntry, ENV_TELEMETRY_DB_PATH, Outcome as TelemetryOutcome, TelemetryDb, TelemetryWriter,
+};
 // Import HookInput for parsing stdin JSON in hook mode
 #[cfg(test)]
 use destructive_command_guard::hook::HookInput;
@@ -66,17 +66,19 @@ fn configure_colors() {
 
 const TELEMETRY_AGENT_TYPE: &str = "claude_code";
 
-fn history_db_path(config: &destructive_command_guard::config::HistoryConfig) -> Option<PathBuf> {
-    if let Ok(path) = std::env::var(ENV_HISTORY_DB_PATH) {
+fn telemetry_db_path(
+    config: &destructive_command_guard::config::TelemetryConfig,
+) -> Option<PathBuf> {
+    if let Ok(path) = std::env::var(ENV_TELEMETRY_DB_PATH) {
         return Some(PathBuf::from(path));
     }
     config.expanded_database_path()
 }
 
-fn build_history_entry(
+fn build_telemetry_entry(
     command: &str,
     working_dir: &str,
-    outcome: HistoryOutcome,
+    outcome: TelemetryOutcome,
     eval_duration: Duration,
     pack_id: Option<&str>,
     pattern_name: Option<&str>,
@@ -97,11 +99,11 @@ fn build_history_entry(
     }
 }
 
-fn install_history_shutdown_handler(
-    handle: destructive_command_guard::history::HistoryFlushHandle,
+fn install_telemetry_shutdown_handler(
+    handle: destructive_command_guard::telemetry::TelemetryFlushHandle,
 ) {
     let _ = ctrlc::set_handler(move || {
-        eprintln!("[dcg] Flushing history...");
+        eprintln!("[dcg] Flushing telemetry...");
         handle.flush_sync();
         std::process::exit(130);
     });
@@ -265,8 +267,7 @@ fn main() {
     let deadline = Deadline::new(HOOK_EVALUATION_BUDGET);
 
     // Only process Bash tool invocations
-    let tool = hook_input.tool_name.as_deref();
-    if tool != Some("Bash") && tool != Some("run_shell_command") {
+    if hook_input.tool_name.as_deref() != Some("Bash") {
         return;
     }
 
@@ -303,16 +304,16 @@ fn main() {
         |path| path.to_string_lossy().to_string(),
     );
 
-    let history_writer = if config.history.enabled {
-        HistoryDb::try_open(history_db_path(&config.history))
-            .map(|db| HistoryWriter::new(db, &config.history))
+    let telemetry_writer = if config.telemetry.enabled {
+        TelemetryDb::try_open(telemetry_db_path(&config.telemetry))
+            .map(|db| TelemetryWriter::new(db, &config.telemetry))
     } else {
         None
     };
 
-    if let Some(writer) = history_writer.as_ref() {
+    if let Some(writer) = telemetry_writer.as_ref() {
         if let Some(handle) = writer.flush_handle() {
-            install_history_shutdown_handler(handle);
+            install_telemetry_shutdown_handler(handle);
         }
     }
 
@@ -345,11 +346,11 @@ fn main() {
     let eval_duration = eval_start.elapsed();
 
     if result.skipped_due_to_budget {
-        if let Some(writer) = history_writer.as_ref() {
-            let entry = build_history_entry(
+        if let Some(writer) = telemetry_writer.as_ref() {
+            let entry = build_telemetry_entry(
                 &command,
                 &working_dir,
-                HistoryOutcome::Allow,
+                TelemetryOutcome::Allow,
                 eval_duration,
                 None,
                 None,
@@ -370,7 +371,7 @@ fn main() {
     }
 
     if result.decision != EvaluationDecision::Deny {
-        if let Some(writer) = history_writer.as_ref() {
+        if let Some(writer) = telemetry_writer.as_ref() {
             let mut pack_id = None;
             let mut pattern_name = None;
             let mut allowlist_layer = None;
@@ -381,10 +382,10 @@ fn main() {
                 pattern_name = override_.matched.pattern_name.as_deref();
             }
 
-            let entry = build_history_entry(
+            let entry = build_telemetry_entry(
                 &command,
                 &working_dir,
-                HistoryOutcome::Allow,
+                TelemetryOutcome::Allow,
                 eval_duration,
                 pack_id,
                 pattern_name,
@@ -397,11 +398,11 @@ fn main() {
 
     let Some(ref info) = result.pattern_info else {
         // Fail open: structurally unexpected, but hook safety wins.
-        if let Some(writer) = history_writer.as_ref() {
-            let entry = build_history_entry(
+        if let Some(writer) = telemetry_writer.as_ref() {
+            let entry = build_telemetry_entry(
                 &command,
                 &working_dir,
-                HistoryOutcome::Allow,
+                TelemetryOutcome::Allow,
                 eval_duration,
                 None,
                 None,
@@ -452,13 +453,13 @@ fn main() {
 
     let pattern = info.pattern_name.as_deref();
 
-    if let Some(writer) = history_writer.as_ref() {
+    if let Some(writer) = telemetry_writer.as_ref() {
         let outcome = match mode {
-            DecisionMode::Deny => HistoryOutcome::Deny,
-            DecisionMode::Warn => HistoryOutcome::Warn,
-            DecisionMode::Log => HistoryOutcome::Allow,
+            DecisionMode::Deny => TelemetryOutcome::Deny,
+            DecisionMode::Warn => TelemetryOutcome::Warn,
+            DecisionMode::Log => TelemetryOutcome::Allow,
         };
-        let entry = build_history_entry(
+        let entry = build_telemetry_entry(
             &command,
             &working_dir,
             outcome,

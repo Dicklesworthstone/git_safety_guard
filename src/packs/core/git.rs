@@ -75,7 +75,7 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         // restore without --staged affects working tree
         destructive_pattern!(
             "restore-worktree",
-            r"(?s)git\s+(?:\S+\s+)*restore\s+(?:(?!--staged\b)(?!-S\b).)*$",
+            r"git\s+(?:\S+\s+)*restore\s+(?!--staged\b)(?!-S\b)",
             "git restore discards uncommitted changes. Use 'git stash' or 'git diff' first.",
             High
         ),

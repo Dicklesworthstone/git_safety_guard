@@ -1,14 +1,14 @@
-//! Test fixtures for history E2E tests.
+//! Test fixtures for telemetry E2E tests.
 //!
-//! Provides realistic command data for testing various history scenarios.
+//! Provides realistic command data for testing various telemetry scenarios.
 
 use super::db::TestCommand;
-use destructive_command_guard::history::Outcome;
+use destructive_command_guard::telemetry::Outcome;
 
 /// Standard mix of commands for comprehensive testing.
 ///
 /// Includes various outcomes, agent types, packs, and patterns to exercise
-/// all history code paths.
+/// all telemetry code paths.
 #[must_use]
 pub fn standard_mix() -> Vec<TestCommand> {
     vec![

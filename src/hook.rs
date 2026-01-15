@@ -128,8 +128,7 @@ pub fn read_hook_input(max_bytes: usize) -> Result<HookInput, HookReadError> {
 #[must_use]
 pub fn extract_command(input: &HookInput) -> Option<String> {
     // Only process Bash tool invocations
-    let tool = input.tool_name.as_deref()?;
-    if tool != "Bash" && tool != "run_shell_command" {
+    if input.tool_name.as_deref() != Some("Bash") {
         return None;
     }
 

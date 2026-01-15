@@ -18,7 +18,7 @@
 
 use std::fmt::Write as _;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use destructive_command_guard::packs::{REGISTRY, pack_aware_quick_reject};
 use destructive_command_guard::{
     Config, ExtractionLimits, ScriptLanguage, check_triggers, evaluate_command_with_pack_order,
@@ -114,7 +114,7 @@ fn bench_tier1_triggers(c: &mut Criterion) {
             BenchmarkId::new("check_triggers", name),
             cmd,
             |b: &mut criterion::Bencher<'_>, cmd: &str| {
-                b.iter(|| check_triggers(std::hint::black_box(cmd)));
+                b.iter(|| check_triggers(black_box(cmd)));
             },
         );
     }
@@ -125,7 +125,7 @@ fn bench_tier1_triggers(c: &mut Criterion) {
         BenchmarkId::new("check_triggers", "long_no_heredoc"),
         &long_cmd,
         |b: &mut criterion::Bencher<'_>, cmd: &String| {
-            b.iter(|| check_triggers(std::hint::black_box(cmd)));
+            b.iter(|| check_triggers(black_box(cmd)));
         },
     );
 
@@ -135,7 +135,7 @@ fn bench_tier1_triggers(c: &mut Criterion) {
             BenchmarkId::new("matched_triggers", name),
             cmd,
             |b: &mut criterion::Bencher<'_>, cmd: &str| {
-                b.iter(|| matched_triggers(std::hint::black_box(cmd)));
+                b.iter(|| matched_triggers(black_box(cmd)));
             },
         );
     }
@@ -205,9 +205,9 @@ fn bench_pack_aware_quick_reject(c: &mut Criterion) {
             cmd,
             |b: &mut criterion::Bencher<'_>, cmd: &str| {
                 b.iter(|| {
-                    std::hint::black_box(pack_aware_quick_reject(
-                        std::hint::black_box(cmd),
-                        std::hint::black_box(core_inputs.enabled_keywords.as_slice()),
+                    black_box(pack_aware_quick_reject(
+                        black_box(cmd),
+                        black_box(core_inputs.enabled_keywords.as_slice()),
                     ))
                 });
             },
@@ -220,9 +220,9 @@ fn bench_pack_aware_quick_reject(c: &mut Criterion) {
             cmd,
             |b: &mut criterion::Bencher<'_>, cmd: &str| {
                 b.iter(|| {
-                    std::hint::black_box(pack_aware_quick_reject(
-                        std::hint::black_box(cmd),
-                        std::hint::black_box(worst_inputs.enabled_keywords.as_slice()),
+                    black_box(pack_aware_quick_reject(
+                        black_box(cmd),
+                        black_box(worst_inputs.enabled_keywords.as_slice()),
                     ))
                 });
             },
@@ -280,15 +280,15 @@ fn bench_core_pipeline(c: &mut Criterion) {
             |b: &mut criterion::Bencher<'_>, cmd: &str| {
                 b.iter(|| {
                     let result = evaluate_command_with_pack_order(
-                        std::hint::black_box(cmd),
-                        std::hint::black_box(core_inputs.enabled_keywords.as_slice()),
-                        std::hint::black_box(core_inputs.ordered_packs.as_slice()),
-                        std::hint::black_box(core_inputs.keyword_index.as_ref()),
-                        std::hint::black_box(&core_inputs.compiled_overrides),
-                        std::hint::black_box(&allowlists),
-                        std::hint::black_box(&core_inputs.heredoc_settings),
+                        black_box(cmd),
+                        black_box(core_inputs.enabled_keywords.as_slice()),
+                        black_box(core_inputs.ordered_packs.as_slice()),
+                        black_box(core_inputs.keyword_index.as_ref()),
+                        black_box(&core_inputs.compiled_overrides),
+                        black_box(&allowlists),
+                        black_box(&core_inputs.heredoc_settings),
                     );
-                    std::hint::black_box(result);
+                    black_box(result);
                 });
             },
         );
@@ -305,15 +305,15 @@ fn bench_core_pipeline(c: &mut Criterion) {
             |b: &mut criterion::Bencher<'_>, cmd: &str| {
                 b.iter(|| {
                     let result = evaluate_command_with_pack_order(
-                        std::hint::black_box(cmd),
-                        std::hint::black_box(docker_inputs.enabled_keywords.as_slice()),
-                        std::hint::black_box(docker_inputs.ordered_packs.as_slice()),
-                        std::hint::black_box(docker_inputs.keyword_index.as_ref()),
-                        std::hint::black_box(&docker_inputs.compiled_overrides),
-                        std::hint::black_box(&allowlists),
-                        std::hint::black_box(&docker_inputs.heredoc_settings),
+                        black_box(cmd),
+                        black_box(docker_inputs.enabled_keywords.as_slice()),
+                        black_box(docker_inputs.ordered_packs.as_slice()),
+                        black_box(docker_inputs.keyword_index.as_ref()),
+                        black_box(&docker_inputs.compiled_overrides),
+                        black_box(&allowlists),
+                        black_box(&docker_inputs.heredoc_settings),
                     );
-                    std::hint::black_box(result);
+                    black_box(result);
                 });
             },
         );
@@ -331,15 +331,15 @@ fn bench_core_pipeline(c: &mut Criterion) {
             |b: &mut criterion::Bencher<'_>, cmd: &str| {
                 b.iter(|| {
                     let result = evaluate_command_with_pack_order(
-                        std::hint::black_box(cmd),
-                        std::hint::black_box(worst_inputs.enabled_keywords.as_slice()),
-                        std::hint::black_box(worst_inputs.ordered_packs.as_slice()),
-                        std::hint::black_box(worst_inputs.keyword_index.as_ref()),
-                        std::hint::black_box(&worst_inputs.compiled_overrides),
-                        std::hint::black_box(&allowlists),
-                        std::hint::black_box(&worst_inputs.heredoc_settings),
+                        black_box(cmd),
+                        black_box(worst_inputs.enabled_keywords.as_slice()),
+                        black_box(worst_inputs.ordered_packs.as_slice()),
+                        black_box(worst_inputs.keyword_index.as_ref()),
+                        black_box(&worst_inputs.compiled_overrides),
+                        black_box(&allowlists),
+                        black_box(&worst_inputs.heredoc_settings),
                     );
-                    std::hint::black_box(result);
+                    black_box(result);
                 });
             },
         );
@@ -369,9 +369,7 @@ fn bench_tier2_extraction(c: &mut Criterion) {
             BenchmarkId::new("extract_content", name),
             cmd,
             |b: &mut criterion::Bencher<'_>, cmd: &String| {
-                b.iter(|| {
-                    extract_content(std::hint::black_box(cmd), std::hint::black_box(&limits))
-                });
+                b.iter(|| extract_content(black_box(cmd), black_box(&limits)));
             },
         );
     }
@@ -388,12 +386,7 @@ fn bench_tier2_extraction(c: &mut Criterion) {
         BenchmarkId::new("extract_content_strict", "large_heredoc"),
         &cases[2].1,
         |b: &mut criterion::Bencher<'_>, cmd: &String| {
-            b.iter(|| {
-                extract_content(
-                    std::hint::black_box(cmd),
-                    std::hint::black_box(&strict_limits),
-                )
-            });
+            b.iter(|| extract_content(black_box(cmd), black_box(&strict_limits)));
         },
     );
 
@@ -418,7 +411,7 @@ fn bench_shell_extraction(c: &mut Criterion) {
             BenchmarkId::new("extract_shell_commands", name),
             content,
             |b: &mut criterion::Bencher<'_>, content: &str| {
-                b.iter(|| extract_shell_commands(std::hint::black_box(content)));
+                b.iter(|| extract_shell_commands(black_box(content)));
             },
         );
     }
@@ -459,12 +452,7 @@ fn bench_language_detection(c: &mut Criterion) {
             BenchmarkId::new("detect_language", name),
             &(cmd, content),
             |b: &mut criterion::Bencher<'_>, (cmd, content): &(&str, &str)| {
-                b.iter(|| {
-                    ScriptLanguage::detect(
-                        std::hint::black_box(*cmd),
-                        std::hint::black_box(*content),
-                    )
-                });
+                b.iter(|| ScriptLanguage::detect(black_box(*cmd), black_box(*content)));
             },
         );
     }
@@ -513,13 +501,13 @@ fn bench_full_pipeline(c: &mut Criterion) {
             |b: &mut criterion::Bencher<'_>, cmd: &String| {
                 b.iter(|| {
                     evaluate_command_with_pack_order(
-                        std::hint::black_box(cmd),
-                        std::hint::black_box(hook_inputs.enabled_keywords.as_slice()),
-                        std::hint::black_box(hook_inputs.ordered_packs.as_slice()),
-                        std::hint::black_box(hook_inputs.keyword_index.as_ref()),
-                        std::hint::black_box(&hook_inputs.compiled_overrides),
-                        std::hint::black_box(&allowlists),
-                        std::hint::black_box(&hook_inputs.heredoc_settings),
+                        black_box(cmd),
+                        black_box(hook_inputs.enabled_keywords.as_slice()),
+                        black_box(hook_inputs.ordered_packs.as_slice()),
+                        black_box(hook_inputs.keyword_index.as_ref()),
+                        black_box(&hook_inputs.compiled_overrides),
+                        black_box(&allowlists),
+                        black_box(&hook_inputs.heredoc_settings),
                     )
                 });
             },

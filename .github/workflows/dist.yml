@@ -23,9 +23,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
-        # Exclude memory_tests - they require release mode and single-threaded execution
-        # which is handled by the dedicated memory-tests job in ci.yml
-        run: cargo test -- --skip memory_
+        run: cargo test
 
   build:
     needs: test

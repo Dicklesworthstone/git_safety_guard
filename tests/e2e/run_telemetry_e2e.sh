@@ -138,7 +138,7 @@ enabled = true
 EOF
 
     # Export environment variables for test isolation
-    export DCG_HISTORY_DB="$TELEMETRY_DB"
+    export DCG_TELEMETRY_DB="$TELEMETRY_DB"
     export DCG_CONFIG="${DCG_CONFIG_DIR}/config.toml"
     export HOME="$TEMP_DIR"
     export XDG_CONFIG_HOME="$DCG_CONFIG_DIR"

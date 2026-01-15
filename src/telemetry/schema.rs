@@ -1,7 +1,7 @@
-//! `SQLite` schema definitions for command history.
+//! `SQLite` schema definitions for command telemetry.
 //!
 //! This module defines the database schema, types, and core operations for
-//! the history system. The schema is designed for:
+//! the telemetry system. The schema is designed for:
 //!
 //! - Efficient writes during hook execution (< 1ms target)
 //! - Flexible queries for analytics and debugging
@@ -20,11 +20,11 @@ use std::path::{Path, PathBuf};
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Default database filename.
-pub const DEFAULT_DB_FILENAME: &str = "history.db";
+pub const DEFAULT_DB_FILENAME: &str = "telemetry.db";
 
-/// History-specific error type.
+/// Telemetry-specific error type.
 #[derive(Debug)]
-pub enum HistoryError {
+pub enum TelemetryError {
     /// `SQLite` error.
     Sqlite(rusqlite::Error),
     /// I/O error.
@@ -35,7 +35,7 @@ pub enum HistoryError {
     Disabled,
 }
 
-impl std::fmt::Display for HistoryError {
+impl std::fmt::Display for TelemetryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Sqlite(e) => write!(f, "SQLite error: {e}"),
@@ -43,12 +43,12 @@ impl std::fmt::Display for HistoryError {
             Self::SchemaMismatch { expected, found } => {
                 write!(f, "Schema mismatch: expected v{expected}, found v{found}")
             }
-            Self::Disabled => write!(f, "History is disabled"),
+            Self::Disabled => write!(f, "Telemetry is disabled"),
         }
     }
 }
 
-impl std::error::Error for HistoryError {
+impl std::error::Error for TelemetryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Sqlite(e) => Some(e),
@@ -58,13 +58,13 @@ impl std::error::Error for HistoryError {
     }
 }
 
-impl From<rusqlite::Error> for HistoryError {
+impl From<rusqlite::Error> for TelemetryError {
     fn from(e: rusqlite::Error) -> Self {
         Self::Sqlite(e)
     }
 }
 
-impl From<std::io::Error> for HistoryError {
+impl From<std::io::Error> for TelemetryError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
     }
@@ -121,7 +121,7 @@ impl std::str::FromStr for Outcome {
     }
 }
 
-/// A single command entry for the history database.
+/// A single command entry for the telemetry database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommandEntry {
     /// Timestamp when the command was evaluated (ISO 8601).
@@ -200,27 +200,27 @@ impl CommandEntry {
 }
 
 /// Telemetry database handle.
-pub struct HistoryDb {
+pub struct TelemetryDb {
     conn: Connection,
     path: Option<PathBuf>,
 }
 
-impl HistoryDb {
-    /// Open or create the history database at the default path.
+impl TelemetryDb {
+    /// Open or create the telemetry database at the default path.
     ///
-    /// The default path is `~/.config/dcg/history.db` unless overridden
-    /// by the `DCG_HISTORY_DB` environment variable.
+    /// The default path is `~/.config/dcg/telemetry.db` unless overridden
+    /// by the `DCG_TELEMETRY_DB` environment variable.
     ///
     /// # Errors
     ///
     /// Returns an error if the database cannot be opened or initialized.
-    pub fn open(path: Option<PathBuf>) -> Result<Self, HistoryError> {
+    pub fn open(path: Option<PathBuf>) -> Result<Self, TelemetryError> {
         // Check if telemetry is disabled
-        if env::var(super::ENV_HISTORY_DISABLED)
+        if env::var(super::ENV_TELEMETRY_DISABLED)
             .map(|v| v == "1" || v.to_lowercase() == "true")
             .unwrap_or(false)
         {
-            return Err(HistoryError::Disabled);
+            return Err(TelemetryError::Disabled);
         }
 
         let db_path = path.unwrap_or_else(Self::default_path);
@@ -244,7 +244,7 @@ impl HistoryDb {
     /// # Errors
     ///
     /// Returns an error if the database cannot be initialized.
-    pub fn open_in_memory() -> Result<Self, HistoryError> {
+    pub fn open_in_memory() -> Result<Self, TelemetryError> {
         let conn = Connection::open_in_memory()?;
         let db = Self { conn, path: None };
         db.initialize_schema()?;
@@ -254,7 +254,7 @@ impl HistoryDb {
     /// Get the default database path.
     #[must_use]
     pub fn default_path() -> PathBuf {
-        if let Ok(path) = env::var(super::ENV_HISTORY_DB_PATH) {
+        if let Ok(path) = env::var(super::ENV_TELEMETRY_DB_PATH) {
             return PathBuf::from(path);
         }
 
@@ -274,7 +274,7 @@ impl HistoryDb {
     /// # Errors
     ///
     /// Returns an error if the schema version cannot be read.
-    pub fn get_schema_version(&self) -> Result<u32, HistoryError> {
+    pub fn get_schema_version(&self) -> Result<u32, TelemetryError> {
         let version: u32 = self.conn.query_row(
             "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1",
             [],
@@ -283,9 +283,9 @@ impl HistoryDb {
         Ok(version)
     }
 
-    /// Attempt to open the history database, returning None on failure.
+    /// Attempt to open the telemetry database, returning None on failure.
     ///
-    /// This is intended for fail-open paths (history should never block the hook).
+    /// This is intended for fail-open paths (telemetry should never block the hook).
     #[must_use]
     pub fn try_open(path: Option<PathBuf>) -> Option<Self> {
         Self::open(path).ok()
@@ -298,7 +298,7 @@ impl HistoryDb {
     /// # Errors
     ///
     /// Returns an error if the file metadata cannot be read.
-    pub fn file_size(&self) -> Result<u64, HistoryError> {
+    pub fn file_size(&self) -> Result<u64, TelemetryError> {
         match &self.path {
             Some(p) => Ok(std::fs::metadata(p)?.len()),
             None => Ok(0),
@@ -310,7 +310,7 @@ impl HistoryDb {
     /// # Errors
     ///
     /// Returns an error if the query fails.
-    pub fn count_commands(&self) -> Result<u64, HistoryError> {
+    pub fn count_commands(&self) -> Result<u64, TelemetryError> {
         let count: i64 = self
             .conn
             .query_row("SELECT COUNT(*) FROM commands", [], |row| row.get(0))?;
@@ -322,7 +322,7 @@ impl HistoryDb {
     /// # Errors
     ///
     /// Returns an error if the insert fails.
-    pub fn log_command(&self, entry: &CommandEntry) -> Result<i64, HistoryError> {
+    pub fn log_command(&self, entry: &CommandEntry) -> Result<i64, TelemetryError> {
         let command_hash = entry.command_hash();
         let timestamp = entry.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
 
@@ -364,111 +364,13 @@ impl HistoryDb {
     /// # Errors
     ///
     /// Returns an error if the VACUUM fails.
-    pub fn vacuum(&self) -> Result<(), HistoryError> {
+    pub fn vacuum(&self) -> Result<(), TelemetryError> {
         self.conn.execute("VACUUM", [])?;
         Ok(())
     }
 
-    /// Prune entries older than the specified number of days.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the delete operation fails.
-    pub fn prune_older_than(&self, days: i64) -> Result<u64, HistoryError> {
-        let cutoff = Utc::now() - chrono::Duration::days(days);
-        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-
-        let count = self.conn.execute(
-            "DELETE FROM commands WHERE timestamp < ?1",
-            params![cutoff_str],
-        )?;
-
-        Ok(u64::try_from(count).unwrap_or(0))
-    }
-
-    /// Prune oldest entries until the database file size is under the target size (in bytes).
-    ///
-    /// Note: This operation performs a VACUUM which effectively rewrites the database file.
-    /// This can be slow for large databases.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if file operations or database queries fail.
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::cast_possible_wrap
-    )]
-    pub fn prune_to_size(&self, target_bytes: u64) -> Result<u64, HistoryError> {
-        let mut current_size = self.file_size()?;
-        if current_size <= target_bytes {
-            return Ok(0);
-        }
-
-        let mut deleted_total = 0;
-
-        // Loop until we are under the target size
-        while current_size > target_bytes {
-            let total_rows = self.count_commands()?;
-            if total_rows == 0 {
-                break;
-            }
-
-            // Estimate how many rows to delete.
-            // We assume row density is roughly uniform.
-            let excess_bytes = current_size.saturating_sub(target_bytes);
-            #[allow(clippy::cast_precision_loss)]
-            let fraction_to_delete = (excess_bytes as f64) / (current_size as f64);
-            // Delete slightly more (1.1x) to ensure we make progress and minimize VACUUM cycles
-            #[allow(
-                clippy::cast_precision_loss,
-                clippy::cast_sign_loss,
-                clippy::cast_possible_truncation
-            )]
-            let rows_to_delete = ((total_rows as f64) * fraction_to_delete * 1.1) as u64;
-            let rows_to_delete = rows_to_delete.max(100); // Delete at least 100 rows (or all if < 100)
-
-            #[allow(clippy::cast_possible_wrap)]
-            let count = self.conn.execute(
-                "DELETE FROM commands WHERE id IN (SELECT id FROM commands ORDER BY id ASC LIMIT ?1)",
-                params![rows_to_delete as i64],
-            )?;
-
-            deleted_total += count;
-
-            if count == 0 {
-                break; // Should not happen if count_commands > 0
-            }
-
-            // VACUUM to reclaim space and update file size
-            self.vacuum()?;
-            current_size = self.file_size()?;
-        }
-
-        Ok(u64::try_from(deleted_total).unwrap_or(0))
-    }
-
-    /// Count rows that would be deleted by `prune_older_than`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the count query fails.
-    pub fn prune_older_than_dry_run(&self, days: i64) -> Result<u64, HistoryError> {
-        let cutoff = Utc::now() - chrono::Duration::days(days);
-        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-
-        let count: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM commands WHERE timestamp < ?1",
-            params![cutoff_str],
-            |row| row.get(0),
-        )?;
-
-        Ok(u64::try_from(count).unwrap_or(0))
-    }
-
     /// Initialize the database schema.
-    fn initialize_schema(&self) -> Result<(), HistoryError> {
+    fn initialize_schema(&self) -> Result<(), TelemetryError> {
         // Enable WAL mode for better concurrent performance
         self.conn.execute_batch("PRAGMA journal_mode=WAL;")?;
 
@@ -504,7 +406,7 @@ impl HistoryDb {
     }
 
     /// Create the v1 schema (initial version).
-    fn create_v1_schema(&self) -> Result<(), HistoryError> {
+    fn create_v1_schema(&self) -> Result<(), TelemetryError> {
         // Main commands table
         self.conn.execute(
             r"CREATE TABLE IF NOT EXISTS commands (
@@ -604,7 +506,7 @@ impl HistoryDb {
     }
 
     /// Run migrations from a given version to current.
-    fn run_migrations(&self, from_version: u32) -> Result<(), HistoryError> {
+    fn run_migrations(&self, from_version: u32) -> Result<(), TelemetryError> {
         // Apply migrations in order.
         if from_version < 2 {
             self.migrate_v1_to_v2()?;
@@ -613,7 +515,7 @@ impl HistoryDb {
         // Ensure we're at the expected version
         let current = self.get_schema_version()?;
         if current != CURRENT_SCHEMA_VERSION {
-            return Err(HistoryError::SchemaMismatch {
+            return Err(TelemetryError::SchemaMismatch {
                 expected: CURRENT_SCHEMA_VERSION,
                 found: current,
             });
@@ -622,7 +524,7 @@ impl HistoryDb {
         Ok(())
     }
 
-    fn schema_version_has_description(&self) -> Result<bool, HistoryError> {
+    fn schema_version_has_description(&self) -> Result<bool, TelemetryError> {
         let columns: Vec<String> = self
             .conn
             .prepare("PRAGMA table_info(schema_version)")?
@@ -631,7 +533,7 @@ impl HistoryDb {
         Ok(columns.iter().any(|col| col == "description"))
     }
 
-    fn migrate_v1_to_v2(&self) -> Result<(), HistoryError> {
+    fn migrate_v1_to_v2(&self) -> Result<(), TelemetryError> {
         if !self.schema_version_has_description()? {
             self.conn.execute(
                 "ALTER TABLE schema_version ADD COLUMN description TEXT NOT NULL DEFAULT 'Initial schema'",
@@ -667,7 +569,7 @@ mod tests {
         Option<String>,
     );
 
-    fn reset_schema_version_to_v1(db: &HistoryDb) {
+    fn reset_schema_version_to_v1(db: &TelemetryDb) {
         db.conn.execute("DROP TABLE schema_version", []).unwrap();
         db.conn
             .execute(
@@ -696,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_schema_creation() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         // Verify all expected tables exist
         let tables: Vec<String> = db
@@ -714,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_commands_table_columns() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         let columns: Vec<String> = db
             .conn
@@ -744,7 +646,7 @@ mod tests {
 
     #[test]
     fn test_indexes_created() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         let indexes: Vec<String> = db
             .conn
@@ -765,7 +667,7 @@ mod tests {
 
     #[test]
     fn test_fts_table_created() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         // FTS5 virtual table for full-text search
         let result = db.conn.query_row(
@@ -778,7 +680,7 @@ mod tests {
 
     #[test]
     fn test_insert_and_query() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         let entry = test_entry();
         db.log_command(&entry).unwrap();
@@ -793,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_timestamp_format() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         let entry = test_entry();
         db.log_command(&entry).unwrap();
@@ -812,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_schema_version() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
         let version = db.get_schema_version().unwrap();
         assert_eq!(version, CURRENT_SCHEMA_VERSION);
     }
@@ -823,7 +725,7 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
 
         assert!(!db_path.exists());
-        let _db = HistoryDb::open(Some(db_path.clone())).unwrap();
+        let _db = TelemetryDb::open(Some(db_path.clone())).unwrap();
         assert!(db_path.exists());
     }
 
@@ -832,7 +734,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_path = temp_dir.path().join("nested/deep/test.db");
 
-        let _db = HistoryDb::open(Some(db_path.clone())).unwrap();
+        let _db = TelemetryDb::open(Some(db_path.clone())).unwrap();
         assert!(db_path.exists());
     }
 
@@ -840,7 +742,7 @@ mod tests {
     fn test_wal_mode_enabled() {
         let temp_dir = tempfile::tempdir().unwrap();
         let db_path = temp_dir.path().join("wal.db");
-        let db = HistoryDb::open(Some(db_path)).unwrap();
+        let db = TelemetryDb::open(Some(db_path)).unwrap();
 
         let mode: String = db
             .conn
@@ -856,7 +758,7 @@ mod tests {
         let db_path = temp_dir.path().join("corrupt.db");
 
         std::fs::write(&db_path, b"not a valid sqlite db").unwrap();
-        let result = HistoryDb::try_open(Some(db_path));
+        let result = TelemetryDb::try_open(Some(db_path));
         assert!(result.is_none());
     }
 
@@ -872,7 +774,7 @@ mod tests {
         std::fs::set_permissions(&dir_path, std::fs::Permissions::from_mode(0o444)).unwrap();
 
         let db_path = dir_path.join("test.db");
-        let result = HistoryDb::try_open(Some(db_path));
+        let result = TelemetryDb::try_open(Some(db_path));
         assert!(result.is_none());
 
         // Restore permissions so temp_dir cleanup can succeed
@@ -881,7 +783,7 @@ mod tests {
 
     #[test]
     fn test_migration_adds_schema_version_description() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
         reset_schema_version_to_v1(&db);
 
         db.run_migrations(1).unwrap();
@@ -931,7 +833,7 @@ mod tests {
 
     #[test]
     fn test_fts_search() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         // Insert a few commands
         db.log_command(&CommandEntry {
@@ -965,13 +867,13 @@ mod tests {
 
     #[test]
     fn test_count_commands_empty() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
         assert_eq!(db.count_commands().unwrap(), 0);
     }
 
     #[test]
     fn test_count_commands_with_data() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         for i in 0..10 {
             db.log_command(&CommandEntry {
@@ -986,13 +888,13 @@ mod tests {
 
     #[test]
     fn test_file_size_in_memory() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
         assert_eq!(db.file_size().unwrap(), 0);
     }
 
     #[test]
     fn test_all_optional_fields() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         let entry = CommandEntry {
             timestamp: Utc::now(),
@@ -1042,7 +944,7 @@ mod tests {
 
     #[test]
     fn test_outcome_constraint() {
-        let db = HistoryDb::open_in_memory().unwrap();
+        let db = TelemetryDb::open_in_memory().unwrap();
 
         // Valid outcome should work
         db.conn
@@ -1069,14 +971,14 @@ mod tests {
 
         // Create and populate
         {
-            let db = HistoryDb::open(Some(db_path.clone())).unwrap();
+            let db = TelemetryDb::open(Some(db_path.clone())).unwrap();
             db.log_command(&test_entry()).unwrap();
             assert_eq!(db.count_commands().unwrap(), 1);
         }
 
         // Reopen and verify
         {
-            let db = HistoryDb::open(Some(db_path)).unwrap();
+            let db = TelemetryDb::open(Some(db_path)).unwrap();
             assert_eq!(db.count_commands().unwrap(), 1);
             assert_eq!(db.get_schema_version().unwrap(), CURRENT_SCHEMA_VERSION);
         }

@@ -645,7 +645,6 @@ pub fn evaluate_command_with_pack_order_at_path(
         None,
         project_path,
         None,
-        0,
     )
 }
 
@@ -691,7 +690,6 @@ pub fn evaluate_command_with_pack_order_deadline(
         allow_once_audit,
         None,
         deadline,
-        0,
     )
 }
 
@@ -710,13 +708,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
     allow_once_audit: Option<&crate::pending_exceptions::AllowOnceAuditConfig<'_>>,
     project_path: Option<&Path>,
     deadline: Option<&Deadline>,
-    recursion_depth: usize,
 ) -> EvaluationResult {
-    // Check recursion depth limit (e.g. 50) to prevent stack overflow on pathological input
-    if recursion_depth > 50 {
-        return EvaluationResult::allowed_due_to_budget();
-    }
-
     // Check deadline at entry - if already exceeded, fail-open immediately.
     if deadline_exceeded(deadline) {
         return EvaluationResult::allowed_due_to_budget();
@@ -782,7 +774,6 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
                     keyword_index,
                     compiled_overrides,
                     allow_once_audit,
-                    recursion_depth,
                 };
                 if let Some(blocked) =
                     evaluate_heredoc(command, context, &mut heredoc_allowlist_hit)
@@ -1160,7 +1151,6 @@ where
                 keyword_index: keyword_index.as_ref(),
                 compiled_overrides,
                 allow_once_audit: None,
-                recursion_depth: 0,
             };
             if let Some(blocked) = evaluate_heredoc(command, context, &mut heredoc_allowlist_hit) {
                 return blocked;
@@ -1238,7 +1228,6 @@ struct HeredocEvaluationContext<'a> {
     keyword_index: Option<&'a crate::packs::EnabledKeywordIndex>,
     compiled_overrides: &'a crate::config::CompiledOverrides,
     allow_once_audit: Option<&'a crate::pending_exceptions::AllowOnceAuditConfig<'a>>,
-    recursion_depth: usize,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -1409,7 +1398,6 @@ fn evaluate_heredoc(
                     context.allow_once_audit,
                     context.project_path,
                     context.deadline,
-                    context.recursion_depth + 1,
                 );
 
                 if result.is_denied() {
@@ -1537,7 +1525,7 @@ fn check_fallback_patterns(command: &str) -> Option<EvaluationResult> {
             r"child_process\.execSync",
             r"child_process\.spawnSync",
             r"os\.RemoveAll",
-            r"\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f|(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR])\b",
+            r"\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b", // rm -rf, rm -fr, rm -r -f
             r"\bgit\s+reset\s+--hard\b",
         ])
         .expect("fallback patterns must compile")

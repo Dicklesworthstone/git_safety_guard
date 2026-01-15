@@ -877,11 +877,11 @@ block = [
         let allow_output = env.run_cli(&["allow-once", &code, "--yes"]);
         assert!(allow_output.status.success(), "allow-once should succeed");
 
-        // Note: We don't run the hook here because it would consume the single-use
-        // exception, leaving nothing to revoke. The allow-once list test verifies
-        // that allowed commands work.
+        // Verify it's allowed
+        let result2 = env.run_hook(command);
+        assert_is_allowed(&result2);
 
-        // Step 2: Revoke the exception (before it's used)
+        // Step 2: Revoke the exception
         let revoke_output = env.run_cli(&["allow-once", "revoke", &code, "--yes", "--json"]);
         assert!(
             revoke_output.status.success(),
@@ -890,9 +890,9 @@ block = [
             String::from_utf8_lossy(&revoke_output.stderr)
         );
 
-        // Step 3: Command should still be blocked (exception was revoked before use)
-        let result2 = env.run_hook(command);
-        assert_is_denial(&result2);
+        // Step 3: Command should be blocked again
+        let result3 = env.run_hook(command);
+        assert_is_denial(&result3);
     }
 
     #[test]

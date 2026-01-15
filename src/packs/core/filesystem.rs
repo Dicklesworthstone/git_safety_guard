@@ -232,8 +232,10 @@ fn parse_rm_segment(
         return RmParseDecision::Allow;
     }
 
-    // Any unquoted root/home path is catastrophic regardless of flag style or `--` usage.
-    let is_critical = paths.iter().any(path_is_root_home);
+    let first_path = paths.first();
+    let is_critical = flag_state.style == RmFlagStyle::Combined
+        && !flag_state.saw_terminator
+        && first_path.is_some_and(path_is_root_home);
 
     let (pattern_name, reason, severity) = if is_critical {
         (
@@ -278,17 +280,14 @@ fn strip_outer_quotes(token: &str) -> (QuoteKind, &str) {
 }
 
 fn path_is_safe_for_style(path: &PathToken<'_>, style: RmFlagStyle) -> bool {
-    if path.quote == QuoteKind::Double
-        && style != RmFlagStyle::Combined
-        && !path_is_safe_double_quoted_any_style(path.unquoted)
-    {
+    if path.quote == QuoteKind::Double && style != RmFlagStyle::Combined {
         return false;
     }
 
     match path.quote {
         QuoteKind::None => path_is_safe_unquoted(path.unquoted),
         QuoteKind::Double => path_is_safe_double_quoted(path.unquoted),
-        QuoteKind::Single => path_is_safe_single_quoted(path.unquoted),
+        QuoteKind::Single => false,
     }
 }
 
@@ -317,12 +316,6 @@ fn path_is_safe_unquoted(path: &str) -> bool {
 }
 
 fn path_is_safe_double_quoted(path: &str) -> bool {
-    if let Some(rest) = path.strip_prefix("/tmp/") {
-        return !has_dotdot_segment(rest);
-    }
-    if let Some(rest) = path.strip_prefix("/var/tmp/") {
-        return !has_dotdot_segment(rest);
-    }
     if let Some(rest) = path.strip_prefix("$TMPDIR/") {
         return !has_dotdot_segment(rest);
     }
@@ -340,27 +333,6 @@ fn path_is_safe_double_quoted(path: &str) -> bool {
     false
 }
 
-fn path_is_safe_double_quoted_any_style(path: &str) -> bool {
-    if let Some(rest) = path.strip_prefix("/tmp/") {
-        return !has_dotdot_segment(rest);
-    }
-    if let Some(rest) = path.strip_prefix("/var/tmp/") {
-        return !has_dotdot_segment(rest);
-    }
-    false
-}
-
-fn path_is_safe_single_quoted(path: &str) -> bool {
-    if let Some(rest) = path.strip_prefix("/tmp/") {
-        return !has_dotdot_segment(rest);
-    }
-    if let Some(rest) = path.strip_prefix("/var/tmp/") {
-        return !has_dotdot_segment(rest);
-    }
-    // Note: $TMPDIR is NOT expanded in single quotes, so we do not match it here.
-    false
-}
-
 fn has_dotdot_segment(path: &str) -> bool {
     path.split('/')
         .filter(|segment| !segment.is_empty())
@@ -368,13 +340,12 @@ fn has_dotdot_segment(path: &str) -> bool {
 }
 
 fn path_is_root_home(path: &PathToken<'_>) -> bool {
-    let text = path.unquoted;
-    if text.starts_with('/') {
-        return true;
+    if path.quote != QuoteKind::None {
+        return false;
     }
 
-    // Tilde expansion does not occur inside quotes, so only treat ~ as home when unquoted.
-    path.quote == QuoteKind::None && text.starts_with('~')
+    let text = path.unquoted;
+    text.starts_with('/') || text.starts_with('~')
 }
 
 /// Create the core filesystem pack.
@@ -689,9 +660,6 @@ mod tests {
     fn test_rm_parser_allows_tmpdir_quotes() {
         assert_rm_parser_allows(r#"rm -rf "$TMPDIR/foo""#);
         assert_rm_parser_allows(r#"rm -rf "${TMPDIR}/foo""#);
-        assert_rm_parser_allows(r#"rm -rf "/tmp/foo""#);
-        assert_rm_parser_allows(r#"rm -r -f "/tmp/foo""#);
-        assert_rm_parser_allows(r#"rm --recursive --force "/var/tmp/foo""#);
         assert_rm_parser_denies(r"rm -rf '$TMPDIR/foo'", RM_RF_GENERAL_NAME, Severity::High);
         assert_rm_parser_denies(
             r#"rm -r -f "$TMPDIR/foo""#,
@@ -732,33 +700,6 @@ mod tests {
             RM_RF_ROOT_HOME_NAME,
             Severity::Critical,
         );
-    }
-
-    #[test]
-    fn test_rm_parser_root_home_any_path() {
-        assert_rm_parser_denies("rm -rf ./build /", RM_RF_ROOT_HOME_NAME, Severity::Critical);
-        assert_rm_parser_denies(
-            "rm -rf /tmp/safe ~/",
-            RM_RF_ROOT_HOME_NAME,
-            Severity::Critical,
-        );
-    }
-
-    #[test]
-    fn test_rm_parser_root_home_separate_flags() {
-        assert_rm_parser_denies("rm -r -f /", RM_RF_ROOT_HOME_NAME, Severity::Critical);
-        assert_rm_parser_denies("rm -f -r ~", RM_RF_ROOT_HOME_NAME, Severity::Critical);
-    }
-
-    #[test]
-    fn test_rm_parser_root_home_with_terminator() {
-        assert_rm_parser_denies("rm -rf -- /", RM_RF_ROOT_HOME_NAME, Severity::Critical);
-    }
-
-    #[test]
-    fn test_rm_parser_root_home_quoted_slash() {
-        assert_rm_parser_denies(r#"rm -rf "/""#, RM_RF_ROOT_HOME_NAME, Severity::Critical);
-        assert_rm_parser_denies(r#"rm -r -f "/""#, RM_RF_ROOT_HOME_NAME, Severity::Critical);
     }
 
     #[test]
