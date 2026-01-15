@@ -295,7 +295,7 @@ impl ContextClassifier {
                     } else {
                         let (next, skipped) = wrapper.consume_token(word_unquoted);
                         wrapper = next;
-                        
+
                         if !skipped && !is_env_assignment(word_unquoted) {
                             current_command = Some(word_unquoted);
                             is_interpreter = self.is_interpreter_command(word_unquoted);
@@ -339,7 +339,7 @@ impl ContextClassifier {
                                 }
                             }
                             // Word break happens at quote start
-                            last_word_start = i; 
+                            last_word_start = i;
 
                             if i > span_start {
                                 spans.push(Span::new(current_kind, span_start, i));
@@ -390,7 +390,7 @@ impl ContextClassifier {
                                 if process_word!(word) {
                                     // Command substitution as inline code argument?
                                     // e.g. python -c $(cat script.py)
-                                    // This is unusual but possible. 
+                                    // This is unusual but possible.
                                     pending_inline_code = true;
                                 }
                             }
@@ -428,7 +428,7 @@ impl ContextClassifier {
                                 let word = &command[last_word_start..i];
                                 let _ = process_word!(word);
                             }
-                            
+
                             if i > span_start {
                                 spans.push(Span::new(current_kind, span_start, i));
                             }
@@ -449,12 +449,12 @@ impl ContextClassifier {
                             last_word_start = i;
                             current_kind = SpanKind::Executed;
                             pending_inline_code = false;
-                            
+
                             // Reset command tracking state on separator
                             current_command = None;
                             wrapper = WrapperState::None;
                             is_interpreter = false;
-                            
+
                             continue;
                         }
                         b'#' => {
@@ -490,7 +490,7 @@ impl ContextClassifier {
                             stack.pop();
                             // End of word? Actually, "foo"bar is one word.
                             // We don't update last_word_start here, we just continue token.
-                            
+
                             // Only emit span if we are not inside a command substitution
                             if !matches!(
                                 stack.last(),

@@ -9,7 +9,7 @@
 //! - Graceful schema migrations
 
 use chrono::{DateTime, Utc};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
@@ -367,6 +367,87 @@ impl HistoryDb {
     pub fn vacuum(&self) -> Result<(), HistoryError> {
         self.conn.execute("VACUUM", [])?;
         Ok(())
+    }
+
+    /// Prune entries older than the specified number of days.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delete operation fails.
+    pub fn prune_older_than(&self, days: i64) -> Result<u64, HistoryError> {
+        let cutoff = Utc::now() - chrono::Duration::days(days);
+        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+
+        let count = self.conn.execute(
+            "DELETE FROM commands WHERE timestamp < ?1",
+            params![cutoff_str],
+        )?;
+
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
+    /// Prune oldest entries until the database file size is under the target size (in bytes).
+    ///
+    /// Note: This operation performs a VACUUM which effectively rewrites the database file.
+    /// This can be slow for large databases.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if file operations or database queries fail.
+    pub fn prune_to_size(&self, target_bytes: u64) -> Result<u64, HistoryError> {
+        let mut current_size = self.file_size()?;
+        if current_size <= target_bytes {
+            return Ok(0);
+        }
+
+        let mut deleted_total = 0;
+
+        // Loop until we are under the target size
+        while current_size > target_bytes {
+            let total_rows = self.count_commands()?;
+            if total_rows == 0 {
+                break;
+            }
+
+            // Estimate how many rows to delete.
+            // We assume row density is roughly uniform.
+            let excess_bytes = current_size.saturating_sub(target_bytes);
+            let fraction_to_delete = (excess_bytes as f64) / (current_size as f64);
+            // Delete slightly more (1.1x) to ensure we make progress and minimize VACUUM cycles
+            let rows_to_delete = ((total_rows as f64) * fraction_to_delete * 1.1) as u64;
+            let rows_to_delete = rows_to_delete.max(100); // Delete at least 100 rows (or all if < 100)
+
+            let count = self.conn.execute(
+                "DELETE FROM commands WHERE id IN (SELECT id FROM commands ORDER BY id ASC LIMIT ?1)",
+                params![rows_to_delete as i64],
+            )?;
+
+            deleted_total += count;
+
+            if count == 0 {
+                break; // Should not happen if count_commands > 0
+            }
+
+            // VACUUM to reclaim space and update file size
+            self.vacuum()?;
+            current_size = self.file_size()?;
+        }
+
+        Ok(u64::try_from(deleted_total).unwrap_or(0))
+    }
+
+    /// Count rows that would be deleted by `prune_older_than`.
+    pub fn prune_older_than_dry_run(&self, days: i64) -> Result<u64, HistoryError> {
+        let cutoff = Utc::now() - chrono::Duration::days(days);
+        let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM commands WHERE timestamp < ?1",
+            params![cutoff_str],
+            |row| row.get(0),
+        )?;
+
+        Ok(u64::try_from(count).unwrap_or(0))
     }
 
     /// Initialize the database schema.

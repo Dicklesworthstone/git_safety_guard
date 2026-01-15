@@ -505,6 +505,33 @@ pub enum HistoryAction {
         /// SQL query to execute (SELECT only)
         sql: String,
     },
+
+    /// Prune old history entries to save space
+    #[command(name = "prune")]
+    Prune(HistoryPruneArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryPruneArgs {
+    /// Delete entries older than N days
+    #[arg(long, conflicts_with = "to_size_mb")]
+    pub older_than_days: Option<i64>,
+
+    /// Prune oldest entries until DB is smaller than N MB
+    #[arg(long, conflicts_with = "older_than_days")]
+    pub to_size_mb: Option<u64>,
+
+    /// Run VACUUM after pruning to reclaim disk space
+    #[arg(long)]
+    pub vacuum: bool,
+
+    /// Dry run (show what would be deleted)
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// Skip confirmation
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 /// Pattern type for dev test-pattern command
@@ -5462,6 +5489,75 @@ fn handle_history_command(
         Some(HistoryAction::Query { sql }) => {
             history_query(&db, &sql)?;
         }
+        Some(HistoryAction::Prune(args)) => {
+            history_prune(&db, args)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Prune history entries
+fn history_prune(db: &HistoryDb, args: HistoryPruneArgs) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+    use std::io::IsTerminal;
+
+    if args.dry_run {
+        println!("{}", "Dry Run Mode".yellow());
+    } else if !args.yes && std::io::stdout().is_terminal() {
+        return Err("Pruning is destructive. Use --yes to confirm.".into());
+    }
+
+    if let Some(days) = args.older_than_days {
+        if args.dry_run {
+            let count = db.prune_older_than_dry_run(days)?;
+            println!(
+                "Would prune {} entries older than {} days.",
+                count.to_string().cyan(),
+                days
+            );
+        } else {
+            let count = db.prune_older_than(days)?;
+            println!(
+                "Pruned {} entries older than {} days.",
+                count.to_string().green(),
+                days
+            );
+
+            if args.vacuum {
+                println!("Vacuuming database...");
+                db.vacuum()?;
+                println!("Database vacuumed.");
+            }
+        }
+    } else if let Some(mb) = args.to_size_mb {
+        let target_bytes = mb * 1024 * 1024;
+        if args.dry_run {
+            println!("Would prune entries until size is under {} MB.", mb);
+            let current = db.file_size()?;
+            if current > target_bytes {
+                println!(
+                    "Current size: {:.1} MB, Target: {} MB",
+                    current as f64 / 1_024.0 / 1_024.0,
+                    mb
+                );
+            } else {
+                println!("Current size is already under target.");
+            }
+        } else {
+            let count = db.prune_to_size(target_bytes)?;
+            println!(
+                "Pruned {} entries to reach target size {} MB.",
+                count.to_string().green(),
+                mb
+            );
+        }
+    } else if args.vacuum {
+        println!("Vacuuming database...");
+        db.vacuum()?;
+        println!("Database vacuumed.");
+    } else {
+        return Err("Specify --older-than-days, --to-size-mb, or --vacuum".into());
     }
 
     Ok(())

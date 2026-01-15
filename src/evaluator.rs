@@ -1537,7 +1537,7 @@ fn check_fallback_patterns(command: &str) -> Option<EvaluationResult> {
             r"child_process\.execSync",
             r"child_process\.spawnSync",
             r"os\.RemoveAll",
-            r"\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b", // rm -rf, rm -fr, rm -r -f
+            r"\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f|(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR])\b",
             r"\bgit\s+reset\s+--hard\b",
         ])
         .expect("fallback patterns must compile")

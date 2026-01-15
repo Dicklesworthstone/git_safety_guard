@@ -168,7 +168,7 @@ impl<R: Read> SimulateParser<R> {
         // Read next line with size limit
         let mut line = String::new();
         let max_len = self.limits.max_line_bytes.unwrap_or(usize::MAX);
-        
+
         match read_line_bounded(&mut self.reader, &mut line, max_len) {
             Ok(0) => return None, // EOF
             Ok(n) => {
@@ -179,10 +179,10 @@ impl<R: Read> SimulateParser<R> {
                 // Line too long
                 self.stats.lines_read += 1;
                 self.stats.malformed_count += 1;
-                // consume remainder of line to recover sync? 
+                // consume remainder of line to recover sync?
                 // For now, just report error. The reader state is at max_len.
                 // We should probably consume past limit.
-                
+
                 // Let's just return Malformed error.
                 if self.strict {
                     return Some(Err(ParseError::Malformed {
@@ -190,16 +190,16 @@ impl<R: Read> SimulateParser<R> {
                         error: format!("line exceeds max length ({max_len} bytes)"),
                     }));
                 }
-                
+
                 // If not strict, we treat as Malformed but need to advance stream to next line
                 // to avoid re-reading the tail as a new line.
-                // However, simplistic recovery might be dangerous. 
+                // However, simplistic recovery might be dangerous.
                 // Let's just return Malformed and let the loop continue (which might read tail).
                 // Actually, if we read partial line, next call reads tail.
                 // Tail might be valid command. This is bad for "Simulate".
                 // We should skip until newline.
                 consume_until_newline(&mut self.reader);
-                
+
                 return Some(Ok(ParsedLine::Malformed {
                     error: format!("line exceeds max length ({max_len} bytes)"),
                 }));
@@ -1639,19 +1639,19 @@ echo world
             max_line_bytes: Some(10),
             ..Default::default()
         };
-        
+
         // "short" is 5 bytes + \n = 6 bytes (ok)
         // "this is too long" is > 10 bytes (fail)
         // "ok" is 2 bytes + \n = 3 bytes (ok)
         let input = "short\nthis is too long\nok\n";
-        
+
         let parser = SimulateParser::new(input.as_bytes(), limits);
         let (commands, stats) = parser.collect_commands().unwrap();
-        
+
         assert_eq!(commands.len(), 2);
         assert_eq!(commands[0].command, "short");
         assert_eq!(commands[1].command, "ok");
-        
+
         assert_eq!(stats.lines_read, 3);
         assert_eq!(stats.malformed_count, 1);
     }
@@ -1661,7 +1661,11 @@ echo world
 // Helpers
 // =============================================================================
 
-fn read_line_bounded<R: BufRead>(reader: &mut R, buf: &mut String, max_len: usize) -> std::io::Result<usize> {
+fn read_line_bounded<R: BufRead>(
+    reader: &mut R,
+    buf: &mut String,
+    max_len: usize,
+) -> std::io::Result<usize> {
     let mut total_read = 0;
     loop {
         let available = reader.fill_buf()?;
@@ -1685,10 +1689,9 @@ fn read_line_bounded<R: BufRead>(reader: &mut R, buf: &mut String, max_len: usiz
         }
 
         let chunk = &available[..to_read];
-        let chunk_str = std::str::from_utf8(chunk).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })?;
-        
+        let chunk_str = std::str::from_utf8(chunk)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
         buf.push_str(chunk_str);
         reader.consume(to_read);
         total_read += to_read;
@@ -1706,12 +1709,12 @@ fn consume_until_newline<R: BufRead>(reader: &mut R) {
             Ok(buf) if !buf.is_empty() => buf,
             _ => return,
         };
-        
+
         if let Some(pos) = available.iter().position(|&b| b == b'\n') {
             reader.consume(pos + 1);
             return;
         }
-        
+
         let len = available.len();
         reader.consume(len);
     }
