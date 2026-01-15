@@ -1,13 +1,13 @@
-//! Command telemetry database for DCG.
+//! Command history database for DCG.
 //!
-//! This module provides SQLite-based telemetry collection and querying for
+//! This module provides SQLite-based history collection and querying for
 //! tracking all commands evaluated by DCG across agent sessions.
 //!
 //! # Architecture
 //!
 //! ```text
 //! ┌─────────────────────────────────────────────────────────────────┐
-//! │                      TelemetryDb                                 │
+//! │                      HistoryDb                                   │
 //! │  (SQLite database for command history and analytics)            │
 //! └─────────────────────────────────────────────────────────────────┘
 //!                                  │
@@ -22,9 +22,9 @@
 //! # Usage
 //!
 //! ```ignore
-//! use destructive_command_guard::telemetry::{TelemetryDb, CommandEntry, Outcome};
+//! use destructive_command_guard::history::{HistoryDb, CommandEntry, Outcome};
 //!
-//! let db = TelemetryDb::open(None)?; // Uses default path
+//! let db = HistoryDb::open(None)?; // Uses default path
 //! db.log_command(&CommandEntry {
 //!     timestamp: chrono::Utc::now(),
 //!     agent_type: "claude_code".into(),
@@ -37,65 +37,68 @@
 
 mod schema;
 
-use crate::config::{TelemetryConfig, TelemetryRedactionMode};
+use crate::config::{HistoryConfig, HistoryRedactionMode};
 use crate::logging::{RedactionConfig, RedactionMode};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
 pub use schema::{
-    CURRENT_SCHEMA_VERSION, CommandEntry, DEFAULT_DB_FILENAME, Outcome, TelemetryDb, TelemetryError,
+    AgentStat, CURRENT_SCHEMA_VERSION, CommandEntry, DEFAULT_DB_FILENAME, ExportFilters,
+    ExportOptions, ExportedData, HistoryDb, HistoryError, HistoryStats, Outcome, OutcomeStats,
+    PackEffectivenessAnalysis, PackRecommendation, PatternEffectiveness, PatternStat,
+    PerformanceStats, PotentialGap, ProjectStat, RecommendationType, StatsTrends,
 };
 
-/// Environment variable to override the telemetry database path.
-pub const ENV_TELEMETRY_DB_PATH: &str = "DCG_TELEMETRY_DB";
+/// Environment variable to override the history database path.
+pub const ENV_HISTORY_DB_PATH: &str = "DCG_HISTORY_DB";
 
-/// Environment variable to disable telemetry collection entirely.
-pub const ENV_TELEMETRY_DISABLED: &str = "DCG_TELEMETRY_DISABLED";
+/// Environment variable to disable history collection entirely.
+pub const ENV_HISTORY_DISABLED: &str = "DCG_HISTORY_DISABLED";
 
-enum TelemetryMessage {
+enum HistoryMessage {
     Entry(Box<CommandEntry>),
     Flush(mpsc::Sender<()>),
     Shutdown,
 }
 
 #[derive(Clone)]
-pub struct TelemetryFlushHandle {
-    sender: mpsc::Sender<TelemetryMessage>,
+pub struct HistoryFlushHandle {
+    sender: mpsc::Sender<HistoryMessage>,
 }
 
-impl TelemetryFlushHandle {
+impl HistoryFlushHandle {
     /// Flush and wait for pending writes to complete.
     pub fn flush_sync(&self) {
         const FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
         let (ack_tx, ack_rx) = mpsc::channel();
-        if self.sender.send(TelemetryMessage::Flush(ack_tx)).is_ok() {
+        if self.sender.send(HistoryMessage::Flush(ack_tx)).is_ok() {
             let _ = ack_rx.recv_timeout(FLUSH_TIMEOUT);
         }
     }
 }
 
-/// Asynchronous telemetry writer.
-pub struct TelemetryWriter {
-    sender: Option<mpsc::Sender<TelemetryMessage>>,
+/// Asynchronous history writer.
+pub struct HistoryWriter {
+    sender: Option<mpsc::Sender<HistoryMessage>>,
     handle: Option<thread::JoinHandle<()>>,
-    redaction_mode: TelemetryRedactionMode,
+    redaction_mode: HistoryRedactionMode,
 }
 
-impl TelemetryWriter {
-    /// Create a new telemetry writer.
+impl HistoryWriter {
+    /// Create a new history writer.
     ///
     /// The writer is disabled when `config.enabled` is false.
     #[must_use]
-    pub fn new(db: TelemetryDb, config: &TelemetryConfig) -> Self {
+    pub fn new(db: HistoryDb, config: &HistoryConfig) -> Self {
         if !config.enabled {
             return Self::disabled();
         }
 
-        let (sender, receiver) = mpsc::channel::<TelemetryMessage>();
+        let (sender, receiver) = mpsc::channel::<HistoryMessage>();
         let Ok(handle) = thread::Builder::new()
-            .name("dcg-telemetry-writer".to_string())
-            .spawn(move || telemetry_worker(db, receiver))
+            .name("dcg-history-writer".to_string())
+            .spawn(move || history_worker(db, receiver))
         else {
             // Thread spawn failed - return disabled writer to avoid leaking
             // messages into a channel with no receiver.
@@ -114,22 +117,22 @@ impl TelemetryWriter {
         Self {
             sender: None,
             handle: None,
-            redaction_mode: TelemetryRedactionMode::Pattern,
+            redaction_mode: HistoryRedactionMode::Pattern,
         }
     }
 
     #[must_use]
-    pub fn flush_handle(&self) -> Option<TelemetryFlushHandle> {
-        self.sender.as_ref().map(|sender| TelemetryFlushHandle {
+    pub fn flush_handle(&self) -> Option<HistoryFlushHandle> {
+        self.sender.as_ref().map(|sender| HistoryFlushHandle {
             sender: sender.clone(),
         })
     }
 
     /// Log a command entry asynchronously.
     pub fn log(&self, mut entry: CommandEntry) {
-        entry.command = redact_for_telemetry(&entry.command, self.redaction_mode);
+        entry.command = redact_for_history(&entry.command, self.redaction_mode);
         if let Some(sender) = &self.sender {
-            let _ = sender.send(TelemetryMessage::Entry(Box::new(entry)));
+            let _ = sender.send(HistoryMessage::Entry(Box::new(entry)));
         }
     }
 
@@ -137,7 +140,7 @@ impl TelemetryWriter {
     pub fn flush(&self) {
         if let Some(sender) = &self.sender {
             let (ack_tx, _ack_rx) = mpsc::channel();
-            let _ = sender.send(TelemetryMessage::Flush(ack_tx));
+            let _ = sender.send(HistoryMessage::Flush(ack_tx));
         }
     }
 
@@ -149,12 +152,12 @@ impl TelemetryWriter {
     }
 }
 
-impl Drop for TelemetryWriter {
+impl Drop for HistoryWriter {
     fn drop(&mut self) {
         self.flush_sync();
 
         if let Some(sender) = self.sender.take() {
-            let _ = sender.send(TelemetryMessage::Shutdown);
+            let _ = sender.send(HistoryMessage::Shutdown);
         }
         if let Some(handle) = self.handle.take() {
             let _ = handle.join();
@@ -163,37 +166,37 @@ impl Drop for TelemetryWriter {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn telemetry_worker(db: TelemetryDb, receiver: mpsc::Receiver<TelemetryMessage>) {
+fn history_worker(db: HistoryDb, receiver: mpsc::Receiver<HistoryMessage>) {
     while let Ok(message) = receiver.recv() {
         match message {
-            TelemetryMessage::Entry(entry) => {
+            HistoryMessage::Entry(entry) => {
                 let _ = db.log_command(&entry);
             }
-            TelemetryMessage::Flush(ack) => {
-                let should_shutdown = drain_telemetry_messages(&db, &receiver);
+            HistoryMessage::Flush(ack) => {
+                let should_shutdown = drain_history_messages(&db, &receiver);
                 let _ = ack.send(());
                 if should_shutdown {
                     break;
                 }
             }
-            TelemetryMessage::Shutdown => {
+            HistoryMessage::Shutdown => {
                 break;
             }
         }
     }
 }
 
-fn drain_telemetry_messages(db: &TelemetryDb, receiver: &mpsc::Receiver<TelemetryMessage>) -> bool {
+fn drain_history_messages(db: &HistoryDb, receiver: &mpsc::Receiver<HistoryMessage>) -> bool {
     let mut shutdown = false;
     for message in receiver.try_iter() {
         match message {
-            TelemetryMessage::Entry(entry) => {
+            HistoryMessage::Entry(entry) => {
                 let _ = db.log_command(&entry);
             }
-            TelemetryMessage::Flush(ack) => {
+            HistoryMessage::Flush(ack) => {
                 let _ = ack.send(());
             }
-            TelemetryMessage::Shutdown => {
+            HistoryMessage::Shutdown => {
                 shutdown = true;
             }
         }
@@ -201,11 +204,11 @@ fn drain_telemetry_messages(db: &TelemetryDb, receiver: &mpsc::Receiver<Telemetr
     shutdown
 }
 
-fn redact_for_telemetry(command: &str, mode: TelemetryRedactionMode) -> String {
+fn redact_for_history(command: &str, mode: HistoryRedactionMode) -> String {
     match mode {
-        TelemetryRedactionMode::None => command.to_string(),
-        TelemetryRedactionMode::Full => "[REDACTED]".to_string(),
-        TelemetryRedactionMode::Pattern => {
+        HistoryRedactionMode::None => command.to_string(),
+        HistoryRedactionMode::Full => "[REDACTED]".to_string(),
+        HistoryRedactionMode::Pattern => {
             let config = RedactionConfig {
                 enabled: true,
                 mode: RedactionMode::Arguments,
