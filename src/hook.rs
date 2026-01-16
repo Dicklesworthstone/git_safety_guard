@@ -155,17 +155,86 @@ fn format_explain_hint(command: &str) -> String {
     format!("Tip: dcg explain \"{escaped}\"")
 }
 
+fn build_rule_id(pack: Option<&str>, pattern: Option<&str>) -> Option<String> {
+    match (pack, pattern) {
+        (Some(pack_id), Some(pattern_name)) => Some(format!("{pack_id}:{pattern_name}")),
+        _ => None,
+    }
+}
+
+fn format_explanation_text(
+    explanation: Option<&str>,
+    rule_id: Option<&str>,
+    pack: Option<&str>,
+) -> String {
+    let trimmed = explanation.map(str::trim).filter(|text| !text.is_empty());
+
+    if let Some(text) = trimmed {
+        return text.to_string();
+    }
+
+    if let Some(rule) = rule_id {
+        return format!(
+            "Matched destructive pattern {rule}. No additional explanation is available \
+             yet. See pack documentation for details."
+        );
+    }
+
+    if let Some(pack_name) = pack {
+        return format!(
+            "Matched destructive pack {pack_name}. No additional explanation is available \
+             yet. See pack documentation for details."
+        );
+    }
+
+    "Matched a destructive pattern. No additional explanation is available yet. \
+     See pack documentation for details."
+        .to_string()
+}
+
+fn format_explanation_block(explanation: &str) -> String {
+    let mut lines = explanation.lines();
+    let Some(first) = lines.next() else {
+        return "Explanation:".to_string();
+    };
+
+    let mut output = format!("Explanation: {first}");
+    for line in lines {
+        output.push('\n');
+        output.push_str("             ");
+        output.push_str(line);
+    }
+    output
+}
+
 /// Format the denial message for the JSON output (plain text).
 #[must_use]
-pub fn format_denial_message(command: &str, reason: &str) -> String {
+pub fn format_denial_message(
+    command: &str,
+    reason: &str,
+    explanation: Option<&str>,
+    pack: Option<&str>,
+    pattern: Option<&str>,
+) -> String {
     let explain_hint = format_explain_hint(command);
+    let rule_id = build_rule_id(pack, pattern);
+    let explanation_text = format_explanation_text(explanation, rule_id.as_deref(), pack);
+    let explanation_block = format_explanation_block(&explanation_text);
     format!(
         "BLOCKED by dcg\n\n\
          {explain_hint}\n\n\
          Reason: {reason}\n\n\
+         {explanation_block}\n\n\
+         {rule_line}\
          Command: {command}\n\n\
          If this operation is truly needed, ask the user for explicit \
-         permission and have them run the command manually."
+         permission and have them run the command manually.",
+        rule_line = rule_id.as_deref().map_or_else(
+            || pack
+                .map(|pack_name| format!("Pack: {pack_name}\n\n"))
+                .unwrap_or_default(),
+            |rule| format!("Rule: {rule}\n\n"),
+        )
     )
 }
 
@@ -216,6 +285,7 @@ pub fn print_colorful_warning(
     reason: &str,
     pack: Option<&str>,
     pattern: Option<&str>,
+    explanation: Option<&str>,
     allow_once_code: Option<&str>,
 ) {
     // Box width (content area, excluding border characters)
@@ -272,10 +342,7 @@ pub fn print_colorful_warning(
     );
 
     // Build rule_id from pack and pattern (for registry lookup and display)
-    let rule_id = match (pack, pattern) {
-        (Some(p), Some(pat)) => Some(format!("{p}:{pat}")),
-        _ => None,
-    };
+    let rule_id = build_rule_id(pack, pattern);
 
     // Rule ID (stable identifier for allowlisting)
     if let Some(ref rule) = rule_id {
@@ -312,6 +379,30 @@ pub fn print_colorful_warning(
             let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
         } else {
             let indent = " ".repeat(reason_label.len());
+            let padding = WIDTH.saturating_sub(indent.len() + line.len());
+            let _ = write!(handle, "{}", "│".red());
+            let _ = write!(handle, "{}{}", indent, line.white());
+            let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
+        }
+    }
+
+    // Empty line
+    let _ = writeln!(handle, "{}{}{}", "│".red(), " ".repeat(WIDTH), "│".red());
+
+    let explanation_text = format_explanation_text(explanation, rule_id.as_deref(), pack);
+    let explanation_label = "  Explanation: ";
+    let explanation_width = WIDTH.saturating_sub(explanation_label.len() + 1);
+    let wrapped_explanation = wrap_text_preserve_indent(&explanation_text, explanation_width);
+
+    for (i, line) in wrapped_explanation.iter().enumerate() {
+        if i == 0 {
+            let _ = write!(handle, "{}", "│".red());
+            let _ = write!(handle, "  {} ", "Explanation:".yellow().bold());
+            let _ = write!(handle, "{}", line.white());
+            let padding = WIDTH.saturating_sub(explanation_label.len() + line.len());
+            let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
+        } else {
+            let indent = " ".repeat(explanation_label.len());
             let padding = WIDTH.saturating_sub(indent.len() + line.len());
             let _ = write!(handle, "{}", "│".red());
             let _ = write!(handle, "{}{}", indent, line.white());
@@ -510,6 +601,38 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// Wrap text while preserving line breaks and indentation.
+fn wrap_text_preserve_indent(text: &str, width: usize) -> Vec<String> {
+    let mut wrapped_lines = Vec::new();
+
+    for raw_line in text.lines() {
+        if raw_line.trim().is_empty() {
+            wrapped_lines.push(String::new());
+            continue;
+        }
+
+        let indent_end = raw_line
+            .char_indices()
+            .take_while(|(_, ch)| ch.is_whitespace())
+            .last()
+            .map_or(0, |(idx, ch)| idx + ch.len_utf8());
+        let indent = &raw_line[..indent_end];
+        let content = raw_line[indent_end..].trim_start();
+        let available = width.saturating_sub(indent.chars().count());
+        let segments = wrap_text(content, available.max(1));
+
+        for segment in segments {
+            wrapped_lines.push(format!("{indent}{segment}"));
+        }
+    }
+
+    if wrapped_lines.is_empty() {
+        wrapped_lines.push(String::new());
+    }
+
+    wrapped_lines
+}
+
 /// Get context-specific suggestion based on the blocked command.
 fn get_contextual_suggestion(command: &str) -> Option<&'static str> {
     if command.contains("reset") || command.contains("checkout") {
@@ -552,14 +675,15 @@ pub fn output_denial(
     reason: &str,
     pack: Option<&str>,
     pattern: Option<&str>,
+    explanation: Option<&str>,
     allow_once: Option<&AllowOnceInfo>,
 ) {
     // Print colorful warning to stderr (visible to user)
     let allow_once_code = allow_once.map(|info| info.code.as_str());
-    print_colorful_warning(command, reason, pack, pattern, allow_once_code);
+    print_colorful_warning(command, reason, pack, pattern, explanation, allow_once_code);
 
     // Build JSON response for hook protocol (stdout)
-    let message = format_denial_message(command, reason);
+    let message = format_denial_message(command, reason, explanation, pack, pattern);
 
     let output = HookOutput {
         hook_specific_output: HookSpecificOutput {
@@ -581,7 +705,13 @@ pub fn output_denial(
 /// Output a warning to stderr (no JSON deny; command is allowed).
 #[cold]
 #[inline(never)]
-pub fn output_warning(command: &str, reason: &str, pack: Option<&str>, pattern: Option<&str>) {
+pub fn output_warning(
+    command: &str,
+    reason: &str,
+    pack: Option<&str>,
+    pattern: Option<&str>,
+    explanation: Option<&str>,
+) {
     let stderr = io::stderr();
     let mut handle = stderr.lock();
 
@@ -594,10 +724,16 @@ pub fn output_warning(command: &str, reason: &str, pack: Option<&str>, pattern: 
     );
 
     // Build rule_id from pack and pattern
-    let rule_id = match (pack, pattern) {
-        (Some(p), Some(pat)) => Some(format!("{p}:{pat}")),
-        _ => None,
-    };
+    let rule_id = build_rule_id(pack, pattern);
+    let explanation_text = format_explanation_text(explanation, rule_id.as_deref(), pack);
+    let mut explanation_lines = explanation_text.lines();
+
+    if let Some(first) = explanation_lines.next() {
+        let _ = writeln!(handle, "  {} {}", "Explanation:".bright_black(), first);
+        for line in explanation_lines {
+            let _ = writeln!(handle, "               {line}");
+        }
+    }
 
     if let Some(ref rule) = rule_id {
         let _ = writeln!(handle, "  {} {}", "Rule:".bright_black(), rule);
@@ -823,9 +959,17 @@ mod tests {
 
     #[test]
     fn test_format_denial_message() {
-        let msg = format_denial_message("git reset --hard", "destroys uncommitted changes");
+        let msg = format_denial_message(
+            "git reset --hard",
+            "destroys uncommitted changes",
+            Some("Rewrites history and discards uncommitted changes."),
+            Some("core.git"),
+            Some("reset-hard"),
+        );
         assert!(msg.contains("git reset --hard"));
         assert!(msg.contains("destroys uncommitted changes"));
+        assert!(msg.contains("Explanation: Rewrites history and discards uncommitted changes."));
+        assert!(msg.contains("Rule: core.git:reset-hard"));
         assert!(msg.contains("BLOCKED"));
     }
 
@@ -882,7 +1026,14 @@ mod tests {
             "Chinese test string must be >50 chars, got {}",
             long_chinese.chars().count()
         );
-        print_colorful_warning(long_chinese, "test reason", Some("test.pack"), None, None);
+        print_colorful_warning(
+            long_chinese,
+            "test reason",
+            Some("test.pack"),
+            None,
+            None,
+            None,
+        );
 
         // Japanese characters - also >50 chars
         let long_japanese = "rm -rf /home/ユーザー/ドキュメント/フォルダ/サブフォルダ/ファイル/もっとフォルダ/最後/追加パス";
@@ -891,7 +1042,7 @@ mod tests {
             "Japanese test string must be >50 chars, got {}",
             long_japanese.chars().count()
         );
-        print_colorful_warning(long_japanese, "test reason", None, None, None);
+        print_colorful_warning(long_japanese, "test reason", None, None, None, None);
 
         // Mixed ASCII and emoji (emoji are 4 bytes) - >50 chars
         let long_emoji = "echo 🎉🎊🎈🎁🎀🎄🎃🎂🎆🎇🧨✨🎍🎎🎏🎐🎑🧧🎀🎁🎗🎟🎫🎖🏆🏅🥇🥈🥉⚽️🏀🏈⚾️🥎🎾🏐🏉🥏🎱🪀🏓🏸🥊🥋";
@@ -900,7 +1051,14 @@ mod tests {
             "Emoji test string must be >50 chars, got {}",
             long_emoji.chars().count()
         );
-        print_colorful_warning(long_emoji, "test reason", Some("emoji.pack"), None, None);
+        print_colorful_warning(
+            long_emoji,
+            "test reason",
+            Some("emoji.pack"),
+            None,
+            None,
+            None,
+        );
     }
 
     // =============================================================================
@@ -930,7 +1088,13 @@ mod tests {
     #[test]
     fn test_format_denial_message_contains_explain_hint() {
         // The JSON denial message should include the explain hint
-        let msg = format_denial_message("git reset --hard", "destroys uncommitted changes");
+        let msg = format_denial_message(
+            "git reset --hard",
+            "destroys uncommitted changes",
+            None,
+            Some("core.git"),
+            Some("reset-hard"),
+        );
         assert!(
             msg.contains(r#"Tip: dcg explain "git reset --hard""#),
             "Denial message should contain explain hint, got: {msg}"
@@ -940,12 +1104,21 @@ mod tests {
     #[test]
     fn test_format_denial_message_explain_hint_position() {
         // Verify the explain hint comes after "BLOCKED" but before "Reason:"
-        let msg = format_denial_message("rm -rf /", "dangerous filesystem operation");
+        let msg = format_denial_message(
+            "rm -rf /",
+            "dangerous filesystem operation",
+            None,
+            Some("core.filesystem"),
+            Some("rm-root"),
+        );
         let blocked_pos = msg.find("BLOCKED").expect("should contain BLOCKED");
         let tip_pos = msg
             .find("Tip: dcg explain")
             .expect("should contain explain hint");
         let reason_pos = msg.find("Reason:").expect("should contain Reason:");
+        let explanation_pos = msg
+            .find("Explanation:")
+            .expect("should contain Explanation:");
 
         assert!(
             blocked_pos < tip_pos,
@@ -954,6 +1127,10 @@ mod tests {
         assert!(
             tip_pos < reason_pos,
             "Explain hint should come before Reason:"
+        );
+        assert!(
+            reason_pos < explanation_pos,
+            "Reason should come before Explanation"
         );
     }
 
@@ -967,9 +1144,17 @@ mod tests {
             "force push",
             Some("git"),
             Some("force_push"),
+            Some("Force pushes can overwrite remote history."),
             None,
         );
-        print_colorful_warning("rm -rf /", "filesystem", Some("fs"), None, Some("12345"));
-        print_colorful_warning(r#"echo "quoted""#, "echo", None, None, None);
+        print_colorful_warning(
+            "rm -rf /",
+            "filesystem",
+            Some("fs"),
+            None,
+            None,
+            Some("12345"),
+        );
+        print_colorful_warning(r#"echo "quoted""#, "echo", None, None, None, None);
     }
 }
