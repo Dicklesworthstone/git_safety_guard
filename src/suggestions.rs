@@ -1531,7 +1531,7 @@ mod tests {
         let exp = fallback_explanation(Some("core.git"), None);
         assert!(exp.contains("core.git"));
         assert!(exp.contains("dcg explain"));
-        assert!(!exp.contains(":")); // No pattern separator
+        assert!(!exp.contains(':')); // No pattern separator
     }
 
     #[test]

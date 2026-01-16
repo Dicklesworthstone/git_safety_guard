@@ -2415,6 +2415,7 @@ fn handle_explain(
             match_start: pattern.matched_span.map(|s| s.start),
             match_end: pattern.matched_span.map(|s| s.end),
             matched_text_preview: pattern.matched_text_preview.clone(),
+            explanation: pattern.explanation.clone(),
         });
     }
 

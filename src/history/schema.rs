@@ -18,7 +18,7 @@ use std::fmt::Write as FmtWrite;
 use std::path::{Path, PathBuf};
 
 /// Current schema version for migrations.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// Default database filename.
 pub const DEFAULT_DB_FILENAME: &str = "history.db";
@@ -147,6 +147,11 @@ pub struct CommandEntry {
     /// Pattern name that matched (if any).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pattern_name: Option<String>,
+    /// Stable rule identifier: pack_id:pattern_name
+    /// Present only for denied commands that matched a pattern.
+    /// Format: "core.git:reset-hard", "core.filesystem:rm-rf-root"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rule_id: Option<String>,
     /// Evaluation duration in microseconds.
     #[serde(default)]
     pub eval_duration_us: u64,
@@ -180,6 +185,7 @@ impl Default for CommandEntry {
             outcome: Outcome::Allow,
             pack_id: None,
             pattern_name: None,
+            rule_id: None,
             eval_duration_us: 0,
             session_id: None,
             exit_code: None,
@@ -188,6 +194,34 @@ impl Default for CommandEntry {
             allowlist_layer: None,
             bypass_code: None,
         }
+    }
+}
+
+impl CommandEntry {
+    /// Compute and return the rule_id from pack_id and pattern_name.
+    /// Returns `Some("pack_id:pattern_name")` if both are present, else `None`.
+    #[must_use]
+    pub fn compute_rule_id(&self) -> Option<String> {
+        match (&self.pack_id, &self.pattern_name) {
+            (Some(pack), Some(pattern)) => Some(format!("{pack}:{pattern}")),
+            _ => None,
+        }
+    }
+
+    /// Get the rule_id, using the stored value or computing it from parts.
+    #[must_use]
+    pub fn get_rule_id(&self) -> Option<String> {
+        self.rule_id.clone().or_else(|| self.compute_rule_id())
+    }
+
+    /// Ensure rule_id is set from pack_id and pattern_name if not already set.
+    /// Returns true if rule_id was set or already present.
+    pub fn ensure_rule_id(&mut self) -> bool {
+        if self.rule_id.is_some() {
+            return true;
+        }
+        self.rule_id = self.compute_rule_id();
+        self.rule_id.is_some()
     }
 }
 
@@ -745,14 +779,20 @@ impl HistoryDb {
 
         let eval_duration_us = i64::try_from(entry.eval_duration_us).unwrap_or(i64::MAX);
 
+        // Compute rule_id if not already set but pack_id and pattern_name are present
+        let rule_id = entry
+            .rule_id
+            .clone()
+            .or_else(|| entry.compute_rule_id());
+
         self.conn.execute(
             r"INSERT INTO commands (
                 timestamp, agent_type, working_dir, command, command_hash,
-                outcome, pack_id, pattern_name, eval_duration_us,
+                outcome, pack_id, pattern_name, rule_id, eval_duration_us,
                 session_id, exit_code, parent_command_id, hostname,
                 allowlist_layer, bypass_code
             ) VALUES (
-                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+                ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
             )",
             params![
                 timestamp,
@@ -763,6 +803,7 @@ impl HistoryDb {
                 entry.outcome.as_str(),
                 entry.pack_id,
                 entry.pattern_name,
+                rule_id,
                 eval_duration_us,
                 entry.session_id,
                 entry.exit_code,
@@ -843,6 +884,7 @@ impl HistoryDb {
                 outcome TEXT NOT NULL CHECK (outcome IN ('allow', 'deny', 'warn', 'bypass')),
                 pack_id TEXT,
                 pattern_name TEXT,
+                rule_id TEXT,
                 eval_duration_us INTEGER DEFAULT 0,
                 session_id TEXT,
                 exit_code INTEGER,
@@ -868,6 +910,10 @@ impl HistoryDb {
 
             -- Pack analysis
             CREATE INDEX IF NOT EXISTS idx_commands_pack_id ON commands(pack_id);
+
+            -- Rule ID for per-pattern analytics (only indexed for non-NULL values)
+            CREATE INDEX IF NOT EXISTS idx_commands_rule_id ON commands(rule_id)
+                WHERE rule_id IS NOT NULL;
 
             -- Agent breakdown
             CREATE INDEX IF NOT EXISTS idx_commands_agent_type ON commands(agent_type);
@@ -948,6 +994,9 @@ impl HistoryDb {
         if from_version < 3 {
             self.migrate_v2_to_v3()?;
         }
+        if from_version < 4 {
+            self.migrate_v3_to_v4()?;
+        }
 
         // Ensure we're at the expected version
         let current = self.get_schema_version()?;
@@ -1020,6 +1069,46 @@ impl HistoryDb {
         Ok(())
     }
 
+    fn migrate_v3_to_v4(&self) -> Result<(), HistoryError> {
+        // Add rule_id column for stable pattern identification
+        // Check if column exists first
+        let columns: Vec<String> = self
+            .conn
+            .prepare("PRAGMA table_info(commands)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+
+        if !columns.iter().any(|col| col == "rule_id") {
+            self.conn
+                .execute("ALTER TABLE commands ADD COLUMN rule_id TEXT", [])?;
+        }
+
+        // Backfill rule_id from existing pack_id and pattern_name
+        self.conn.execute(
+            r"UPDATE commands
+              SET rule_id = pack_id || ':' || pattern_name
+              WHERE rule_id IS NULL
+                AND pack_id IS NOT NULL
+                AND pattern_name IS NOT NULL",
+            [],
+        )?;
+
+        // Create index for rule_id queries (partial index for non-NULL values)
+        self.conn.execute(
+            r"CREATE INDEX IF NOT EXISTS idx_commands_rule_id
+              ON commands(rule_id) WHERE rule_id IS NOT NULL",
+            [],
+        )?;
+
+        // Record migration
+        self.conn.execute(
+            "INSERT INTO schema_version (version, description) VALUES (?1, ?2)",
+            params![4_u32, "Add rule_id column and index"],
+        )?;
+
+        Ok(())
+    }
+
     // ========================================================================
     // Batch Operations
     // ========================================================================
@@ -1048,9 +1137,9 @@ impl HistoryDb {
                     timestamp, agent_type, working_dir, command, command_hash,
                     outcome, pack_id, pattern_name, eval_duration_us,
                     session_id, exit_code, parent_command_id, hostname,
-                    allowlist_layer, bypass_code
+                    allowlist_layer, bypass_code, rule_id
                 ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16
                 )",
                 params![
                     timestamp,
@@ -1068,6 +1157,7 @@ impl HistoryDb {
                     entry.hostname,
                     entry.allowlist_layer,
                     entry.bypass_code,
+                    entry.get_rule_id(),
                 ],
             )?;
         }
@@ -1500,7 +1590,7 @@ impl HistoryDb {
     ) -> Result<Vec<CommandEntry>, HistoryError> {
         let mut sql = String::from(
             "SELECT timestamp, agent_type, working_dir, command, outcome,
-                    pack_id, pattern_name, eval_duration_us, session_id,
+                    pack_id, pattern_name, rule_id, eval_duration_us, session_id,
                     exit_code, parent_command_id, hostname, allowlist_layer, bypass_code
              FROM commands WHERE 1=1",
         );
@@ -1538,7 +1628,7 @@ impl HistoryDb {
             let outcome_str: String = row.get(4)?;
             let outcome = Outcome::parse(&outcome_str).unwrap_or(Outcome::Allow);
 
-            let eval_duration_us: i64 = row.get(7)?;
+            let eval_duration_us: i64 = row.get(8)?;
 
             Ok(CommandEntry {
                 timestamp,
@@ -1548,13 +1638,14 @@ impl HistoryDb {
                 outcome,
                 pack_id: row.get(5)?,
                 pattern_name: row.get(6)?,
+                rule_id: row.get(7)?,
                 eval_duration_us: u64::try_from(eval_duration_us).unwrap_or(0),
-                session_id: row.get(8)?,
-                exit_code: row.get(9)?,
-                parent_command_id: row.get(10)?,
-                hostname: row.get(11)?,
-                allowlist_layer: row.get(12)?,
-                bypass_code: row.get(13)?,
+                session_id: row.get(9)?,
+                exit_code: row.get(10)?,
+                parent_command_id: row.get(11)?,
+                hostname: row.get(12)?,
+                allowlist_layer: row.get(13)?,
+                bypass_code: row.get(14)?,
             })
         })?;
 
@@ -2852,6 +2943,7 @@ mod tests {
             outcome: Outcome::Deny,
             pack_id: Some("core.git".to_string()),
             pattern_name: Some("force-push".to_string()),
+            rule_id: None,
             eval_duration_us: 1500,
             session_id: Some("session-123".to_string()),
             exit_code: Some(0),
