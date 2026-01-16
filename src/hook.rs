@@ -1290,4 +1290,184 @@ mod tests {
             "normal red normal"
         );
     }
+
+    // =============================================================================
+    // Explanation rendering tests (git_safety_guard-r97e.5)
+    // =============================================================================
+
+    #[test]
+    fn test_format_explanation_text_with_explicit_explanation() {
+        let result = format_explanation_text(
+            Some("This command is dangerous because it deletes everything."),
+            Some("core.git:reset-hard"),
+            Some("core.git"),
+        );
+        assert_eq!(
+            result,
+            "This command is dangerous because it deletes everything."
+        );
+    }
+
+    #[test]
+    fn test_format_explanation_text_trims_whitespace() {
+        // Leading/trailing whitespace should be trimmed
+        let result = format_explanation_text(
+            Some("  Trimmed explanation  \n"),
+            Some("core.git:reset-hard"),
+            Some("core.git"),
+        );
+        assert_eq!(result, "Trimmed explanation");
+    }
+
+    #[test]
+    fn test_format_explanation_text_empty_string_fallback_to_rule() {
+        // Empty string should trigger fallback
+        let result =
+            format_explanation_text(Some(""), Some("core.git:reset-hard"), Some("core.git"));
+        assert!(
+            result.contains("Matched destructive pattern core.git:reset-hard"),
+            "Expected fallback with rule_id, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_format_explanation_text_whitespace_only_fallback_to_rule() {
+        // Whitespace-only should trigger fallback
+        let result = format_explanation_text(
+            Some("   \n\t  "),
+            Some("core.git:reset-hard"),
+            Some("core.git"),
+        );
+        assert!(
+            result.contains("Matched destructive pattern core.git:reset-hard"),
+            "Expected fallback with rule_id, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_format_explanation_text_none_fallback_to_rule() {
+        // None should trigger fallback with rule_id
+        let result = format_explanation_text(
+            None,
+            Some("core.filesystem:rm-root"),
+            Some("core.filesystem"),
+        );
+        assert!(
+            result.contains("Matched destructive pattern core.filesystem:rm-root"),
+            "Expected fallback with rule_id, got: {result}"
+        );
+        assert!(
+            result.contains("No additional explanation is available"),
+            "Expected fallback text, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_format_explanation_text_none_fallback_to_pack() {
+        // None with no rule_id should fallback to pack
+        let result = format_explanation_text(None, None, Some("containers.docker"));
+        assert!(
+            result.contains("Matched destructive pack containers.docker"),
+            "Expected fallback with pack_name, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_format_explanation_text_none_fallback_generic() {
+        // None with no rule_id and no pack should use generic fallback
+        let result = format_explanation_text(None, None, None);
+        assert!(
+            result.contains("Matched a destructive pattern"),
+            "Expected generic fallback, got: {result}"
+        );
+        assert!(
+            result.contains("No additional explanation is available"),
+            "Expected fallback text, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_format_explanation_block_single_line() {
+        let result = format_explanation_block("Single line explanation.");
+        assert_eq!(result, "Explanation: Single line explanation.");
+    }
+
+    #[test]
+    fn test_format_explanation_block_multi_line() {
+        let explanation = "First line of explanation.\nSecond line continues.\nThird line ends.";
+        let result = format_explanation_block(explanation);
+
+        // First line should be on the same line as label
+        assert!(result.starts_with("Explanation: First line of explanation."));
+        // Subsequent lines should be indented to align with first line
+        assert!(result.contains("\n             Second line continues."));
+        assert!(result.contains("\n             Third line ends."));
+    }
+
+    #[test]
+    fn test_format_explanation_block_empty_string() {
+        let result = format_explanation_block("");
+        assert_eq!(result, "Explanation:");
+    }
+
+    #[test]
+    fn test_format_explanation_block_preserves_internal_whitespace() {
+        let explanation = "Line with  multiple   spaces.";
+        let result = format_explanation_block(explanation);
+        assert!(result.contains("multiple   spaces"));
+    }
+
+    #[test]
+    fn test_format_denial_message_with_explicit_explanation() {
+        let msg = format_denial_message(
+            "docker system prune -af",
+            "removes all unused data",
+            Some("This removes all stopped containers, unused networks, dangling images."),
+            Some("containers.docker"),
+            Some("system-prune"),
+        );
+        assert!(
+            msg.contains("This removes all stopped containers"),
+            "Should contain explicit explanation"
+        );
+        assert!(
+            !msg.contains("No additional explanation is available"),
+            "Should NOT contain fallback text when explicit explanation provided"
+        );
+    }
+
+    #[test]
+    fn test_format_denial_message_with_fallback_explanation() {
+        let msg = format_denial_message(
+            "docker system prune -af",
+            "removes all unused data",
+            None, // No explicit explanation
+            Some("containers.docker"),
+            Some("system-prune"),
+        );
+        assert!(
+            msg.contains("Matched destructive pattern containers.docker:system-prune"),
+            "Should contain fallback with rule_id"
+        );
+        assert!(
+            msg.contains("No additional explanation is available"),
+            "Should contain fallback text"
+        );
+    }
+
+    #[test]
+    fn test_format_denial_message_pack_only_fallback() {
+        let msg = format_denial_message(
+            "some-command --dangerous",
+            "dangerous operation",
+            None, // No explicit explanation
+            Some("core.filesystem"),
+            None, // No pattern name - only pack
+        );
+        assert!(
+            msg.contains("Matched destructive pack core.filesystem")
+                || msg.contains("No additional explanation"),
+            "Should contain pack fallback or generic fallback, got: {msg}"
+        );
+    }
 }

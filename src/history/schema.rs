@@ -3411,7 +3411,9 @@ mod tests {
     #[test]
     fn test_coverage_gap_detection() {
         let db = HistoryDb::open_in_memory().unwrap();
-        let now = Utc::now();
+        // Use a timestamp slightly in the past to avoid race condition with
+        // analyze_pack_effectiveness which uses Utc::now() as the end bound
+        let entry_time = Utc::now() - Duration::seconds(1);
 
         // Insert allowed commands that look dangerous
         let dangerous_commands = [
@@ -3422,7 +3424,7 @@ mod tests {
 
         for cmd in &dangerous_commands {
             let entry = CommandEntry {
-                timestamp: now,
+                timestamp: entry_time,
                 agent_type: "claude_code".to_string(),
                 working_dir: "/test/project".to_string(),
                 command: cmd.to_string(),
