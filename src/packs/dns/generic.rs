@@ -37,43 +37,17 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         destructive_pattern!(
             "dns-nsupdate-delete",
             r"(?:\bnsupdate\b.*\bdelete\b|\bdelete\b.*\|\s*\bnsupdate\b)",
-            "nsupdate delete commands remove DNS records.",
-            High,
-            "nsupdate delete removes DNS records from the authoritative server using \
-             dynamic DNS updates (RFC 2136). Changes take effect immediately and can \
-             break services relying on those records.\n\n\
-             Safer alternatives:\n\
-             - Test in a non-production zone first\n\
-             - Use 'prereq' commands to verify record state before delete\n\
-             - Keep backup of zone file or export current records"
+            "nsupdate delete commands remove DNS records."
         ),
         destructive_pattern!(
             "dns-nsupdate-local",
             r"\bnsupdate\b.*\s-l\b",
-            "nsupdate -l applies local updates which can modify DNS records.",
-            Medium,
-            "nsupdate -l uses local (loopback) TSIG authentication, allowing DNS \
-             modifications without network credentials. This is convenient for local \
-             testing but can accidentally modify production DNS if run on the wrong \
-             server.\n\n\
-             Safer alternatives:\n\
-             - Verify you are on the intended server before running\n\
-             - Use explicit server and key options for clarity\n\
-             - Test changes with 'show' before 'send'"
+            "nsupdate -l applies local updates which can modify DNS records."
         ),
         destructive_pattern!(
             "dns-dig-zone-transfer",
             r"\bdig\b.*\b(?:axfr|ixfr)\b",
-            "dig AXFR/IXFR zone transfers can exfiltrate full zone data.",
-            Medium,
-            "Zone transfers (AXFR/IXFR) download complete DNS zone data, revealing all \
-             hostnames, internal IPs, and infrastructure topology. This information aids \
-             reconnaissance for attacks. Most zones should restrict transfers to known \
-             secondary servers.\n\n\
-             Safer alternatives:\n\
-             - Use standard dig queries for specific records\n\
-             - Request zone transfer permissions through proper channels\n\
-             - Check if zone transfer is authorized for your IP"
+            "dig AXFR/IXFR zone transfers can exfiltrate full zone data."
         ),
     ]
 }

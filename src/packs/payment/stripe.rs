@@ -59,93 +59,38 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         destructive_pattern!(
             "stripe-webhook-endpoints-delete",
             r"\bstripe\b(?:\s+--?\S+(?:\s+\S+)?)*\s+webhook[_-]endpoints\s+delete\b",
-            "stripe webhook_endpoints delete removes a Stripe webhook endpoint, breaking notifications.",
-            High,
-            "Deleting a webhook endpoint stops Stripe event notifications for that URL. Your \
-             application will miss payment confirmations, subscription updates, dispute alerts, \
-             and other critical events until the webhook is recreated.\n\n\
-             Safer alternatives:\n\
-             - stripe webhook_endpoints list to verify before deletion\n\
-             - Disable the endpoint instead of deleting if temporary\n\
-             - Ensure backup webhook is configured before deletion"
+            "stripe webhook_endpoints delete removes a Stripe webhook endpoint, breaking notifications."
         ),
         destructive_pattern!(
             "stripe-customers-delete",
             r"\bstripe\b(?:\s+--?\S+(?:\s+\S+)?)*\s+customers\s+delete\b",
-            "stripe customers delete permanently deletes a customer.",
-            Critical,
-            "Deleting a customer removes their payment methods, subscriptions, and billing \
-             history from Stripe. This can affect compliance records, break recurring billing, \
-             and lose valuable customer data that cannot be recovered.\n\n\
-             Safer alternatives:\n\
-             - Cancel subscriptions and mark customer inactive instead\n\
-             - stripe customers retrieve to verify customer data first\n\
-             - Export customer data before deletion for compliance"
+            "stripe customers delete permanently deletes a customer."
         ),
         destructive_pattern!(
             "stripe-products-delete",
             r"\bstripe\b(?:\s+--?\S+(?:\s+\S+)?)*\s+products\s+delete\b",
-            "stripe products delete permanently deletes a product.",
-            High,
-            "Deleting a product removes it from your catalog. Associated prices remain but \
-             become orphaned. Existing subscriptions using this product may behave unexpectedly \
-             and invoice line items will lose product metadata.\n\n\
-             Safer alternatives:\n\
-             - Archive the product by setting active=false instead\n\
-             - stripe products retrieve to verify before deletion\n\
-             - Ensure no active subscriptions reference this product"
+            "stripe products delete permanently deletes a product."
         ),
         destructive_pattern!(
             "stripe-prices-delete",
             r"\bstripe\b(?:\s+--?\S+(?:\s+\S+)?)*\s+prices\s+delete\b",
-            "stripe prices delete permanently deletes a price.",
-            High,
-            "Deleting a price removes the pricing configuration. Active subscriptions using \
-             this price will fail to renew or behave unexpectedly. New purchases cannot use \
-             this price ID, breaking checkout integrations that reference it.\n\n\
-             Safer alternatives:\n\
-             - Archive the price by setting active=false instead\n\
-             - Create a new price rather than modifying existing one\n\
-             - Check for active subscriptions using this price first"
+            "stripe prices delete permanently deletes a price."
         ),
         destructive_pattern!(
             "stripe-coupons-delete",
             r"\bstripe\b(?:\s+--?\S+(?:\s+\S+)?)*\s+coupons\s+delete\b",
-            "stripe coupons delete permanently deletes a coupon.",
-            High,
-            "Deleting a coupon prevents new redemptions and removes the discount from future \
-             invoices. Customers with the coupon applied to their subscription will lose the \
-             discount on their next renewal.\n\n\
-             Safer alternatives:\n\
-             - Set coupon max_redemptions or redeem_by to expire naturally\n\
-             - stripe coupons retrieve to verify before deletion\n\
-             - Communicate discount changes to affected customers first"
+            "stripe coupons delete permanently deletes a coupon."
         ),
         destructive_pattern!(
             "stripe-api-keys-roll",
             r"\bstripe\b(?:\s+--?\S+(?:\s+\S+)?)*\s+api[_-]keys\s+roll\b",
             "stripe api_keys roll rotates API keys; coordinate to avoid outages.",
-            Medium,
-            "Rolling API keys invalidates the old key immediately. Any service using the old \
-             key will fail authentication until updated. In production, this can cause payment \
-             processing outages if not coordinated across all systems.\n\n\
-             Safer alternatives:\n\
-             - Deploy new key to all services before rolling\n\
-             - Use key restriction to limit blast radius\n\
-             - Test key rotation in test mode first"
+            Medium
         ),
         destructive_pattern!(
             "stripe-api-delete",
             r"(?i)curl\s+.*(?:-X|--request)\s+DELETE\b.*api\.stripe\.com.*\/v1\/",
-            "Stripe API DELETE calls remove Stripe resources.",
-            High,
-            "Direct API DELETE calls permanently remove Stripe resources without CLI \
-             confirmation prompts. This bypasses safety checks and can delete customers, \
-             products, subscriptions, or other critical payment data.\n\n\
-             Safer alternatives:\n\
-             - Use stripe CLI which provides confirmation prompts\n\
-             - GET the resource first to verify ID is correct\n\
-             - Test in Stripe test mode before production"
+            "Stripe API DELETE calls remove Stripe resources."
         ),
     ]
 }

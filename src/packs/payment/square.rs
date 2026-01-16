@@ -46,67 +46,27 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         destructive_pattern!(
             "square-catalog-delete",
             r"\bsquare\b(?:\s+--?\S+(?:\s+\S+)?)*\s+catalog\s+delete\b",
-            "square catalog delete removes catalog objects, impacting products and inventory.",
-            High,
-            "Deleting catalog objects removes products, variations, modifiers, or categories \
-             from your Square catalog. POS systems, online stores, and invoicing that \
-             reference these items will show errors or missing products.\n\n\
-             Safer alternatives:\n\
-             - square catalog list to review items first\n\
-             - Set item visibility to hidden instead of deleting\n\
-             - Export catalog backup before bulk deletions"
+            "square catalog delete removes catalog objects, impacting products and inventory."
         ),
         destructive_pattern!(
             "square-api-delete-catalog-object",
             r"(?i)curl\s+.*(?:-X|--request)\s+DELETE\b.*api\.squareup\.com[^\s]*?/v2/catalog/object/[^\s]+",
-            "Square API DELETE /v2/catalog/object/{id} deletes a catalog object.",
-            High,
-            "Direct API deletion of catalog objects bypasses CLI safety checks. Products, \
-             categories, taxes, discounts, and modifiers can be permanently removed, \
-             breaking POS workflows and e-commerce integrations.\n\n\
-             Safer alternatives:\n\
-             - GET /v2/catalog/object/{id} to verify before deletion\n\
-             - Use batch operations with careful ID validation\n\
-             - Test in Square sandbox environment first"
+            "Square API DELETE /v2/catalog/object/{id} deletes a catalog object."
         ),
         destructive_pattern!(
             "square-api-delete-customer",
             r"(?i)curl\s+.*(?:-X|--request)\s+DELETE\b.*api\.squareup\.com[^\s]*?/v2/customers/[^\s]+",
-            "Square API DELETE /v2/customers/{id} deletes a customer.",
-            Critical,
-            "Deleting a Square customer removes their profile, cards on file, and loyalty \
-             data. Transaction history loses customer context, affecting reporting and \
-             CRM. Repeat customers will need to re-register.\n\n\
-             Safer alternatives:\n\
-             - GET /v2/customers/{id} to verify customer before deletion\n\
-             - Remove cards on file instead of full deletion\n\
-             - Export customer data before deletion for compliance"
+            "Square API DELETE /v2/customers/{id} deletes a customer."
         ),
         destructive_pattern!(
             "square-api-delete-location",
             r"(?i)curl\s+.*(?:-X|--request)\s+DELETE\b.*api\.squareup\.com[^\s]*?/v2/locations/[^\s]+",
-            "Square API DELETE /v2/locations/{id} deletes a location.",
-            Critical,
-            "Deleting a location removes a business location from Square. This affects \
-             payment processing, inventory tracking, and employee management for that \
-             location. Transactions cannot be processed at a deleted location.\n\n\
-             Safer alternatives:\n\
-             - Set location status to inactive instead of deleting\n\
-             - GET /v2/locations/{id} to verify location details first\n\
-             - Transfer inventory and employees before deletion"
+            "Square API DELETE /v2/locations/{id} deletes a location."
         ),
         destructive_pattern!(
             "square-api-delete-webhook-subscription",
             r"(?i)curl\s+.*(?:-X|--request)\s+DELETE\b.*api\.squareup\.com[^\s]*?/v2/webhooks/subscriptions/[^\s]+",
-            "Square API DELETE /v2/webhooks/subscriptions/{id} deletes a webhook subscription.",
-            High,
-            "Deleting a webhook subscription stops event notifications for payments, \
-             refunds, inventory changes, and other business events. Your application \
-             will miss critical updates until the subscription is recreated.\n\n\
-             Safer alternatives:\n\
-             - Disable the webhook subscription instead of deleting\n\
-             - GET /v2/webhooks/subscriptions to verify subscription ID\n\
-             - Set up backup notification channels before removal"
+            "Square API DELETE /v2/webhooks/subscriptions/{id} deletes a webhook subscription."
         ),
     ]
 }

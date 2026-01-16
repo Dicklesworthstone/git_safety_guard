@@ -54,80 +54,32 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         destructive_pattern!(
             "route53-delete-hosted-zone",
             r"aws\s+route53\s+delete-hosted-zone\b",
-            "aws route53 delete-hosted-zone permanently deletes a Route53 hosted zone.",
-            Critical,
-            "Deleting a hosted zone removes ALL DNS records for that domain. Services, \
-             websites, and email that depend on these records will become unreachable. \
-             The zone must be empty (except NS/SOA) before AWS allows deletion.\n\n\
-             Safer alternatives:\n\
-             - aws route53 list-resource-record-sets to review records first\n\
-             - Export zone to file before deletion\n\
-             - Delete individual records instead of the entire zone"
+            "aws route53 delete-hosted-zone permanently deletes a Route53 hosted zone."
         ),
         destructive_pattern!(
             "route53-change-resource-record-sets-delete",
             r"aws\s+route53\s+change-resource-record-sets\b.*\bDELETE\b",
-            "aws route53 change-resource-record-sets with DELETE removes DNS records.",
-            High,
-            "DELETE actions in change-resource-record-sets immediately remove DNS records. \
-             DNS caching may provide brief respite, but resolvers will fail to reach your \
-             services once caches expire (often within minutes for low TTL records).\n\n\
-             Safer alternatives:\n\
-             - Use UPSERT action to modify rather than delete and recreate\n\
-             - Test changes in a non-production hosted zone first\n\
-             - Use aws route53 list-resource-record-sets to verify record state"
+            "aws route53 change-resource-record-sets with DELETE removes DNS records."
         ),
         destructive_pattern!(
             "route53-delete-health-check",
             r"aws\s+route53\s+delete-health-check\b",
-            "aws route53 delete-health-check permanently deletes a Route53 health check.",
-            High,
-            "Deleting a health check can disrupt DNS failover. If records reference this \
-             health check, Route53 may route traffic to unhealthy endpoints or stop \
-             failover entirely, causing outages.\n\n\
-             Safer alternatives:\n\
-             - aws route53 get-health-check to review configuration first\n\
-             - Check which records use this health check before deletion\n\
-             - Update dependent records to use a different health check first"
+            "aws route53 delete-health-check permanently deletes a Route53 health check."
         ),
         destructive_pattern!(
             "route53-delete-query-logging-config",
             r"aws\s+route53\s+delete-query-logging-config\b",
-            "aws route53 delete-query-logging-config removes a Route53 query logging configuration.",
-            Medium,
-            "Deleting query logging stops DNS query visibility for that hosted zone. This \
-             can impact debugging, security monitoring, and compliance auditing. Historical \
-             logs in CloudWatch remain, but new queries will not be logged.\n\n\
-             Safer alternatives:\n\
-             - aws route53 get-query-logging-config to review before deletion\n\
-             - Disable logging temporarily by updating the config instead\n\
-             - Ensure CloudWatch log retention meets compliance needs"
+            "aws route53 delete-query-logging-config removes a Route53 query logging configuration."
         ),
         destructive_pattern!(
             "route53-delete-traffic-policy",
             r"aws\s+route53\s+delete-traffic-policy\b",
-            "aws route53 delete-traffic-policy permanently deletes a Route53 traffic policy.",
-            High,
-            "Deleting a traffic policy removes the routing logic. Policy instances \
-             (applied to hosted zones) will fail to update or may stop working. This \
-             can disrupt geo-routing, latency-based routing, or weighted distributions.\n\n\
-             Safer alternatives:\n\
-             - aws route53 list-traffic-policy-instances to check usage first\n\
-             - Create a new policy version instead of deleting\n\
-             - Delete policy instances before deleting the policy itself"
+            "aws route53 delete-traffic-policy permanently deletes a Route53 traffic policy."
         ),
         destructive_pattern!(
             "route53-delete-reusable-delegation-set",
             r"aws\s+route53\s+delete-reusable-delegation-set\b",
-            "aws route53 delete-reusable-delegation-set permanently deletes a reusable delegation set.",
-            High,
-            "Deleting a reusable delegation set affects all hosted zones using it. If \
-             domain registrars point to these name servers, DNS resolution will fail \
-             for all associated domains until registrar records are updated.\n\n\
-             Safer alternatives:\n\
-             - Check which hosted zones use this delegation set first\n\
-             - Migrate zones to a different delegation set before deletion\n\
-             - Update domain registrar NS records after any changes"
+            "aws route53 delete-reusable-delegation-set permanently deletes a reusable delegation set."
         ),
     ]
 }

@@ -51,52 +51,22 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         destructive_pattern!(
             "cloudflare-wrangler-dns-delete",
             r"wrangler(?:\s+--?\S+(?:\s+\S+)?)*\s+dns-records\s+delete\b",
-            "wrangler dns-records delete removes a Cloudflare DNS record.",
-            High,
-            "Deleting a DNS record can immediately break connectivity to your website, API, \
-             or mail server. Propagation is fast on Cloudflare, so traffic may fail within \
-             seconds.\n\n\
-             Safer alternatives:\n\
-             - wrangler dns-records list to review records first\n\
-             - Export zone file as backup before deletion\n\
-             - Use Cloudflare dashboard for confirmation prompts"
+            "wrangler dns-records delete removes a Cloudflare DNS record."
         ),
         destructive_pattern!(
             "cloudflare-api-delete-dns-record",
             r"curl\b.*-X\s*DELETE\b.*\bapi\.cloudflare\.com\b[^\s]*?/dns_records/[^\s]+",
-            "curl -X DELETE against /dns_records/{id} deletes a Cloudflare DNS record.",
-            High,
-            "API deletion of a DNS record takes effect immediately across Cloudflare's network. \
-             There is no confirmation prompt when using curl directly.\n\n\
-             Safer alternatives:\n\
-             - GET the record first to verify the ID is correct\n\
-             - Use Terraform or Pulumi for auditable, reversible changes\n\
-             - Export zone configuration as backup before deletion"
+            "curl -X DELETE against /dns_records/{id} deletes a Cloudflare DNS record."
         ),
         destructive_pattern!(
             "cloudflare-api-delete-zone",
             r"curl\b.*-X\s*DELETE\b.*\bapi\.cloudflare\.com\b[^\s]*?/zones/[^\s]+",
-            "curl -X DELETE against /zones/{id} deletes a Cloudflare zone.",
-            Critical,
-            "Deleting a zone removes ALL DNS records, page rules, firewall rules, and \
-             settings for that domain. This can cause complete outage for all services \
-             on the domain with no easy recovery.\n\n\
-             Safer alternatives:\n\
-             - Export full zone configuration first\n\
-             - Remove individual records instead of the entire zone\n\
-             - Transfer domain to another Cloudflare account if needed"
+            "curl -X DELETE against /zones/{id} deletes a Cloudflare zone."
         ),
         destructive_pattern!(
             "cloudflare-terraform-destroy-record",
             r"terraform\s+destroy\s+.*-target=(?:resource\.)?cloudflare_record\.",
-            "terraform destroy -target=cloudflare_record deletes specific DNS records.",
-            High,
-            "Terraform destroy removes DNS records from Cloudflare. While Terraform state \
-             tracks the change, the DNS deletion is immediate and can break services.\n\n\
-             Safer alternatives:\n\
-             - terraform plan -destroy -target=... to preview first\n\
-             - Remove from terraform config and run terraform apply instead\n\
-             - Use terraform state rm to stop managing without deleting"
+            "terraform destroy -target=cloudflare_record deletes specific DNS records."
         ),
     ]
 }

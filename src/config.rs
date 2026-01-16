@@ -42,9 +42,6 @@ pub struct Config {
     /// General settings.
     pub general: GeneralConfig,
 
-    /// Output display settings.
-    pub output: OutputConfig,
-
     /// Pack configuration.
     pub packs: PacksConfig,
 
@@ -63,8 +60,8 @@ pub struct Config {
     /// Structured logging configuration.
     pub logging: crate::logging::LoggingConfig,
 
-    /// Command history configuration.
-    pub history: HistoryConfig,
+    /// Command telemetry configuration.
+    pub telemetry: TelemetryConfig,
 
     /// Project-specific configurations (keyed by absolute path).
     #[serde(default)]
@@ -90,14 +87,13 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Deserialize)]
 struct ConfigLayer {
     general: Option<GeneralConfigLayer>,
-    output: Option<OutputConfigLayer>,
     packs: Option<PacksConfig>,
     policy: Option<PolicyConfig>,
     overrides: Option<OverridesConfig>,
     heredoc: Option<HeredocConfig>,
     confidence: Option<ConfidenceConfigLayer>,
     logging: Option<LoggingConfigLayer>,
-    history: Option<HistoryConfigLayer>,
+    telemetry: Option<TelemetryConfigLayer>,
     projects: Option<std::collections::HashMap<String, ProjectConfig>>,
 }
 
@@ -111,12 +107,6 @@ struct GeneralConfigLayer {
     max_findings_per_command: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Deserialize)]
-struct OutputConfigLayer {
-    highlight_enabled: Option<bool>,
-    explanations_enabled: Option<bool>,
-}
-
 #[derive(Debug, Clone, Default, Deserialize)]
 struct LoggingConfigLayer {
     enabled: Option<bool>,
@@ -127,9 +117,9 @@ struct LoggingConfigLayer {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-struct HistoryConfigLayer {
+struct TelemetryConfigLayer {
     enabled: Option<bool>,
-    redaction_mode: Option<HistoryRedactionMode>,
+    redaction_mode: Option<TelemetryRedactionMode>,
     retention_days: Option<u32>,
     max_size_mb: Option<u32>,
     database_path: Option<String>,
@@ -314,7 +304,7 @@ pub struct HeredocAllowlistConfig {
 }
 
 /// A pattern-based heredoc allowlist entry.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AllowedHeredocPattern {
     /// Optional language filter (e.g., "python", "bash"). If None, matches any language.
     pub language: Option<String>,
@@ -784,37 +774,6 @@ impl GeneralConfig {
     }
 }
 
-/// Output display configuration.
-///
-/// Controls optional output enhancements like span highlighting and explanations.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct OutputConfig {
-    /// Enable span highlighting in denial output.
-    /// When enabled, shows caret-style markers under the matched portion.
-    /// Default: true
-    pub highlight_enabled: Option<bool>,
-
-    /// Enable explanations in denial output.
-    /// When enabled, shows detailed explanations for why patterns are dangerous.
-    /// Default: true
-    pub explanations_enabled: Option<bool>,
-}
-
-impl OutputConfig {
-    /// Check if span highlighting is enabled (default: true).
-    #[must_use]
-    pub fn highlight_enabled(&self) -> bool {
-        self.highlight_enabled.unwrap_or(true)
-    }
-
-    /// Check if explanations are enabled (default: true).
-    #[must_use]
-    pub fn explanations_enabled(&self) -> bool {
-        self.explanations_enabled.unwrap_or(true)
-    }
-}
-
 /// Pack enablement configuration.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -824,19 +783,6 @@ pub struct PacksConfig {
 
     /// List of explicitly disabled packs (for disabling sub-packs of enabled categories).
     pub disabled: Vec<String>,
-
-    /// Paths to custom external pack YAML files.
-    ///
-    /// Supports glob patterns and tilde expansion:
-    /// - `~/.config/dcg/packs/*.yaml` - User-level packs
-    /// - `.dcg/packs/*.yaml` - Project-level packs
-    /// - `/etc/dcg/packs/*.yaml` - System-wide packs
-    ///
-    /// Files are loaded in order; later files with the same pack ID override earlier ones.
-    /// Pack loading is fail-open: invalid files are logged as warnings but don't prevent
-    /// loading valid packs.
-    #[serde(default)]
-    pub custom_paths: Vec<String>,
 }
 
 impl PacksConfig {
@@ -911,7 +857,7 @@ pub enum PolicyMode {
     Deny,
     /// Warn but allow (print warning to stderr, no JSON deny).
     Warn,
-    /// Log only (silent allow, record for history).
+    /// Log only (silent allow, record for telemetry).
     Log,
 }
 
@@ -1063,10 +1009,10 @@ pub struct BlockOverride {
     pub reason: String,
 }
 
-/// Redaction mode for command history.
+/// Redaction mode for command telemetry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
-pub enum HistoryRedactionMode {
+pub enum TelemetryRedactionMode {
     /// Store commands without redaction.
     None,
     /// Redact sensitive values using pattern-based filters.
@@ -1076,7 +1022,7 @@ pub enum HistoryRedactionMode {
     Full,
 }
 
-impl std::str::FromStr for HistoryRedactionMode {
+impl std::str::FromStr for TelemetryRedactionMode {
     type Err = String;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
@@ -1084,48 +1030,34 @@ impl std::str::FromStr for HistoryRedactionMode {
             "none" => Ok(Self::None),
             "pattern" => Ok(Self::Pattern),
             "full" => Ok(Self::Full),
-            _ => Err(format!("invalid history redaction mode: {value}")),
+            _ => Err(format!("invalid telemetry redaction mode: {value}")),
         }
     }
 }
 
-/// History configuration options.
+/// Telemetry configuration options.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct HistoryConfig {
-    /// Enable command history collection.
+pub struct TelemetryConfig {
+    /// Enable command telemetry collection.
     pub enabled: bool,
     /// Redaction mode for stored commands.
-    pub redaction_mode: HistoryRedactionMode,
+    pub redaction_mode: TelemetryRedactionMode,
     /// Retention window in days.
     pub retention_days: u32,
     /// Maximum database size in megabytes.
     pub max_size_mb: u32,
     /// Optional database file path override.
     pub database_path: Option<String>,
-    /// Enable automatic pruning of old entries.
-    pub auto_prune: bool,
-    /// Interval in hours between automatic prune checks.
-    pub prune_check_interval_hours: u32,
-    /// Batch size for write operations (improves performance).
-    pub batch_size: u32,
-    /// Flush interval in milliseconds for batched writes.
-    pub batch_flush_interval_ms: u32,
 }
 
-impl HistoryConfig {
+impl TelemetryConfig {
     /// Default retention window (days).
     pub const DEFAULT_RETENTION_DAYS: u32 = 90;
     /// Default maximum database size (MB).
     pub const DEFAULT_MAX_SIZE_MB: u32 = 500;
     /// Maximum allowed retention window (days).
     pub const MAX_RETENTION_DAYS: u32 = 3650;
-    /// Default interval between automatic prune checks (hours).
-    pub const DEFAULT_PRUNE_CHECK_INTERVAL_HOURS: u32 = 24;
-    /// Default batch size for write operations.
-    pub const DEFAULT_BATCH_SIZE: u32 = 50;
-    /// Default flush interval for batched writes (ms).
-    pub const DEFAULT_BATCH_FLUSH_INTERVAL_MS: u32 = 100;
 
     /// Expand the configured database path, if set.
     #[must_use]
@@ -1146,18 +1078,18 @@ impl HistoryConfig {
         Some(path)
     }
 
-    /// Validate history settings.
+    /// Validate telemetry settings.
     ///
     /// # Errors
     ///
     /// Returns an error for invalid retention values.
     pub fn validate(&self) -> Result<(), String> {
         if self.retention_days == 0 {
-            return Err("history retention_days must be at least 1".to_string());
+            return Err("telemetry retention_days must be at least 1".to_string());
         }
         if self.retention_days > Self::MAX_RETENTION_DAYS {
             return Err(format!(
-                "history retention_days must be <= {}",
+                "telemetry retention_days must be <= {}",
                 Self::MAX_RETENTION_DAYS
             ));
         }
@@ -1165,18 +1097,14 @@ impl HistoryConfig {
     }
 }
 
-impl Default for HistoryConfig {
+impl Default for TelemetryConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            redaction_mode: HistoryRedactionMode::Pattern,
+            redaction_mode: TelemetryRedactionMode::Pattern,
             retention_days: Self::DEFAULT_RETENTION_DAYS,
             max_size_mb: Self::DEFAULT_MAX_SIZE_MB,
             database_path: None,
-            auto_prune: false,
-            prune_check_interval_hours: Self::DEFAULT_PRUNE_CHECK_INTERVAL_HOURS,
-            batch_size: Self::DEFAULT_BATCH_SIZE,
-            batch_flush_interval_ms: Self::DEFAULT_BATCH_FLUSH_INTERVAL_MS,
         }
     }
 }
@@ -1525,10 +1453,6 @@ impl Config {
             self.merge_general_layer(general);
         }
 
-        if let Some(output) = other.output {
-            self.merge_output_layer(output);
-        }
-
         if let Some(packs) = other.packs {
             self.merge_packs_layer(packs);
         }
@@ -1553,8 +1477,8 @@ impl Config {
             self.merge_logging_layer(logging);
         }
 
-        if let Some(history) = other.history {
-            self.merge_history_layer(history);
+        if let Some(telemetry) = other.telemetry {
+            self.merge_telemetry_layer(telemetry);
         }
 
         // Merge project configs
@@ -1584,19 +1508,9 @@ impl Config {
         }
     }
 
-    const fn merge_output_layer(&mut self, output: OutputConfigLayer) {
-        if let Some(highlight_enabled) = output.highlight_enabled {
-            self.output.highlight_enabled = Some(highlight_enabled);
-        }
-        if let Some(explanations_enabled) = output.explanations_enabled {
-            self.output.explanations_enabled = Some(explanations_enabled);
-        }
-    }
-
     fn merge_packs_layer(&mut self, packs: PacksConfig) {
         self.packs.enabled.extend(packs.enabled);
         self.packs.disabled.extend(packs.disabled);
-        self.packs.custom_paths.extend(packs.custom_paths);
     }
 
     fn merge_policy_layer(&mut self, policy: PolicyConfig) {
@@ -1698,21 +1612,21 @@ impl Config {
         }
     }
 
-    fn merge_history_layer(&mut self, history: HistoryConfigLayer) {
-        if let Some(enabled) = history.enabled {
-            self.history.enabled = enabled;
+    fn merge_telemetry_layer(&mut self, telemetry: TelemetryConfigLayer) {
+        if let Some(enabled) = telemetry.enabled {
+            self.telemetry.enabled = enabled;
         }
-        if let Some(redaction_mode) = history.redaction_mode {
-            self.history.redaction_mode = redaction_mode;
+        if let Some(redaction_mode) = telemetry.redaction_mode {
+            self.telemetry.redaction_mode = redaction_mode;
         }
-        if let Some(retention_days) = history.retention_days {
-            self.history.retention_days = retention_days;
+        if let Some(retention_days) = telemetry.retention_days {
+            self.telemetry.retention_days = retention_days;
         }
-        if let Some(max_size_mb) = history.max_size_mb {
-            self.history.max_size_mb = max_size_mb;
+        if let Some(max_size_mb) = telemetry.max_size_mb {
+            self.telemetry.max_size_mb = max_size_mb;
         }
-        if let Some(database_path) = history.database_path {
-            self.history.database_path = Some(database_path);
+        if let Some(database_path) = telemetry.database_path {
+            self.telemetry.database_path = Some(database_path);
         }
     }
 
@@ -1794,20 +1708,20 @@ impl Config {
         }
 
         // -----------------------------------------------------------------
-        // History config (env overrides)
+        // Telemetry config (env overrides)
         // -----------------------------------------------------------------
 
-        // DCG_HISTORY_ENABLED=true|false|1|0
-        if let Some(enabled) = get_env(&format!("{ENV_PREFIX}_HISTORY_ENABLED")) {
+        // DCG_TELEMETRY_ENABLED=true|false|1|0
+        if let Some(enabled) = get_env(&format!("{ENV_PREFIX}_TELEMETRY_ENABLED")) {
             if let Some(parsed) = parse_env_bool(&enabled) {
-                self.history.enabled = parsed;
+                self.telemetry.enabled = parsed;
             }
         }
 
-        // DCG_HISTORY_REDACTION_MODE=none|pattern|full
-        if let Some(mode) = get_env(&format!("{ENV_PREFIX}_HISTORY_REDACTION_MODE")) {
-            if let Ok(parsed) = HistoryRedactionMode::from_str(&mode) {
-                self.history.redaction_mode = parsed;
+        // DCG_TELEMETRY_REDACTION_MODE=none|pattern|full
+        if let Some(mode) = get_env(&format!("{ENV_PREFIX}_TELEMETRY_REDACTION_MODE")) {
+            if let Ok(parsed) = TelemetryRedactionMode::from_str(&mode) {
+                self.telemetry.redaction_mode = parsed;
             }
         }
     }
@@ -1898,7 +1812,6 @@ impl Config {
     pub fn generate_default() -> Self {
         Self {
             general: GeneralConfig::default(),
-            output: OutputConfig::default(),
             packs: PacksConfig {
                 enabled: vec![
                     // Core is implicit, but list common ones
@@ -1906,14 +1819,13 @@ impl Config {
                     "containers.docker".to_string(),
                 ],
                 disabled: vec![],
-                custom_paths: vec![],
             },
             policy: PolicyConfig::default(),
             overrides: OverridesConfig::default(),
             heredoc: HeredocConfig::default(),
             confidence: ConfidenceConfig::default(),
             logging: crate::logging::LoggingConfig::default(),
-            history: HistoryConfig::default(),
+            telemetry: TelemetryConfig::default(),
             projects: std::collections::HashMap::new(),
         }
     }
@@ -1934,19 +1846,6 @@ color = "auto"
 
 # Verbose output
 verbose = false
-
-#─────────────────────────────────────────────────────────────
-# OUTPUT CONFIGURATION
-#─────────────────────────────────────────────────────────────
-
-[output]
-# Enable span highlighting in denial output.
-# Shows caret-style markers under the matched portion.
-# highlight_enabled = true
-
-# Enable explanations in denial output.
-# Shows detailed explanations for why patterns are dangerous.
-# explanations_enabled = true
 
 #─────────────────────────────────────────────────────────────
 # PACK CONFIGURATION
@@ -1993,15 +1892,6 @@ disabled = [
     # "kubernetes.kustomize",  # Example: disable kustomize if you don't use it
 ]
 
-# Load custom packs from YAML files.
-# Supports glob patterns and ~ for home directory.
-# See docs/custom-packs.md for pack authoring guide.
-custom_paths = [
-    # "~/.config/dcg/packs/*.yaml",      # User packs
-    # ".dcg/packs/*.yaml",               # Project-local packs
-    # "/etc/dcg/packs/*.yaml",           # System-wide packs
-]
-
 #─────────────────────────────────────────────────────────────
 # DECISION MODE POLICY
 #─────────────────────────────────────────────────────────────
@@ -2010,7 +1900,7 @@ custom_paths = [
 # Optional global override for how matched rules are handled:
 # - "deny": block (default)
 # - "warn": allow but print a warning to stderr (no hook JSON deny)
-# - "log": allow silently (no stderr/stdout; optional log_file history)
+# - "log": allow silently (no stderr/stdout; optional log_file telemetry)
 #
 # If unset, dcg uses severity defaults:
 # - critical/high => deny
@@ -2089,11 +1979,11 @@ fallback_on_parse_error = true
 fallback_on_timeout = true
 
 #─────────────────────────────────────────────────────────────
-# HISTORY
+# TELEMETRY
 #─────────────────────────────────────────────────────────────
 
-[history]
-# Enable command history (opt-in).
+[telemetry]
+# Enable command telemetry (opt-in).
 enabled = false
 
 # Redaction mode for stored commands: "pattern" | "full" | "none"
@@ -2104,7 +1994,7 @@ retention_days = 90
 max_size_mb = 500
 
 # Optional database path override.
-# database_path = "~/.config/dcg/history.db"
+# database_path = "~/.config/dcg/telemetry.db"
 
 #─────────────────────────────────────────────────────────────
 # PROJECT-SPECIFIC OVERRIDES
@@ -2250,7 +2140,6 @@ mod tests {
             packs: PacksConfig {
                 enabled: vec!["kubernetes".to_string(), "kubernetes.helm".to_string()],
                 disabled: vec!["kubernetes.helm".to_string()],
-                custom_paths: vec![],
             },
             ..Default::default()
         };
@@ -2273,7 +2162,6 @@ mod tests {
                 packs: Some(PacksConfig {
                     enabled: vec!["database.postgresql".to_string()],
                     disabled: Vec::new(),
-                    custom_paths: vec![],
                 }),
                 overrides: None,
             },
@@ -2310,73 +2198,82 @@ mod tests {
     }
 
     #[test]
-    fn test_history_config_defaults() {
-        let config = HistoryConfig::default();
+    fn test_telemetry_config_defaults() {
+        let config = TelemetryConfig::default();
         assert!(!config.enabled);
-        assert_eq!(config.redaction_mode, HistoryRedactionMode::Pattern);
-        assert_eq!(config.retention_days, HistoryConfig::DEFAULT_RETENTION_DAYS);
-        assert_eq!(config.max_size_mb, HistoryConfig::DEFAULT_MAX_SIZE_MB);
+        assert_eq!(config.redaction_mode, TelemetryRedactionMode::Pattern);
+        assert_eq!(
+            config.retention_days,
+            TelemetryConfig::DEFAULT_RETENTION_DAYS
+        );
+        assert_eq!(config.max_size_mb, TelemetryConfig::DEFAULT_MAX_SIZE_MB);
     }
 
     #[test]
-    fn test_history_config_from_toml() {
+    fn test_telemetry_config_from_toml() {
         let input = r#"
-[history]
+[telemetry]
 enabled = true
 redaction_mode = "full"
 retention_days = 30
 max_size_mb = 250
-database_path = "/tmp/dcg-history.db"
+database_path = "/tmp/dcg-telemetry.db"
 "#;
         let config: Config = toml::from_str(input).expect("config parses");
-        assert!(config.history.enabled);
-        assert_eq!(config.history.redaction_mode, HistoryRedactionMode::Full);
-        assert_eq!(config.history.retention_days, 30);
-        assert_eq!(config.history.max_size_mb, 250);
+        assert!(config.telemetry.enabled);
         assert_eq!(
-            config.history.database_path.as_deref(),
-            Some("/tmp/dcg-history.db")
+            config.telemetry.redaction_mode,
+            TelemetryRedactionMode::Full
+        );
+        assert_eq!(config.telemetry.retention_days, 30);
+        assert_eq!(config.telemetry.max_size_mb, 250);
+        assert_eq!(
+            config.telemetry.database_path.as_deref(),
+            Some("/tmp/dcg-telemetry.db")
         );
     }
 
     #[test]
-    fn test_history_redaction_mode_parsing() {
+    fn test_telemetry_redaction_mode_parsing() {
         assert_eq!(
-            HistoryRedactionMode::from_str("none").expect("none"),
-            HistoryRedactionMode::None
+            TelemetryRedactionMode::from_str("none").expect("none"),
+            TelemetryRedactionMode::None
         );
         assert_eq!(
-            HistoryRedactionMode::from_str("pattern").expect("pattern"),
-            HistoryRedactionMode::Pattern
+            TelemetryRedactionMode::from_str("pattern").expect("pattern"),
+            TelemetryRedactionMode::Pattern
         );
         assert_eq!(
-            HistoryRedactionMode::from_str("full").expect("full"),
-            HistoryRedactionMode::Full
+            TelemetryRedactionMode::from_str("full").expect("full"),
+            TelemetryRedactionMode::Full
         );
-        assert!(HistoryRedactionMode::from_str("invalid").is_err());
+        assert!(TelemetryRedactionMode::from_str("invalid").is_err());
     }
 
     #[test]
-    fn test_history_env_overrides() {
+    fn test_telemetry_env_overrides() {
         let env_map: std::collections::HashMap<&str, &str> = std::collections::HashMap::from([
-            ("DCG_HISTORY_ENABLED", "true"),
-            ("DCG_HISTORY_REDACTION_MODE", "full"),
+            ("DCG_TELEMETRY_ENABLED", "true"),
+            ("DCG_TELEMETRY_REDACTION_MODE", "full"),
         ]);
         let mut config = Config::default();
         config.apply_env_overrides_from(|key| env_map.get(key).map(|v| (*v).to_string()));
 
-        assert!(config.history.enabled);
-        assert_eq!(config.history.redaction_mode, HistoryRedactionMode::Full);
+        assert!(config.telemetry.enabled);
+        assert_eq!(
+            config.telemetry.redaction_mode,
+            TelemetryRedactionMode::Full
+        );
     }
 
     #[test]
-    fn test_history_database_path_expansion() {
+    fn test_telemetry_database_path_expansion() {
         if dirs::home_dir().is_none() {
             return;
         }
 
-        let config = HistoryConfig {
-            database_path: Some("~/.config/dcg/history.db".to_string()),
+        let config = TelemetryConfig {
+            database_path: Some("~/.config/dcg/telemetry.db".to_string()),
             ..Default::default()
         };
         let expanded = config
@@ -2387,479 +2284,24 @@ database_path = "/tmp/dcg-history.db"
     }
 
     #[test]
-    fn test_history_retention_validation() {
-        let config = HistoryConfig {
+    fn test_telemetry_retention_validation() {
+        let config = TelemetryConfig {
             retention_days: 0,
             ..Default::default()
         };
         assert!(config.validate().is_err());
 
-        let config = HistoryConfig {
-            retention_days: HistoryConfig::MAX_RETENTION_DAYS + 1,
+        let config = TelemetryConfig {
+            retention_days: TelemetryConfig::MAX_RETENTION_DAYS + 1,
             ..Default::default()
         };
         assert!(config.validate().is_err());
 
-        let config = HistoryConfig {
-            retention_days: HistoryConfig::DEFAULT_RETENTION_DAYS,
+        let config = TelemetryConfig {
+            retention_days: TelemetryConfig::DEFAULT_RETENTION_DAYS,
             ..Default::default()
         };
         assert!(config.validate().is_ok());
-    }
-
-    // =========================================================================
-    // OutputConfig tests (git_safety_guard-pbte.5)
-    // =========================================================================
-
-    #[test]
-    fn test_output_config_defaults() {
-        // Verify both toggles default to true
-        let config = OutputConfig::default();
-        assert!(
-            config.highlight_enabled(),
-            "highlight_enabled should default to true"
-        );
-        assert!(
-            config.explanations_enabled(),
-            "explanations_enabled should default to true"
-        );
-
-        // Verify the Option fields are None (not explicitly set)
-        assert!(
-            config.highlight_enabled.is_none(),
-            "highlight_enabled Option should be None by default"
-        );
-        assert!(
-            config.explanations_enabled.is_none(),
-            "explanations_enabled Option should be None by default"
-        );
-    }
-
-    #[test]
-    fn test_output_config_explicit_false() {
-        // Verify explicit false values override defaults
-        let config = OutputConfig {
-            highlight_enabled: Some(false),
-            explanations_enabled: Some(false),
-        };
-        assert!(
-            !config.highlight_enabled(),
-            "highlight_enabled should be false when explicitly set"
-        );
-        assert!(
-            !config.explanations_enabled(),
-            "explanations_enabled should be false when explicitly set"
-        );
-    }
-
-    #[test]
-    fn test_output_config_explicit_true() {
-        // Verify explicit true values work correctly
-        let config = OutputConfig {
-            highlight_enabled: Some(true),
-            explanations_enabled: Some(true),
-        };
-        assert!(config.highlight_enabled());
-        assert!(config.explanations_enabled());
-    }
-
-    #[test]
-    fn test_output_config_toggles_independent() {
-        // Verify toggles are independent of each other
-        let config1 = OutputConfig {
-            highlight_enabled: Some(true),
-            explanations_enabled: Some(false),
-        };
-        assert!(
-            config1.highlight_enabled(),
-            "highlight should be true independently"
-        );
-        assert!(
-            !config1.explanations_enabled(),
-            "explanations should be false independently"
-        );
-
-        let config2 = OutputConfig {
-            highlight_enabled: Some(false),
-            explanations_enabled: Some(true),
-        };
-        assert!(
-            !config2.highlight_enabled(),
-            "highlight should be false independently"
-        );
-        assert!(
-            config2.explanations_enabled(),
-            "explanations should be true independently"
-        );
-    }
-
-    #[test]
-    fn test_output_config_from_toml_both_disabled() {
-        let input = r"
-[output]
-highlight_enabled = false
-explanations_enabled = false
-";
-        let config: Config = toml::from_str(input).expect("config parses");
-        assert!(
-            !config.output.highlight_enabled(),
-            "highlight_enabled should be false from TOML"
-        );
-        assert!(
-            !config.output.explanations_enabled(),
-            "explanations_enabled should be false from TOML"
-        );
-    }
-
-    #[test]
-    fn test_output_config_from_toml_both_enabled() {
-        let input = r"
-[output]
-highlight_enabled = true
-explanations_enabled = true
-";
-        let config: Config = toml::from_str(input).expect("config parses");
-        assert!(config.output.highlight_enabled());
-        assert!(config.output.explanations_enabled());
-    }
-
-    #[test]
-    fn test_output_config_from_toml_partial_highlight_only() {
-        // When only highlight_enabled is set, explanations defaults to true
-        let input = r"
-[output]
-highlight_enabled = false
-";
-        let config: Config = toml::from_str(input).expect("config parses");
-        assert!(
-            !config.output.highlight_enabled(),
-            "highlight_enabled should be false from TOML"
-        );
-        assert!(
-            config.output.explanations_enabled(),
-            "explanations_enabled should default to true when not set"
-        );
-    }
-
-    #[test]
-    fn test_output_config_from_toml_partial_explanations_only() {
-        // When only explanations_enabled is set, highlight defaults to true
-        let input = r"
-[output]
-explanations_enabled = false
-";
-        let config: Config = toml::from_str(input).expect("config parses");
-        assert!(
-            config.output.highlight_enabled(),
-            "highlight_enabled should default to true when not set"
-        );
-        assert!(
-            !config.output.explanations_enabled(),
-            "explanations_enabled should be false from TOML"
-        );
-    }
-
-    #[test]
-    fn test_output_config_layer_merge_preserves_unset() {
-        let mut base = Config::default();
-        base.output.highlight_enabled = Some(false); // Explicitly set in base
-
-        // Layer that only sets explanations_enabled
-        let layer: ConfigLayer = toml::from_str(
-            r"
-[output]
-explanations_enabled = false
-",
-        )
-        .expect("layer parses");
-        base.merge_layer(layer);
-
-        // highlight_enabled should remain false (from base)
-        assert!(
-            !base.output.highlight_enabled(),
-            "highlight_enabled should be preserved from base"
-        );
-        // explanations_enabled should be false (from layer)
-        assert!(
-            !base.output.explanations_enabled(),
-            "explanations_enabled should be set from layer"
-        );
-    }
-
-    #[test]
-    fn test_output_config_layer_merge_overwrites_when_set() {
-        let mut base = Config::default();
-        base.output.highlight_enabled = Some(false);
-        base.output.explanations_enabled = Some(false);
-
-        // Layer that sets both to true
-        let layer: ConfigLayer = toml::from_str(
-            r"
-[output]
-highlight_enabled = true
-explanations_enabled = true
-",
-        )
-        .expect("layer parses");
-        base.merge_layer(layer);
-
-        // Both should be true now (overwritten by layer)
-        assert!(
-            base.output.highlight_enabled(),
-            "highlight_enabled should be overwritten to true"
-        );
-        assert!(
-            base.output.explanations_enabled(),
-            "explanations_enabled should be overwritten to true"
-        );
-    }
-
-    #[test]
-    fn test_output_config_mixed_toml_scenarios() {
-        // Test various mixed scenarios
-        let scenarios = [
-            (
-                r"[output]
-highlight_enabled = true
-explanations_enabled = false",
-                true,
-                false,
-            ),
-            (
-                r"[output]
-highlight_enabled = false
-explanations_enabled = true",
-                false,
-                true,
-            ),
-            // Empty output section - defaults apply
-            (r"[output]", true, true),
-        ];
-
-        for (input, expected_highlight, expected_explanations) in scenarios {
-            let config: Config = toml::from_str(input).expect("config parses");
-            assert_eq!(
-                config.output.highlight_enabled(),
-                expected_highlight,
-                "highlight mismatch for input: {input}"
-            );
-            assert_eq!(
-                config.output.explanations_enabled(),
-                expected_explanations,
-                "explanations mismatch for input: {input}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_output_config_in_full_config() {
-        // Test OutputConfig works correctly as part of full Config
-        let input = r#"
-[general]
-color = "always"
-
-[output]
-highlight_enabled = false
-explanations_enabled = true
-
-[packs]
-enabled = ["database.postgresql"]
-"#;
-        let config: Config = toml::from_str(input).expect("config parses");
-
-        // Verify output config
-        assert!(!config.output.highlight_enabled());
-        assert!(config.output.explanations_enabled());
-
-        // Verify other config sections unaffected
-        assert_eq!(config.general.color, "always");
-        assert!(
-            config
-                .packs
-                .enabled
-                .contains(&"database.postgresql".to_string())
-        );
-    }
-
-    #[test]
-    fn test_output_config_does_not_affect_allow_decision() {
-        // Test that output config toggles do NOT affect the evaluator's allow decision.
-        // This is a critical invariant: output settings are purely cosmetic.
-        use crate::allowlist::LayeredAllowlist;
-        use crate::evaluator::{EvaluationDecision, evaluate_command};
-        use crate::packs::REGISTRY;
-
-        // Safe command: "ls -la" should always be allowed
-        let command = "ls -la";
-
-        // Config with defaults (both true)
-        let config_default = Config::default();
-        let enabled_packs = config_default.enabled_pack_ids();
-        let keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
-        let keyword_refs: Vec<&str> = keywords.iter().map(|s| &**s).collect();
-        let overrides_default = config_default.overrides.compile();
-        let allowlists = LayeredAllowlist::default();
-
-        let result_default = evaluate_command(
-            command,
-            &config_default,
-            &keyword_refs,
-            &overrides_default,
-            &allowlists,
-        );
-        assert!(
-            matches!(result_default.decision, EvaluationDecision::Allow),
-            "Safe command should be allowed with default config"
-        );
-
-        // Config with both toggles disabled
-        let mut config_disabled = Config::default();
-        config_disabled.output.highlight_enabled = Some(false);
-        config_disabled.output.explanations_enabled = Some(false);
-        let overrides_disabled = config_disabled.overrides.compile();
-
-        let result_disabled = evaluate_command(
-            command,
-            &config_disabled,
-            &keyword_refs,
-            &overrides_disabled,
-            &allowlists,
-        );
-        assert!(
-            matches!(result_disabled.decision, EvaluationDecision::Allow),
-            "Safe command should still be allowed with disabled output toggles"
-        );
-
-        // Both results should have the same decision
-        assert_eq!(
-            std::mem::discriminant(&result_default.decision),
-            std::mem::discriminant(&result_disabled.decision),
-            "Output config should not affect allow decision"
-        );
-    }
-
-    #[test]
-    fn test_output_config_does_not_affect_deny_decision() {
-        // Test that output config toggles do NOT affect the evaluator's deny decision.
-        use crate::allowlist::LayeredAllowlist;
-        use crate::evaluator::{EvaluationDecision, evaluate_command};
-        use crate::packs::REGISTRY;
-
-        // Dangerous command: "git reset --hard HEAD" should always be denied
-        let command = "git reset --hard HEAD";
-
-        // Config with defaults (both true)
-        let config_default = Config::default();
-        let enabled_packs = config_default.enabled_pack_ids();
-        let keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
-        let keyword_refs: Vec<&str> = keywords.iter().map(|s| &**s).collect();
-        let overrides_default = config_default.overrides.compile();
-        let allowlists = LayeredAllowlist::default();
-
-        let result_default = evaluate_command(
-            command,
-            &config_default,
-            &keyword_refs,
-            &overrides_default,
-            &allowlists,
-        );
-        assert!(
-            matches!(result_default.decision, EvaluationDecision::Deny),
-            "Destructive command should be denied with default config"
-        );
-
-        // Config with both toggles disabled
-        let mut config_disabled = Config::default();
-        config_disabled.output.highlight_enabled = Some(false);
-        config_disabled.output.explanations_enabled = Some(false);
-        let overrides_disabled = config_disabled.overrides.compile();
-
-        let result_disabled = evaluate_command(
-            command,
-            &config_disabled,
-            &keyword_refs,
-            &overrides_disabled,
-            &allowlists,
-        );
-        assert!(
-            matches!(result_disabled.decision, EvaluationDecision::Deny),
-            "Destructive command should still be denied with disabled output toggles"
-        );
-
-        // Both results should have the same decision AND same pattern info
-        assert_eq!(
-            std::mem::discriminant(&result_default.decision),
-            std::mem::discriminant(&result_disabled.decision),
-            "Output config should not affect deny decision"
-        );
-
-        // Pattern info should also be the same
-        assert_eq!(
-            result_default.pattern_info.as_ref().map(|p| &p.reason),
-            result_disabled.pattern_info.as_ref().map(|p| &p.reason),
-            "Pattern info reason should be identical regardless of output config"
-        );
-    }
-
-    #[test]
-    fn test_output_config_toggles_are_purely_cosmetic() {
-        // Comprehensive test: verify output toggles have zero effect on evaluation
-        use crate::allowlist::LayeredAllowlist;
-        use crate::evaluator::{EvaluationDecision, evaluate_command};
-        use crate::packs::REGISTRY;
-
-        let test_cases = [
-            ("echo hello", EvaluationDecision::Allow),      // Safe
-            ("git status", EvaluationDecision::Allow),      // Safe git command
-            ("git reset --hard", EvaluationDecision::Deny), // Destructive
-            ("rm -rf /", EvaluationDecision::Deny),         // Destructive
-        ];
-
-        let toggle_combinations = [
-            (Some(true), Some(true)),
-            (Some(true), Some(false)),
-            (Some(false), Some(true)),
-            (Some(false), Some(false)),
-            (None, None), // Defaults
-        ];
-
-        let allowlists = LayeredAllowlist::default();
-
-        for (command, expected_decision) in &test_cases {
-            let mut results = Vec::new();
-
-            for (highlight, explanations) in &toggle_combinations {
-                let mut config = Config::default();
-                config.output.highlight_enabled = *highlight;
-                config.output.explanations_enabled = *explanations;
-
-                let enabled_packs = config.enabled_pack_ids();
-                let keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
-                let keyword_refs: Vec<&str> = keywords.iter().map(|s| &**s).collect();
-                let overrides = config.overrides.compile();
-
-                let result =
-                    evaluate_command(command, &config, &keyword_refs, &overrides, &allowlists);
-                results.push(result.decision);
-
-                // Each result should match the expected decision
-                assert_eq!(
-                    std::mem::discriminant(&result.decision),
-                    std::mem::discriminant(expected_decision),
-                    "Command '{command}' with toggles ({highlight:?}, {explanations:?}) should have expected decision"
-                );
-            }
-
-            // All results for this command should be identical
-            let first = &results[0];
-            for (i, result) in results.iter().enumerate().skip(1) {
-                assert_eq!(
-                    std::mem::discriminant(first),
-                    std::mem::discriminant(result),
-                    "Command '{command}': result {i} differs from result 0"
-                );
-            }
-        }
     }
 
     #[test]
