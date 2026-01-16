@@ -1182,6 +1182,65 @@ pub fn normalize_command_word_token(token: &str) -> Option<String> {
         }
     }
 
+    // Strip internal backslash escapes before regular ASCII letters.
+    // In bash, `g\it` is equivalent to `git` because backslash makes the next char literal.
+    // We only strip backslashes before alphanumeric chars to avoid breaking special escapes.
+    if out.contains('\\') {
+        let mut result = String::with_capacity(out.len());
+        let mut chars = out.chars().peekable();
+        let mut local_changed = false;
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                if let Some(&next) = chars.peek() {
+                    // Only strip backslash before regular letters/digits (not special chars)
+                    if next.is_ascii_alphanumeric() {
+                        // Skip the backslash, keep the letter
+                        local_changed = true;
+                        continue;
+                    }
+                }
+            }
+            result.push(c);
+        }
+        if local_changed {
+            out = result;
+            changed = true;
+        }
+    }
+
+    // Handle mixed quoting concatenation: g'i't -> git, "g"it -> git, etc.
+    // In bash, adjacent quoted and unquoted sections concatenate into a single word.
+    if (out.contains('\'') || out.contains('"')) && out.len() > 2 {
+        let mut result = String::with_capacity(out.len());
+        let mut chars = out.chars().peekable();
+        let mut local_changed = false;
+        while let Some(c) = chars.next() {
+            if c == '\'' || c == '"' {
+                let quote = c;
+                // Look for matching close quote
+                let mut found_close = false;
+                while let Some(inner) = chars.next() {
+                    if inner == quote {
+                        found_close = true;
+                        local_changed = true;
+                        break;
+                    }
+                    result.push(inner);
+                }
+                if !found_close {
+                    // Unclosed quote - put quote back and break
+                    result.push(quote);
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        if local_changed {
+            out = result;
+            changed = true;
+        }
+    }
+
     // Strip Windows .exe extension from command words (e.g., git.exe -> git)
     if out.to_ascii_lowercase().ends_with(".exe") && out.len() > 4 {
         out.truncate(out.len() - 4);
@@ -1892,4 +1951,34 @@ mod windows_exe_tests {
             // If rejected is FALSE, keywords were found (should NOT be quick-rejected)
             assert!(!rejected, "Command should NOT be quick-rejected: {cmd}");
         }
+    }
+
+    #[test]
+    fn test_internal_backslash_normalization() {
+        // g\it should normalize to git (bash treats backslash as escape for regular chars)
+        let result = normalize_command_word_token(r"g\it");
+        assert_eq!(result, Some("git".to_string()), "g\\it should normalize to git");
+
+        // Multiple internal backslashes
+        let result = normalize_command_word_token(r"g\i\t");
+        assert_eq!(result, Some("git".to_string()), "g\\i\\t should normalize to git");
+
+        // Full command normalization
+        let result = normalize_command(r"g\it reset --hard");
+        assert_eq!(result.as_ref(), "git reset --hard", "g\\it command should normalize");
+    }
+
+    #[test]
+    fn test_mixed_quoting_normalization() {
+        // g'i't should normalize to git (bash concatenates adjacent quoted/unquoted sections)
+        let result = normalize_command_word_token("g'i't");
+        assert_eq!(result, Some("git".to_string()), "g'i't should normalize to git");
+
+        // Double quotes
+        let result = normalize_command_word_token(r#"g"i"t"#);
+        assert_eq!(result, Some("git".to_string()), r#"g"i"t should normalize to git"#);
+
+        // Full command normalization
+        let result = normalize_command("g'i't reset --hard");
+        assert_eq!(result.as_ref(), "git reset --hard", "g'i't command should normalize");
     }
