@@ -170,6 +170,10 @@ pub struct DestructivePattern {
     pub name: Option<&'static str>,
     /// Severity level (determines default decision mode).
     pub severity: Severity,
+    /// Detailed explanation of why this pattern is dangerous.
+    /// Should explain consequences and suggest alternatives.
+    /// This is more verbose than `reason` and intended for verbose output modes.
+    pub explanation: Option<&'static str>,
 }
 
 impl std::fmt::Debug for DestructivePattern {
@@ -179,6 +183,7 @@ impl std::fmt::Debug for DestructivePattern {
             .field("reason", &self.reason)
             .field("name", &self.name)
             .field("severity", &self.severity)
+            .field("explanation", &self.explanation)
             .finish()
     }
 }
@@ -205,6 +210,7 @@ macro_rules! safe_pattern {
 /// - `destructive_pattern!("regex", "reason")` - unnamed, default High severity
 /// - `destructive_pattern!("name", "regex", "reason")` - named, default High severity
 /// - `destructive_pattern!("name", "regex", "reason", Critical)` - named with explicit severity
+/// - `destructive_pattern!("name", "regex", "reason", Critical, "explanation")` - with explanation
 #[macro_export]
 macro_rules! destructive_pattern {
     // Unnamed pattern, default severity (High)
@@ -214,6 +220,7 @@ macro_rules! destructive_pattern {
             reason: $reason,
             name: None,
             severity: $crate::packs::Severity::High,
+            explanation: None,
         }
     };
     // Named pattern, default severity (High)
@@ -223,6 +230,7 @@ macro_rules! destructive_pattern {
             reason: $reason,
             name: Some($name),
             severity: $crate::packs::Severity::High,
+            explanation: None,
         }
     };
     // Named pattern with explicit severity
@@ -232,6 +240,17 @@ macro_rules! destructive_pattern {
             reason: $reason,
             name: Some($name),
             severity: $crate::packs::Severity::$severity,
+            explanation: None,
+        }
+    };
+    // Named pattern with explicit severity and explanation
+    ($name:literal, $re:literal, $reason:literal, $severity:ident, $explanation:literal) => {
+        $crate::packs::DestructivePattern {
+            regex: $crate::packs::regex_engine::LazyCompiledRegex::new($re),
+            reason: $reason,
+            name: Some($name),
+            severity: $crate::packs::Severity::$severity,
+            explanation: Some($explanation),
         }
     };
 }
