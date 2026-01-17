@@ -224,4 +224,43 @@ mod tests {
         assert_eq!(theme.color_for_severity(Severity::Critical), Color::Red);
         assert_eq!(theme.color_for_severity(Severity::Low), Color::Blue);
     }
+
+    #[test]
+    fn test_minimal_theme() {
+        let theme = Theme::minimal();
+        assert!(theme.colors_enabled);
+        assert_eq!(theme.border_style, BorderStyle::None);
+    }
+
+    #[test]
+    fn test_severity_colors_no_color() {
+        let colors = SeverityColors::no_color();
+        assert_eq!(colors.critical, Color::Reset);
+        assert_eq!(colors.high, Color::Reset);
+        assert_eq!(colors.medium, Color::Reset);
+        assert_eq!(colors.low, Color::Reset);
+    }
+
+    #[test]
+    fn test_severity_label() {
+        let theme = Theme::default();
+        assert_eq!(theme.severity_label(Severity::Critical), "CRITICAL");
+        assert_eq!(theme.severity_label(Severity::High), "HIGH");
+        assert_eq!(theme.severity_label(Severity::Medium), "MEDIUM");
+        assert_eq!(theme.severity_label(Severity::Low), "LOW");
+    }
+
+    #[test]
+    fn test_theme_new_equals_default() {
+        let new_theme = Theme::new();
+        let default_theme = Theme::default();
+        assert_eq!(new_theme.colors_enabled, default_theme.colors_enabled);
+        assert_eq!(new_theme.border_style, default_theme.border_style);
+    }
+
+    #[test]
+    fn test_border_style_default() {
+        let border = BorderStyle::default();
+        assert_eq!(border, BorderStyle::Unicode);
+    }
 }
