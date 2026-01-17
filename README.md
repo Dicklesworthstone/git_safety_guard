@@ -708,26 +708,6 @@ Prebuilt binaries are available for:
 
 Download from [GitHub Releases](https://github.com/Dicklesworthstone/destructive_command_guard/releases) and verify the SHA256 checksum.
 
-## Uninstalling
-
-Remove dcg and all its hooks from AI agents:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/uninstall.sh | bash
-```
-
-The uninstaller:
-- Removes dcg hooks from Claude Code, Gemini CLI, and Aider
-- Removes the dcg binary
-- Removes configuration (`~/.config/dcg/`) and history (`~/.local/share/dcg/`)
-- Prompts for confirmation before making changes
-
-Options:
-- `--yes` - Skip confirmation prompt
-- `--keep-config` - Preserve configuration files
-- `--keep-history` - Preserve history database
-- `--purge` - Remove everything (overrides keep flags)
-
 ## Claude Code Configuration
 
 Add to `~/.claude/settings.json`:
