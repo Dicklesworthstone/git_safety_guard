@@ -973,6 +973,45 @@ impl HistoryDb {
             [],
         )?;
 
+        // Create suggestion_audit table for tracking accepted/modified/rejected suggestions (v5 feature)
+        self.conn.execute(
+            r"CREATE TABLE IF NOT EXISTS suggestion_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                action TEXT NOT NULL CHECK (action IN ('accepted', 'modified', 'rejected')),
+                pattern TEXT NOT NULL,
+                final_pattern TEXT,
+                risk_level TEXT NOT NULL,
+                risk_score REAL NOT NULL,
+                confidence_tier TEXT NOT NULL,
+                confidence_points INTEGER NOT NULL,
+                cluster_frequency INTEGER NOT NULL,
+                unique_variants INTEGER NOT NULL,
+                sample_commands TEXT NOT NULL,
+                rule_id TEXT,
+                session_id TEXT,
+                working_dir TEXT
+            )",
+            [],
+        )?;
+
+        // Create indexes for suggestion_audit
+        self.conn.execute_batch(
+            r"
+            -- Time-based queries
+            CREATE INDEX IF NOT EXISTS idx_suggestion_audit_timestamp
+                ON suggestion_audit(timestamp);
+
+            -- Action filtering
+            CREATE INDEX IF NOT EXISTS idx_suggestion_audit_action
+                ON suggestion_audit(action);
+
+            -- Session grouping
+            CREATE INDEX IF NOT EXISTS idx_suggestion_audit_session_id
+                ON suggestion_audit(session_id);
+            ",
+        )?;
+
         // Record schema version
         self.conn.execute(
             "INSERT INTO schema_version (version, description, last_prune_at) VALUES (?1, ?2, NULL)",
@@ -3945,9 +3984,14 @@ mod tests {
         assert!(id > 0);
 
         // Query and verify the final_pattern was stored
-        let results = db.query_suggestion_audits(10, Some(SuggestionAction::Modified)).unwrap();
+        let results = db
+            .query_suggestion_audits(10, Some(SuggestionAction::Modified))
+            .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].final_pattern, Some("git reset --soft".to_string()));
+        assert_eq!(
+            results[0].final_pattern,
+            Some("git reset --soft".to_string())
+        );
     }
 
     #[test]
@@ -3972,11 +4016,14 @@ mod tests {
     fn test_query_suggestion_audits_returns_all_when_no_filter() {
         let db = HistoryDb::open_in_memory().unwrap();
 
-        db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Accepted)).unwrap();
-        db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Modified)).unwrap();
-        db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Rejected)).unwrap();
+        db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Accepted))
+            .unwrap();
+        db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Modified))
+            .unwrap();
+        db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Rejected))
+            .unwrap();
 
-        let results = db.query_suggestion_audits(None, 100).unwrap();
+        let results = db.query_suggestion_audits(100, None).unwrap();
         assert_eq!(results.len(), 3);
     }
 
@@ -3986,27 +4033,48 @@ mod tests {
 
         // Insert entries with different actions
         for _ in 0..4 {
-            db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Accepted)).unwrap();
+            db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Accepted))
+                .unwrap();
         }
         for _ in 0..2 {
-            db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Modified)).unwrap();
+            db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Modified))
+                .unwrap();
         }
-        db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Rejected)).unwrap();
+        db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Rejected))
+            .unwrap();
 
         // Filter by Accepted
-        let accepted = db.query_suggestion_audits(100, Some(SuggestionAction::Accepted)).unwrap();
+        let accepted = db
+            .query_suggestion_audits(100, Some(SuggestionAction::Accepted))
+            .unwrap();
         assert_eq!(accepted.len(), 4);
-        assert!(accepted.iter().all(|e| e.action == SuggestionAction::Accepted));
+        assert!(
+            accepted
+                .iter()
+                .all(|e| e.action == SuggestionAction::Accepted)
+        );
 
         // Filter by Modified
-        let modified = db.query_suggestion_audits(100, Some(SuggestionAction::Modified)).unwrap();
+        let modified = db
+            .query_suggestion_audits(100, Some(SuggestionAction::Modified))
+            .unwrap();
         assert_eq!(modified.len(), 2);
-        assert!(modified.iter().all(|e| e.action == SuggestionAction::Modified));
+        assert!(
+            modified
+                .iter()
+                .all(|e| e.action == SuggestionAction::Modified)
+        );
 
         // Filter by Rejected
-        let rejected = db.query_suggestion_audits(100, Some(SuggestionAction::Rejected)).unwrap();
+        let rejected = db
+            .query_suggestion_audits(100, Some(SuggestionAction::Rejected))
+            .unwrap();
         assert_eq!(rejected.len(), 1);
-        assert!(rejected.iter().all(|e| e.action == SuggestionAction::Rejected));
+        assert!(
+            rejected
+                .iter()
+                .all(|e| e.action == SuggestionAction::Rejected)
+        );
     }
 
     #[test]
@@ -4015,7 +4083,8 @@ mod tests {
 
         // Insert 10 entries
         for _ in 0..10 {
-            db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Accepted)).unwrap();
+            db.log_suggestion_audit(&test_suggestion_audit_entry(SuggestionAction::Accepted))
+                .unwrap();
         }
 
         // Query with limit of 5

@@ -69,6 +69,10 @@ rusqlite = { version = "0.35", features = ["bundled"] }  # Telemetry database
 ctrlc = "3.5.1"
 flate2 = "1.0"  # Gzip compression for history export
 
+# Update checking dependencies
+self_update = { version = "0.42", features = ["archive-tar", "archive-zip", "compression-flate2"] }
+semver = "1.0"  # Semantic version comparison for update checks
+
 # TUI/CLI visual polish dependencies (advk epic)
 ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 comfy-table = "7.2"
