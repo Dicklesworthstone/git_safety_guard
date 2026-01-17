@@ -7,12 +7,23 @@ use chrono::Utc;
 use clap::{Args, Parser, Subcommand};
 
 use crate::config::Config;
-use crate::evaluator::{EvaluationDecision, MatchSource, evaluate_command_with_pack_order};
+use crate::evaluator::{
+    DEFAULT_WINDOW_WIDTH, EvaluationDecision, MatchSource, evaluate_command_with_pack_order,
+    evaluate_command_with_pack_order_deadline_with_external,
+};
+use crate::packs::external::ExternalPackLoader;
+use crate::highlight::{HighlightSpan, format_highlighted_command, should_use_color};
+use crate::history::{
+    ExportOptions, HistoryDb, HistoryStats, Outcome, SuggestionAction, SuggestionAuditEntry,
+};
 use crate::load_default_allowlists;
 use crate::packs::REGISTRY;
 use crate::pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
     PendingExceptionStore,
+};
+use crate::suggest::{
+    AllowlistSuggestion, ConfidenceTier, RiskLevel, generate_allowlist_suggestions,
 };
 
 /// High-performance Claude Code hook for blocking destructive commands.
@@ -126,15 +137,11 @@ pub enum Command {
         verbose: bool,
     },
 
-    /// Show information about a specific pack
+    /// Pack management commands (info, validate)
     #[command(name = "pack")]
-    PackInfo {
-        /// Pack ID (e.g., "database.postgresql", "core.git")
-        pack_id: String,
-
-        /// Show all patterns in the pack
-        #[arg(long)]
-        patterns: bool,
+    Pack {
+        #[command(subcommand)]
+        action: PackAction,
     },
 
     /// Test a command against enabled packs
@@ -247,6 +254,21 @@ pub enum Command {
     #[command(name = "stats")]
     Stats(StatsCommand),
 
+    /// Query command history database
+    #[command(name = "history")]
+    History {
+        #[command(subcommand)]
+        action: HistoryAction,
+    },
+
+    /// Suggest allowlist patterns based on command history
+    ///
+    /// Analyzes denied commands from the history database and suggests
+    /// patterns that could be added to the allowlist. Includes risk
+    /// assessment and confidence scoring for each suggestion.
+    #[command(name = "suggest-allowlist")]
+    SuggestAllowlist(SuggestAllowlistCommand),
+
     /// Developer tools for pack development and testing
     #[command(name = "dev")]
     Dev {
@@ -321,6 +343,204 @@ pub enum StatsFormat {
     Pretty,
     /// Structured JSON output
     Json,
+}
+
+/// `dcg suggest-allowlist` command arguments.
+#[derive(Args, Debug)]
+pub struct SuggestAllowlistCommand {
+    /// Minimum times a command was blocked to be considered (default: 3)
+    #[arg(long, default_value = "3")]
+    pub min_frequency: usize,
+
+    /// Look back period (e.g., "30d", "7d", "24h")
+    #[arg(long, default_value = "30d")]
+    pub since: String,
+
+    /// Filter by confidence tier (high, medium, low, all)
+    #[arg(long, default_value = "all")]
+    pub confidence: ConfidenceTierFilter,
+
+    /// Filter by risk level (low, medium, high, all)
+    #[arg(long, default_value = "all")]
+    pub risk: RiskLevelFilter,
+
+    /// Non-interactive mode: print suggestions without prompts
+    #[arg(long)]
+    pub non_interactive: bool,
+
+    /// Output format (text, json)
+    #[arg(long, short = 'f', value_enum, default_value = "text")]
+    pub format: SuggestFormat,
+
+    /// Maximum number of suggestions to show
+    #[arg(long, default_value = "20")]
+    pub limit: usize,
+}
+
+/// Output format for suggest-allowlist command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum SuggestFormat {
+    /// Human-readable colored output
+    #[default]
+    Text,
+    /// Structured JSON output
+    Json,
+}
+
+/// Filter for confidence tiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ConfidenceTierFilter {
+    /// High confidence suggestions only
+    High,
+    /// Medium confidence suggestions only
+    Medium,
+    /// Low confidence suggestions only
+    Low,
+    /// All confidence levels
+    #[default]
+    All,
+}
+
+/// Filter for risk levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum RiskLevelFilter {
+    /// Low risk suggestions only
+    Low,
+    /// Medium risk suggestions only
+    Medium,
+    /// High risk suggestions only
+    High,
+    /// All risk levels
+    #[default]
+    All,
+}
+
+/// Export format options for history export.
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum ExportFormat {
+    /// JSON with metadata wrapper
+    #[default]
+    Json,
+    /// JSON Lines (one JSON object per line)
+    Jsonl,
+    /// Comma-separated values
+    Csv,
+}
+
+/// History subcommand actions
+#[derive(Subcommand, Debug, Clone)]
+pub enum HistoryAction {
+    /// Show history stats and summaries
+    #[command(name = "stats")]
+    Stats {
+        /// Time period in days (default: 30)
+        #[arg(long, short = 'd', default_value = "30")]
+        days: u64,
+
+        /// Include trend comparisons against the previous period
+        #[arg(long)]
+        trends: bool,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Prune history entries older than the specified age
+    #[command(name = "prune")]
+    Prune {
+        /// Prune entries older than this many days
+        #[arg(long, value_name = "DAYS")]
+        older_than_days: u64,
+
+        /// Show what would be pruned without deleting
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Confirm pruning (required unless --dry-run)
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Export command history to a file
+    #[command(name = "export")]
+    Export {
+        /// Output file path (stdout if not specified)
+        #[arg(long, short = 'o', value_name = "PATH")]
+        output: Option<String>,
+
+        /// Export format
+        #[arg(long, short = 'f', value_enum, default_value = "json")]
+        format: ExportFormat,
+
+        /// Filter by outcome (allow, deny, warn, bypass)
+        #[arg(long, value_name = "OUTCOME")]
+        outcome: Option<String>,
+
+        /// Include only commands since this date/time (ISO 8601)
+        #[arg(long, value_name = "DATETIME")]
+        since: Option<String>,
+
+        /// Include only commands until this date/time (ISO 8601)
+        #[arg(long, value_name = "DATETIME")]
+        until: Option<String>,
+
+        /// Maximum number of records to export
+        #[arg(long, value_name = "N")]
+        limit: Option<usize>,
+
+        /// Compress output with gzip
+        #[arg(long)]
+        compress: bool,
+    },
+
+    /// Analyze pack effectiveness and generate recommendations
+    #[command(name = "analyze")]
+    Analyze {
+        /// Time period in days (default: 30)
+        #[arg(long, short = 'd', default_value = "30")]
+        days: u64,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Show only recommendations
+        #[arg(long)]
+        recommendations_only: bool,
+
+        /// Show potential false positives (bypassed commands)
+        #[arg(long)]
+        false_positives: bool,
+
+        /// Show potential coverage gaps (dangerous allowed commands)
+        #[arg(long)]
+        gaps: bool,
+    },
+
+    /// Check database health and integrity
+    #[command(name = "check")]
+    Check {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Fail with non-zero exit code if integrity check fails
+        #[arg(long)]
+        strict: bool,
+    },
+
+    /// Create a backup of the history database
+    #[command(name = "backup")]
+    Backup {
+        /// Output file path for the backup
+        #[arg(value_name = "PATH")]
+        output: String,
+
+        /// Compress the backup with gzip
+        #[arg(long, short = 'z')]
+        compress: bool,
+    },
 }
 
 /// Developer tool subcommands
@@ -422,9 +642,21 @@ pub enum PatternType {
 #[derive(Args, Debug)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct UpdateCommand {
+    /// Check for updates without installing (queries GitHub releases)
+    #[arg(long, conflicts_with_all = ["version", "system", "easy_mode", "dest", "from_source", "verify", "quiet", "no_gum"])]
+    pub check: bool,
+
+    /// Force refresh version check (ignore 24-hour cache)
+    #[arg(long, requires = "check")]
+    pub refresh: bool,
+
+    /// Output format for version check
+    #[arg(long, short = 'f', value_enum, default_value_t = UpdateFormat::Pretty, requires = "check")]
+    pub format: UpdateFormat,
+
     /// Install specific version (default: latest)
     #[arg(long)]
-    version: Option<String>,
+    pub version: Option<String>,
 
     /// Install to system path (/usr/local/bin on Unix)
     #[arg(long)]
@@ -453,6 +685,16 @@ pub struct UpdateCommand {
     /// Disable gum formatting (Unix only)
     #[arg(long)]
     no_gum: bool,
+}
+
+/// Output format for update --check command.
+#[derive(Debug, Clone, Copy, Default, clap::ValueEnum)]
+pub enum UpdateFormat {
+    /// Human-readable colored output
+    #[default]
+    Pretty,
+    /// Structured JSON output
+    Json,
 }
 
 /// `dcg scan` command arguments and actions.
@@ -816,6 +1058,55 @@ pub enum DoctorFormat {
     Json,
 }
 
+/// Pack subcommand actions
+#[derive(Subcommand, Debug)]
+pub enum PackAction {
+    /// Show information about a specific pack (built-in or external)
+    #[command(name = "info")]
+    Info {
+        /// Pack ID (e.g., "database.postgresql", "core.git")
+        pack_id: String,
+
+        /// Show all patterns in the pack
+        #[arg(long)]
+        patterns: bool,
+    },
+
+    /// Validate an external pack YAML file
+    ///
+    /// Checks for:
+    /// - Valid YAML syntax
+    /// - Required fields (id, name, version)
+    /// - ID format (namespace.name)
+    /// - Version format (semver)
+    /// - Pattern regex compilation
+    /// - Duplicate pattern names
+    /// - Collision with built-in packs
+    #[command(name = "validate")]
+    Validate {
+        /// Path to pack YAML file
+        file_path: String,
+
+        /// Treat warnings as errors (exit non-zero on warnings)
+        #[arg(long)]
+        strict: bool,
+
+        /// Output format
+        #[arg(long, short = 'f', value_enum, default_value_t = PackValidateFormat::Pretty)]
+        format: PackValidateFormat,
+    },
+}
+
+/// Output format for pack validate command
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum PackValidateFormat {
+    /// Human-readable colored output
+    #[default]
+    Pretty,
+    /// Structured JSON output for tooling integration
+    Json,
+}
+
 /// Status of a doctor check
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -879,8 +1170,8 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         Some(Command::ListPacks { enabled, verbose }) => {
             list_packs(&config, enabled, verbose);
         }
-        Some(Command::PackInfo { pack_id, patterns }) => {
-            pack_info(&pack_id, patterns)?;
+        Some(Command::Pack { action }) => {
+            handle_pack_command(&config, action)?;
         }
         Some(Command::TestCommand {
             command,
@@ -957,6 +1248,12 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Command::Stats(stats)) => {
             handle_stats_command(&config, &stats)?;
+        }
+        Some(Command::History { action }) => {
+            handle_history_command(&config, action)?;
+        }
+        Some(Command::SuggestAllowlist(cmd)) => {
+            handle_suggest_allowlist_command(&config, &cmd)?;
         }
         Some(Command::Dev { action }) => {
             handle_dev_command(&config, action)?;
@@ -1053,6 +1350,492 @@ fn pack_info(pack_id: &str, show_patterns: bool) -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
+// ============================================================================
+// Pack Commands (dcg pack info/validate)
+// ============================================================================
+
+/// Handle all `dcg pack` subcommands
+fn handle_pack_command(
+    _config: &Config,
+    action: PackAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match action {
+        PackAction::Info { pack_id, patterns } => {
+            pack_info(&pack_id, patterns)?;
+        }
+        PackAction::Validate {
+            file_path,
+            strict,
+            format,
+        } => {
+            pack_validate(&file_path, strict, format)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate an external pack YAML file
+fn pack_validate(
+    file_path: &str,
+    strict: bool,
+    format: PackValidateFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::packs::external::{
+        CURRENT_SCHEMA_VERSION, ExternalPack, RegexEngineType, analyze_pack_engines,
+        check_builtin_collision, summarize_pack_engines,
+    };
+    use std::path::Path;
+
+    let path = Path::new(file_path);
+
+    let mut result = PackValidationOutput {
+        valid: true,
+        file: file_path.to_string(),
+        pack_id: None,
+        pack_name: None,
+        pack_version: None,
+        errors: Vec::new(),
+        warnings: Vec::new(),
+        suggestions: Vec::new(),
+        patterns: None,
+        engine_summary: None,
+    };
+
+    // Step 1: Check if file exists
+    if !path.exists() {
+        result.valid = false;
+        result.errors.push(PackValidationIssue {
+            code: "E001".to_string(),
+            message: format!("File not found: {file_path}"),
+            suggestion: None,
+        });
+        return output_pack_validation(&result, format, strict);
+    }
+
+    // Step 2: Read file content
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            result.valid = false;
+            result.errors.push(PackValidationIssue {
+                code: "E002".to_string(),
+                message: format!("Failed to read file: {e}"),
+                suggestion: None,
+            });
+            return output_pack_validation(&result, format, strict);
+        }
+    };
+
+    // Step 3: Parse YAML
+    let pack: ExternalPack = match serde_yaml::from_str(&content) {
+        Ok(p) => p,
+        Err(e) => {
+            result.valid = false;
+            result.errors.push(PackValidationIssue {
+                code: "E003".to_string(),
+                message: format!("YAML parse error: {e}"),
+                suggestion: Some("Check YAML syntax (indentation, colons, quotes)".to_string()),
+            });
+            return output_pack_validation(&result, format, strict);
+        }
+    };
+
+    // Store basic pack info for output
+    result.pack_id = Some(pack.id.clone());
+    result.pack_name = Some(pack.name.clone());
+    result.pack_version = Some(pack.version.clone());
+
+    // Step 4: Validate schema version
+    if pack.schema_version > CURRENT_SCHEMA_VERSION {
+        result.valid = false;
+        result.errors.push(PackValidationIssue {
+            code: "E004".to_string(),
+            message: format!(
+                "Schema version {} is not supported (max: {})",
+                pack.schema_version, CURRENT_SCHEMA_VERSION
+            ),
+            suggestion: Some(format!(
+                "Use schema_version: {CURRENT_SCHEMA_VERSION} or lower"
+            )),
+        });
+    }
+
+    // Step 5: Validate ID format
+    let id_regex = regex::Regex::new(r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$").unwrap();
+    if !id_regex.is_match(&pack.id) {
+        result.valid = false;
+        result.errors.push(PackValidationIssue {
+            code: "E005".to_string(),
+            message: format!(
+                "Invalid pack ID '{}': must match pattern namespace.name (e.g., 'mycompany.deploy')",
+                pack.id
+            ),
+            suggestion: Some("Use lowercase letters, numbers, underscores. Format: namespace.name".to_string()),
+        });
+    }
+
+    // Step 6: Validate version format (semver)
+    let version_regex = regex::Regex::new(r"^\d+\.\d+\.\d+$").unwrap();
+    if !version_regex.is_match(&pack.version) {
+        result.valid = false;
+        result.errors.push(PackValidationIssue {
+            code: "E006".to_string(),
+            message: format!(
+                "Invalid version '{}': must be semantic version (e.g., '1.0.0')",
+                pack.version
+            ),
+            suggestion: Some("Use MAJOR.MINOR.PATCH format (e.g., 1.0.0, 2.1.3)".to_string()),
+        });
+    }
+
+    // Step 7: Check for empty pack
+    if pack.destructive_patterns.is_empty() && pack.safe_patterns.is_empty() {
+        result.valid = false;
+        result.errors.push(PackValidationIssue {
+            code: "E007".to_string(),
+            message: "Pack has no patterns defined".to_string(),
+            suggestion: Some("Add at least one destructive_pattern or safe_pattern".to_string()),
+        });
+    }
+
+    // Step 8: Check for duplicate pattern names
+    let mut seen_names = std::collections::HashSet::new();
+    for pattern in &pack.destructive_patterns {
+        if !seen_names.insert(&pattern.name) {
+            result.valid = false;
+            result.errors.push(PackValidationIssue {
+                code: "E008".to_string(),
+                message: format!("Duplicate pattern name: {}", pattern.name),
+                suggestion: Some("Pattern names must be unique within a pack".to_string()),
+            });
+        }
+    }
+    for pattern in &pack.safe_patterns {
+        if !seen_names.insert(&pattern.name) {
+            result.valid = false;
+            result.errors.push(PackValidationIssue {
+                code: "E008".to_string(),
+                message: format!("Duplicate pattern name: {}", pattern.name),
+                suggestion: Some("Pattern names must be unique within a pack".to_string()),
+            });
+        }
+    }
+
+    // Step 9: Validate regex patterns
+    for pattern in &pack.destructive_patterns {
+        if let Err(e) = crate::packs::regex_engine::CompiledRegex::new(&pattern.pattern) {
+            result.valid = false;
+            result.errors.push(PackValidationIssue {
+                code: "E009".to_string(),
+                message: format!("Invalid regex in pattern '{}': {}", pattern.name, e),
+                suggestion: Some("Check regex syntax".to_string()),
+            });
+        }
+    }
+    for pattern in &pack.safe_patterns {
+        if let Err(e) = crate::packs::regex_engine::CompiledRegex::new(&pattern.pattern) {
+            result.valid = false;
+            result.errors.push(PackValidationIssue {
+                code: "E009".to_string(),
+                message: format!("Invalid regex in pattern '{}': {}", pattern.name, e),
+                suggestion: Some("Check regex syntax".to_string()),
+            });
+        }
+    }
+
+    // Step 10: Check for collision with built-in packs
+    if let Some(builtin_name) = check_builtin_collision(&pack.id) {
+        result.valid = false;
+        result.errors.push(PackValidationIssue {
+            code: "E010".to_string(),
+            message: format!(
+                "Pack ID '{}' collides with built-in pack '{}'",
+                pack.id, builtin_name
+            ),
+            suggestion: Some(
+                "Use a different namespace (e.g., 'mycompany.git' instead of 'core.git')"
+                    .to_string(),
+            ),
+        });
+    }
+
+    // === Warnings (non-fatal) ===
+
+    // Check for broad patterns
+    for pattern in &pack.destructive_patterns {
+        if pattern.pattern.contains(".*") && !pattern.pattern.starts_with('^') {
+            result.warnings.push(PackValidationIssue {
+                code: "W001".to_string(),
+                message: format!(
+                    "Pattern '{}' contains '.*' without anchor - may be too broad",
+                    pattern.name
+                ),
+                suggestion: Some("Consider anchoring with ^ at the start".to_string()),
+            });
+        }
+    }
+
+    // Check for missing descriptions
+    for pattern in &pack.destructive_patterns {
+        if pattern.description.is_none() {
+            result.warnings.push(PackValidationIssue {
+                code: "W002".to_string(),
+                message: format!("Pattern '{}' has no description", pattern.name),
+                suggestion: Some(
+                    "Add a description to help users understand why this blocks".to_string(),
+                ),
+            });
+        }
+    }
+
+    // Check for missing explanations on high/critical patterns
+    for pattern in &pack.destructive_patterns {
+        use crate::packs::external::ExternalSeverity;
+        if matches!(
+            pattern.severity,
+            ExternalSeverity::High | ExternalSeverity::Critical
+        ) && pattern.explanation.is_none()
+        {
+            result.warnings.push(PackValidationIssue {
+                code: "W003".to_string(),
+                message: format!(
+                    "High/critical pattern '{}' has no explanation",
+                    pattern.name
+                ),
+                suggestion: Some(
+                    "Add an explanation for verbose output to help users understand the risk"
+                        .to_string(),
+                ),
+            });
+        }
+    }
+
+    // Check for keywords not used in patterns
+    for keyword in &pack.keywords {
+        let keyword_lower = keyword.to_lowercase();
+        let found_in_pattern = pack
+            .destructive_patterns
+            .iter()
+            .any(|p| p.pattern.to_lowercase().contains(&keyword_lower))
+            || pack
+                .safe_patterns
+                .iter()
+                .any(|p| p.pattern.to_lowercase().contains(&keyword_lower));
+        if !found_in_pattern {
+            result.warnings.push(PackValidationIssue {
+                code: "W004".to_string(),
+                message: format!("Keyword '{keyword}' not found in any pattern"),
+                suggestion: Some(
+                    "Keywords should match substrings in patterns for efficient filtering"
+                        .to_string(),
+                ),
+            });
+        }
+    }
+
+    // === Suggestions (informational) ===
+
+    // Suggest adding keywords if none defined
+    if pack.keywords.is_empty()
+        && (!pack.destructive_patterns.is_empty() || !pack.safe_patterns.is_empty())
+    {
+        result.suggestions.push(PackValidationIssue {
+            code: "S001".to_string(),
+            message: "No keywords defined".to_string(),
+            suggestion: Some(
+                "Adding keywords improves performance by enabling quick-reject filtering"
+                    .to_string(),
+            ),
+        });
+    }
+
+    // Add pattern and engine summary
+    result.patterns = Some(PackPatternSummary {
+        destructive: pack.destructive_patterns.len(),
+        safe: pack.safe_patterns.len(),
+    });
+
+    let engine_summary = summarize_pack_engines(&pack);
+    result.engine_summary = Some(PackEngineSummary {
+        linear: engine_summary.linear_count,
+        backtracking: engine_summary.backtracking_count,
+        linear_percentage: engine_summary.linear_percentage(),
+    });
+
+    // Suggest optimizing if too many backtracking patterns
+    if engine_summary.backtracking_count > 0 && engine_summary.linear_percentage() < 80.0 {
+        let engine_infos = analyze_pack_engines(&pack);
+        let backtrack_names: Vec<_> = engine_infos
+            .iter()
+            .filter(|e| e.engine == RegexEngineType::Backtracking)
+            .map(|e| e.name.as_str())
+            .collect();
+        result.suggestions.push(PackValidationIssue {
+            code: "S002".to_string(),
+            message: format!(
+                "{} of {} patterns use backtracking engine",
+                engine_summary.backtracking_count,
+                engine_summary.total()
+            ),
+            suggestion: Some(format!(
+                "Patterns using backtracking: {}. Consider simplifying to avoid lookahead/lookbehind if possible.",
+                backtrack_names.join(", ")
+            )),
+        });
+    }
+
+    output_pack_validation(&result, format, strict)
+}
+
+/// Output validation result in the specified format
+fn output_pack_validation(
+    result: &PackValidationOutput,
+    format: PackValidateFormat,
+    strict: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+
+    let has_warnings = !result.warnings.is_empty();
+    let exit_error = !result.valid || (strict && has_warnings);
+
+    match format {
+        PackValidateFormat::Json => {
+            println!("{}", serde_json::to_string_pretty(result)?);
+        }
+        PackValidateFormat::Pretty => {
+            println!("{}", "Pack Validation Report".bold().cyan());
+            println!();
+            println!("File: {}", result.file);
+
+            if let (Some(id), Some(name), Some(version)) =
+                (&result.pack_id, &result.pack_name, &result.pack_version)
+            {
+                println!();
+                println!("{} Pack ID: {}", "✓".green(), id);
+                println!("{} Name: {}", "✓".green(), name);
+                println!("{} Version: {}", "✓".green(), version);
+            }
+
+            if let Some(patterns) = &result.patterns {
+                println!();
+                println!("{}", "Patterns:".bold());
+                println!(
+                    "  {} destructive patterns",
+                    patterns.destructive.to_string().cyan()
+                );
+                println!("  {} safe patterns", patterns.safe.to_string().cyan());
+            }
+
+            if let Some(engines) = &result.engine_summary {
+                println!();
+                println!("{}", "Engine Analysis:".bold());
+                println!(
+                    "  {} linear (O(n)), {} backtracking ({:.0}% linear)",
+                    engines.linear.to_string().green(),
+                    engines.backtracking.to_string().yellow(),
+                    engines.linear_percentage
+                );
+            }
+
+            if !result.errors.is_empty() {
+                println!();
+                println!("{}", "Errors:".bold().red());
+                for err in &result.errors {
+                    println!("  {} [{}] {}", "✗".red(), err.code, err.message);
+                    if let Some(suggestion) = &err.suggestion {
+                        println!("    {}", format!("→ {suggestion}").dimmed());
+                    }
+                }
+            }
+
+            if !result.warnings.is_empty() {
+                println!();
+                println!("{}", "Warnings:".bold().yellow());
+                for warn in &result.warnings {
+                    println!("  {} [{}] {}", "⚠".yellow(), warn.code, warn.message);
+                    if let Some(suggestion) = &warn.suggestion {
+                        println!("    {}", format!("→ {suggestion}").dimmed());
+                    }
+                }
+            }
+
+            if !result.suggestions.is_empty() {
+                println!();
+                println!("{}", "Suggestions:".bold().blue());
+                for sug in &result.suggestions {
+                    println!("  {} [{}] {}", "ℹ".blue(), sug.code, sug.message);
+                    if let Some(suggestion) = &sug.suggestion {
+                        println!("    {}", format!("→ {suggestion}").dimmed());
+                    }
+                }
+            }
+
+            println!();
+            if result.valid && !has_warnings {
+                println!("{}", "✓ Pack is valid and ready to use.".bold().green());
+                if let Some(id) = &result.pack_id {
+                    println!();
+                    println!("Add to your config:");
+                    println!(
+                        "  {}",
+                        format!("[packs]\ncustom_paths = [\"path/to/{id}.yaml\"]").dimmed()
+                    );
+                }
+            } else if result.valid {
+                println!("{}", "✓ Pack is valid (with warnings).".bold().yellow());
+            } else {
+                println!("{}", "✗ Pack validation failed.".bold().red());
+            }
+        }
+    }
+
+    if exit_error {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+// Type alias for validation output to avoid repeating the struct definition
+#[derive(serde::Serialize)]
+struct PackValidationOutput {
+    valid: bool,
+    file: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pack_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pack_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pack_version: Option<String>,
+    errors: Vec<PackValidationIssue>,
+    warnings: Vec<PackValidationIssue>,
+    suggestions: Vec<PackValidationIssue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    patterns: Option<PackPatternSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    engine_summary: Option<PackEngineSummary>,
+}
+
+#[derive(serde::Serialize)]
+struct PackValidationIssue {
+    code: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suggestion: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct PackPatternSummary {
+    destructive: usize,
+    safe: usize,
+}
+
+#[derive(serde::Serialize)]
+struct PackEngineSummary {
+    linear: usize,
+    backtracking: usize,
+    linear_percentage: f64,
+}
+
 /// Test a command against the configured packs using the shared evaluator.
 ///
 /// This ensures parity with hook mode by using the same evaluation logic:
@@ -1097,7 +1880,7 @@ fn test_command(
 
     // Get enabled packs and collect keywords for quick rejection
     let enabled_packs = effective_config.enabled_pack_ids();
-    let enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
+    let mut enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
     let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
     let keyword_index = REGISTRY.build_enabled_keyword_index(&ordered_packs);
     let heredoc_settings = effective_config.heredoc_settings();
@@ -1109,8 +1892,35 @@ fn test_command(
     // This is a small file read and only affects decisions when a rule matches.
     let allowlists = load_default_allowlists();
 
+    // Load external (custom YAML) packs from configured paths.
+    // Fail-open: errors are logged but don't block command evaluation.
+    let external_packs: Vec<crate::Pack> = {
+        let loader = ExternalPackLoader::from_config(&effective_config.packs);
+        let result = loader.load_all_deduped();
+        for warning in &result.warnings {
+            eprintln!("Warning: {warning}");
+        }
+        result.packs.into_iter().map(|lp| lp.pack).collect()
+    };
+
+    // Add keywords from external packs to enable quick-reject bypass
+    for pack in &external_packs {
+        for kw in pack.keywords {
+            if !enabled_keywords.contains(kw) {
+                enabled_keywords.push(kw);
+            }
+        }
+    }
+
+    // Convert external packs to slice for evaluator
+    let external_packs_slice: Option<&[crate::Pack]> = if external_packs.is_empty() {
+        None
+    } else {
+        Some(&external_packs)
+    };
+
     // Use shared evaluator for consistent behavior with hook mode
-    let result = evaluate_command_with_pack_order(
+    let result = evaluate_command_with_pack_order_deadline_with_external(
         command,
         &enabled_keywords,
         &ordered_packs,
@@ -1118,9 +1928,48 @@ fn test_command(
         &compiled_overrides,
         &allowlists,
         &heredoc_settings,
+        None, // allow_once_audit
+        None, // project_path
+        None, // deadline
+        external_packs_slice,
     );
 
-    println!("Command: {command}");
+    // Use color based on terminal detection
+    let use_color = should_use_color();
+
+    // Use default window width for highlighting
+    let term_width = DEFAULT_WINDOW_WIDTH;
+
+    // Build highlight label if we have span info
+    let highlight_info = result.pattern_info.as_ref().and_then(|info| {
+        info.matched_span.as_ref().map(|span| {
+            let label = info
+                .pack_id
+                .as_ref()
+                .and_then(|pack| {
+                    info.pattern_name
+                        .as_ref()
+                        .map(|pattern| format!("Matched: {pack}:{pattern}"))
+                })
+                .or_else(|| info.pack_id.as_ref().map(|p| format!("Matched: {p}")))
+                .unwrap_or_else(|| "Matched destructive pattern".to_string());
+            (span, label)
+        })
+    });
+
+    // Print command with highlighting if available
+    if let Some((span, label)) = &highlight_info {
+        let highlight_span = HighlightSpan::with_label(span.start, span.end, label.clone());
+        let highlighted =
+            format_highlighted_command(command, &highlight_span, use_color, term_width);
+        println!("Command: {}", highlighted.command_line);
+        println!("         {}", highlighted.caret_line);
+        if let Some(ref label_line) = highlighted.label_line {
+            println!("         {label_line}");
+        }
+    } else {
+        println!("Command: {command}");
+    }
     println!();
 
     match result.decision {
@@ -2276,6 +3125,7 @@ fn handle_explain(
             match_start: pattern.matched_span.map(|s| s.start),
             match_end: pattern.matched_span.map(|s| s.end),
             matched_text_preview: pattern.matched_text_preview.clone(),
+            explanation: pattern.explanation.clone(),
         });
     }
 
@@ -2801,6 +3651,921 @@ fn handle_stats_command(
     print!("{output}");
 
     Ok(())
+}
+
+/// Handle the `dcg suggest-allowlist` command.
+/// Parse a duration string like "30d", "7d", "24h", "1w" into a chrono Duration.
+fn parse_duration_string(s: &str) -> Result<chrono::Duration, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("Empty duration string".to_string());
+    }
+
+    // Find where the number ends and the unit begins
+    let num_end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+
+    if num_end == 0 {
+        return Err(format!("Invalid duration: {s} (no number found)"));
+    }
+
+    let value: i64 = s[..num_end]
+        .parse()
+        .map_err(|_| format!("Invalid number in duration: {s}"))?;
+
+    let unit = &s[num_end..];
+
+    match unit.to_lowercase().as_str() {
+        "d" | "day" | "days" => Ok(chrono::Duration::days(value)),
+        "h" | "hr" | "hour" | "hours" => Ok(chrono::Duration::hours(value)),
+        "w" | "week" | "weeks" => Ok(chrono::Duration::weeks(value)),
+        "m" | "min" | "minutes" => Ok(chrono::Duration::minutes(value)),
+        "" => Err(format!("Missing unit in duration: {s} (use d, h, w, or m)")),
+        _ => Err(format!("Unknown duration unit: {unit} (use d, h, w, or m)")),
+    }
+}
+
+/// Handle the `dcg suggest-allowlist` command.
+///
+/// Analyzes denied commands from history and suggests allowlist patterns.
+fn handle_suggest_allowlist_command(
+    config: &Config,
+    cmd: &SuggestAllowlistCommand,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::collections::HashMap;
+
+    // Parse the "since" duration
+    let duration = parse_duration_string(&cmd.since)?;
+    let since_time = Utc::now() - duration;
+
+    // Open history database
+    let db_path = config.history.expanded_database_path();
+    let db = match HistoryDb::open(db_path) {
+        Ok(db) => db,
+        Err(err) => {
+            if matches!(err, crate::history::HistoryError::Disabled) {
+                println!("History is disabled. Enable it in config to use suggest-allowlist.");
+                return Ok(());
+            }
+            println!("Error opening history database: {err}");
+            println!();
+            println!("Run 'dcg history stats' to check database status.");
+            return Ok(());
+        }
+    };
+
+    // Query denied commands from history
+    let options = ExportOptions {
+        outcome_filter: Some(Outcome::Deny),
+        since: Some(since_time),
+        until: None,
+        limit: None,
+    };
+
+    let entries = db.query_commands_for_export(&options)?;
+
+    if entries.is_empty() {
+        println!("No denied commands found in the last {}.", cmd.since);
+        println!();
+        println!("Suggestions:");
+        println!("  - Check if history is enabled: dcg history stats");
+        println!("  - Try a longer time period: --since 90d");
+        return Ok(());
+    }
+
+    // Group commands by content with frequency count
+    let mut command_freq: HashMap<String, usize> = HashMap::new();
+    for entry in &entries {
+        *command_freq.entry(entry.command.clone()).or_insert(0) += 1;
+    }
+
+    // Convert to the format expected by generate_allowlist_suggestions
+    let commands: Vec<(String, usize)> = command_freq
+        .into_iter()
+        .filter(|(_, freq)| *freq >= cmd.min_frequency)
+        .collect();
+
+    if commands.is_empty() {
+        println!(
+            "No commands found that were blocked {} or more times.",
+            cmd.min_frequency
+        );
+        println!();
+        println!("Try lowering --min-frequency or increasing --since period.");
+        return Ok(());
+    }
+
+    // Generate suggestions
+    let suggestions = generate_allowlist_suggestions(&commands, 1);
+
+    if suggestions.is_empty() {
+        println!("No allowlist suggestions could be generated from the history.");
+        return Ok(());
+    }
+
+    // Filter by confidence tier
+    let suggestions: Vec<AllowlistSuggestion> = suggestions
+        .into_iter()
+        .filter(|s| match cmd.confidence {
+            ConfidenceTierFilter::High => s.confidence.tier == ConfidenceTier::High,
+            ConfidenceTierFilter::Medium => s.confidence.tier == ConfidenceTier::Medium,
+            ConfidenceTierFilter::Low => s.confidence.tier == ConfidenceTier::Low,
+            ConfidenceTierFilter::All => true,
+        })
+        .filter(|s| match cmd.risk {
+            RiskLevelFilter::Low => s.risk.level == RiskLevel::Low,
+            RiskLevelFilter::Medium => s.risk.level == RiskLevel::Medium,
+            RiskLevelFilter::High => s.risk.level == RiskLevel::High,
+            RiskLevelFilter::All => true,
+        })
+        .take(cmd.limit)
+        .collect();
+
+    if suggestions.is_empty() {
+        println!("No suggestions match the specified confidence/risk filters.");
+        return Ok(());
+    }
+
+    // Output based on format
+    match cmd.format {
+        SuggestFormat::Json => {
+            output_suggestions_json(&suggestions)?;
+        }
+        SuggestFormat::Text => {
+            if cmd.non_interactive {
+                // Non-interactive mode: no writes to database
+                output_suggestions_text(&suggestions);
+            } else {
+                // Interactive mode: pass db for audit logging
+                output_suggestions_interactive(&suggestions, entries.len(), Some(&db))?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Output suggestions as JSON.
+fn output_suggestions_json(
+    suggestions: &[AllowlistSuggestion],
+) -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(serde::Serialize)]
+    struct JsonSuggestion {
+        pattern: String,
+        confidence: String,
+        risk: String,
+        frequency: usize,
+        unique_variants: usize,
+        specificity_score: f32,
+        example_commands: Vec<String>,
+        risk_explanation: String,
+    }
+
+    let output: Vec<JsonSuggestion> = suggestions
+        .iter()
+        .map(|s| JsonSuggestion {
+            pattern: s.pattern.clone(),
+            confidence: s.confidence.tier.as_str().to_lowercase(),
+            risk: s.risk.level.as_str().to_string(),
+            frequency: s.frequency,
+            unique_variants: s.unique_variants,
+            specificity_score: s.specificity_score,
+            example_commands: s.example_commands.clone(),
+            risk_explanation: s.risk.explanation.clone(),
+        })
+        .collect();
+
+    let json = serde_json::to_string_pretty(&output)?;
+    println!("{json}");
+    Ok(())
+}
+
+/// Output suggestions as formatted text (non-interactive).
+fn output_suggestions_text(suggestions: &[AllowlistSuggestion]) {
+    println!("Allowlist Suggestions");
+    println!("=====================");
+    println!();
+
+    for (i, suggestion) in suggestions.iter().enumerate() {
+        let confidence_indicator = match suggestion.confidence.tier {
+            ConfidenceTier::High => "HIGH",
+            ConfidenceTier::Medium => "MEDIUM",
+            ConfidenceTier::Low => "LOW",
+        };
+
+        let risk_indicator = match suggestion.risk.level {
+            RiskLevel::Low => "LOW",
+            RiskLevel::Medium => "MEDIUM",
+            RiskLevel::High => "HIGH",
+        };
+
+        println!(
+            "[{}/{}] {} CONFIDENCE",
+            i + 1,
+            suggestions.len(),
+            confidence_indicator
+        );
+        println!("────────────────────────────────────────");
+        println!("Pattern: {}", suggestion.pattern);
+        println!(
+            "Blocked: {} times ({} unique variants)",
+            suggestion.frequency, suggestion.unique_variants
+        );
+        println!("Risk: {} - {}", risk_indicator, suggestion.risk.explanation);
+        println!();
+        println!("Example commands:");
+        for cmd in &suggestion.example_commands {
+            println!("  • {cmd}");
+        }
+        println!();
+    }
+}
+
+/// Output suggestions interactively (prompting user for each).
+fn output_suggestions_interactive(
+    suggestions: &[AllowlistSuggestion],
+    total_denied: usize,
+    db: Option<&HistoryDb>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{self, BufRead, Write};
+
+    println!("Analyzing {total_denied} denied commands...");
+    println!("Found {} potential allowlist patterns.", suggestions.len());
+    println!();
+    println!("For each suggestion, you can:");
+    println!("  [A]ccept - Record pattern (to add to allowlist)");
+    println!("  [S]kip   - Move to next suggestion");
+    println!("  [Q]uit   - Exit without more changes");
+    println!();
+
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let working_dir = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
+
+    for (i, suggestion) in suggestions.iter().enumerate() {
+        let confidence_indicator = match suggestion.confidence.tier {
+            ConfidenceTier::High => "HIGH",
+            ConfidenceTier::Medium => "MEDIUM",
+            ConfidenceTier::Low => "LOW",
+        };
+
+        let risk_indicator = match suggestion.risk.level {
+            RiskLevel::Low => "LOW",
+            RiskLevel::Medium => "MEDIUM",
+            RiskLevel::High => "HIGH",
+        };
+
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!(
+            " [{}/{}] {} CONFIDENCE",
+            i + 1,
+            suggestions.len(),
+            confidence_indicator
+        );
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!(" Pattern: {}", suggestion.pattern);
+        println!(" Blocked: {} times", suggestion.frequency);
+        println!(
+            " Risk: {} ({})",
+            risk_indicator, suggestion.risk.explanation
+        );
+        println!();
+        println!(" Example commands:");
+        for cmd in &suggestion.example_commands {
+            println!("   • {cmd}");
+        }
+        println!();
+
+        // Prompt for action
+        print!(" [A]ccept  [S]kip  [Q]uit: ");
+        stdout.flush()?;
+
+        let mut input = String::new();
+        stdin.lock().read_line(&mut input)?;
+
+        match input.trim().to_lowercase().as_str() {
+            "a" | "accept" => {
+                // Log audit entry for accepted suggestion
+                if let Some(db) = db {
+                    let audit_entry = SuggestionAuditEntry {
+                        timestamp: Utc::now(),
+                        action: SuggestionAction::Accepted,
+                        pattern: suggestion.pattern.clone(),
+                        final_pattern: None,
+                        risk_level: suggestion.risk.level.as_str().to_string(),
+                        risk_score: suggestion.risk.score,
+                        confidence_tier: suggestion.confidence.tier.as_str().to_lowercase(),
+                        confidence_points: suggestion.confidence.total as i32,
+                        cluster_frequency: suggestion.frequency,
+                        unique_variants: suggestion.unique_variants,
+                        sample_commands: serde_json::to_string(&suggestion.example_commands)
+                            .unwrap_or_default(),
+                        rule_id: None,
+                        session_id: None,
+                        working_dir: working_dir.clone(),
+                    };
+                    if let Err(e) = db.log_suggestion_audit(&audit_entry) {
+                        eprintln!(" Warning: Could not log audit entry: {e}");
+                    }
+                }
+                // TODO(git_safety_guard-f2rj): Integrate with allowlist config writing
+                println!(" → Pattern accepted and logged. To add to allowlist, run:");
+                println!("   dcg allow --pattern '{}'", suggestion.pattern);
+                println!();
+            }
+            "q" | "quit" => {
+                println!();
+                println!("Exiting. No changes made to allowlist.");
+                break;
+            }
+            _ => {
+                // Skip by default - log as rejected for tracking
+                if let Some(db) = db {
+                    let audit_entry = SuggestionAuditEntry {
+                        timestamp: Utc::now(),
+                        action: SuggestionAction::Rejected,
+                        pattern: suggestion.pattern.clone(),
+                        final_pattern: None,
+                        risk_level: suggestion.risk.level.as_str().to_string(),
+                        risk_score: suggestion.risk.score,
+                        confidence_tier: suggestion.confidence.tier.as_str().to_lowercase(),
+                        confidence_points: suggestion.confidence.total as i32,
+                        cluster_frequency: suggestion.frequency,
+                        unique_variants: suggestion.unique_variants,
+                        sample_commands: serde_json::to_string(&suggestion.example_commands)
+                            .unwrap_or_default(),
+                        rule_id: None,
+                        session_id: None,
+                        working_dir: working_dir.clone(),
+                    };
+                    // Best effort - don't warn on skip audit failures
+                    let _ = db.log_suggestion_audit(&audit_entry);
+                }
+                println!(" → Skipped");
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle the `dcg history` command.
+fn handle_history_command(
+    config: &Config,
+    action: HistoryAction,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let db_path = config.history.expanded_database_path();
+    let db = match HistoryDb::open(db_path) {
+        Ok(db) => db,
+        Err(err) => {
+            println!("Error opening history database: {err}");
+            return Ok(());
+        }
+    };
+
+    match action {
+        HistoryAction::Stats { days, trends, json } => {
+            history_stats(&db, days, trends, json)?;
+        }
+        HistoryAction::Prune {
+            older_than_days,
+            dry_run,
+            yes,
+        } => {
+            history_prune(&db, older_than_days, dry_run, yes)?;
+        }
+        HistoryAction::Export {
+            output,
+            format,
+            outcome,
+            since,
+            until,
+            limit,
+            compress,
+        } => {
+            history_export(&db, output, format, outcome, since, until, limit, compress)?;
+        }
+        HistoryAction::Analyze {
+            days,
+            json,
+            recommendations_only,
+            false_positives,
+            gaps,
+        } => {
+            history_analyze(&db, days, json, recommendations_only, false_positives, gaps)?;
+        }
+        HistoryAction::Check { json, strict } => {
+            history_check(&db, json, strict)?;
+        }
+        HistoryAction::Backup { output, compress } => {
+            history_backup(&db, &output, compress)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn history_stats(
+    db: &HistoryDb,
+    days: u64,
+    trends: bool,
+    json: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stats = if trends {
+        db.compute_stats_with_trends(days)?
+    } else {
+        db.compute_stats(days)?
+    };
+
+    if json {
+        let output = serde_json::to_string_pretty(&stats)?;
+        println!("{output}");
+    } else {
+        let output = format_history_stats_pretty(&stats);
+        print!("{output}");
+    }
+
+    Ok(())
+}
+
+fn history_prune(
+    db: &HistoryDb,
+    older_than_days: u64,
+    dry_run: bool,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if older_than_days == 0 {
+        return Err("older-than-days must be at least 1".into());
+    }
+
+    if !dry_run && !yes {
+        println!("Refusing to prune without --yes or --dry-run.");
+        return Ok(());
+    }
+
+    let pruned = db.prune_older_than_days(older_than_days, dry_run)?;
+    if dry_run {
+        println!("Would prune {pruned} entries older than {older_than_days} days");
+    } else {
+        println!("Pruned {pruned} entries older than {older_than_days} days");
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_pass_by_value)]
+fn history_export(
+    db: &HistoryDb,
+    output_path: Option<String>,
+    format: ExportFormat,
+    outcome: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    limit: Option<usize>,
+    compress: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use chrono::DateTime;
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use std::fs::File;
+    use std::io::{self, BufWriter, Write};
+
+    // Parse outcome filter
+    let outcome_filter = outcome
+        .as_deref()
+        .map(|o| Outcome::parse(o).ok_or_else(|| format!("Invalid outcome: {o}")))
+        .transpose()?;
+
+    // Parse date/time filters
+    let since_dt = since
+        .as_deref()
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| format!("Invalid since datetime: {s} (use ISO 8601 format)"))
+        })
+        .transpose()?;
+
+    let until_dt = until
+        .as_deref()
+        .map(|s| {
+            DateTime::parse_from_rfc3339(s)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| format!("Invalid until datetime: {s} (use ISO 8601 format)"))
+        })
+        .transpose()?;
+
+    let options = ExportOptions {
+        outcome_filter,
+        since: since_dt,
+        until: until_dt,
+        limit,
+    };
+
+    // Create output writer
+    let count: usize;
+    if let Some(path) = output_path {
+        let file = File::create(&path)?;
+        if compress {
+            let encoder = GzEncoder::new(file, Compression::default());
+            let mut writer = BufWriter::new(encoder);
+            count = export_to_writer(db, &mut writer, format, &options)?;
+            writer.flush()?;
+        } else {
+            let mut writer = BufWriter::new(file);
+            count = export_to_writer(db, &mut writer, format, &options)?;
+            writer.flush()?;
+        }
+        eprintln!("Exported {count} records to {path}");
+    } else {
+        let stdout = io::stdout();
+        let mut writer = stdout.lock();
+        count = export_to_writer(db, &mut writer, format, &options)?;
+        writer.flush()?;
+        eprintln!("Exported {count} records");
+    }
+
+    Ok(())
+}
+
+fn export_to_writer<W: std::io::Write>(
+    db: &HistoryDb,
+    writer: &mut W,
+    format: ExportFormat,
+    options: &ExportOptions,
+) -> Result<usize, Box<dyn std::error::Error>> {
+    let count = match format {
+        ExportFormat::Json => db.export_json(writer, options)?,
+        ExportFormat::Jsonl => db.export_jsonl(writer, options)?,
+        ExportFormat::Csv => db.export_csv(writer, options)?,
+    };
+    Ok(count)
+}
+
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_lines)]
+fn history_analyze(
+    db: &HistoryDb,
+    days: u64,
+    json: bool,
+    recommendations_only: bool,
+    false_positives: bool,
+    gaps: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+
+    // Get enabled packs from config
+    let config = Config::load();
+    let enabled_pack_ids = config.enabled_pack_ids();
+    let enabled_packs: Vec<&str> = enabled_pack_ids.iter().map(String::as_str).collect();
+
+    let analysis = db.analyze_pack_effectiveness(days, &enabled_packs)?;
+
+    if json {
+        let output = serde_json::to_string_pretty(&analysis)?;
+        println!("{output}");
+        return Ok(());
+    }
+
+    // Pretty print output
+    println!(
+        "\n{}",
+        "═══ Pack Effectiveness Analysis ═══".bright_cyan().bold()
+    );
+    println!(
+        "Period: {} days | Commands analyzed: {}\n",
+        analysis.period_days,
+        analysis.total_commands.to_string().yellow()
+    );
+
+    // Show recommendations (always unless specific view requested)
+    if !false_positives && !gaps || recommendations_only {
+        if analysis.recommendations.is_empty() {
+            println!("{}", "No recommendations at this time.".dimmed());
+        } else {
+            println!("{}", "📋 Recommendations:".bright_white().bold());
+            for rec in &analysis.recommendations {
+                let priority_indicator = match rec.priority {
+                    8..=10 => "🔴".to_string(),
+                    5..=7 => "🟡".to_string(),
+                    _ => "🟢".to_string(),
+                };
+                println!("  {} {}", priority_indicator, rec.description);
+                if let Some(action) = &rec.suggested_action {
+                    println!("     └─ {}", action.dimmed());
+                }
+            }
+            println!();
+        }
+    }
+
+    // Show false positives (potentially aggressive patterns)
+    if false_positives || (!recommendations_only && !gaps) {
+        if analysis.potentially_aggressive.is_empty() {
+            println!(
+                "{}",
+                "✓ No patterns with high bypass rates detected.".green()
+            );
+        } else {
+            println!(
+                "{}",
+                "⚠️  Potentially Aggressive Patterns (high bypass rate):"
+                    .yellow()
+                    .bold()
+            );
+            for p in &analysis.potentially_aggressive {
+                println!(
+                    "  • {} ({}): {:.1}% bypass rate ({}/{} triggers)",
+                    p.pattern.bright_white(),
+                    p.pack_id.as_deref().unwrap_or("unknown").dimmed(),
+                    p.bypass_rate,
+                    p.bypassed_count,
+                    p.total_triggers
+                );
+            }
+            println!();
+        }
+    }
+
+    // Show coverage gaps
+    if gaps || (!recommendations_only && !false_positives) {
+        if analysis.potential_gaps.is_empty() {
+            println!("{}", "✓ No potential coverage gaps detected.".green());
+        } else {
+            println!(
+                "{}",
+                "⚠️  Potential Coverage Gaps (dangerous commands that were allowed):"
+                    .yellow()
+                    .bold()
+            );
+            for gap in analysis.potential_gaps.iter().take(10) {
+                let cmd_display = if gap.command.len() > 60 {
+                    format!("{}...", &gap.command[..57])
+                } else {
+                    gap.command.clone()
+                };
+                println!(
+                    "  • {} ({})",
+                    cmd_display.bright_white(),
+                    gap.reason.dimmed()
+                );
+            }
+            if analysis.potential_gaps.len() > 10 {
+                println!("  ... and {} more", analysis.potential_gaps.len() - 10);
+            }
+            println!();
+        }
+    }
+
+    // Show high-value patterns summary
+    if !recommendations_only && !false_positives && !gaps {
+        if !analysis.high_value_patterns.is_empty() {
+            let total_blocked: u64 = analysis
+                .high_value_patterns
+                .iter()
+                .map(|p| p.denied_count)
+                .sum();
+            println!(
+                "{}",
+                format!(
+                    "✓ {} high-value patterns blocked {} commands with minimal false positives.",
+                    analysis.high_value_patterns.len(),
+                    total_blocked
+                )
+                .green()
+            );
+        }
+
+        // Show inactive packs
+        if !analysis.inactive_packs.is_empty() {
+            println!(
+                "\n{} Inactive packs (enabled but never triggered): {}",
+                "ℹ️ ".dimmed(),
+                analysis.inactive_packs.join(", ").dimmed()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn history_check(
+    db: &HistoryDb,
+    json: bool,
+    strict: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+
+    let result = db.check_health()?;
+
+    if json {
+        let output = serde_json::to_string_pretty(&result)?;
+        println!("{output}");
+    } else {
+        println!(
+            "\n{}",
+            "═══ History Database Health Check ═══".bright_cyan().bold()
+        );
+
+        // Integrity status
+        let integrity_status = if result.integrity_ok {
+            "✓ PASSED".green()
+        } else {
+            "✗ FAILED".red()
+        };
+        println!(
+            "Integrity check: {} ({})",
+            integrity_status, result.integrity_check
+        );
+
+        // Foreign key check
+        if result.foreign_key_violations == 0 {
+            println!("Foreign keys: {} violations", "0".green());
+        } else {
+            println!(
+                "Foreign keys: {} violations",
+                result.foreign_key_violations.to_string().red()
+            );
+        }
+
+        // FTS sync status
+        let fts_status = if result.fts_in_sync {
+            "✓ in sync".green()
+        } else {
+            "✗ out of sync".red()
+        };
+        println!(
+            "FTS index: {} ({} commands, {} FTS entries)",
+            fts_status, result.commands_count, result.fts_count
+        );
+
+        // Storage info
+        println!("\n{}", "Storage:".bright_white());
+        println!(
+            "  Database: {} ({} pages)",
+            format_size(result.file_size_bytes),
+            result.page_count
+        );
+        println!("  WAL file: {}", format_size(result.wal_size_bytes));
+        println!(
+            "  Free pages: {} ({} bytes)",
+            result.freelist_count,
+            result.freelist_count * u64::from(result.page_size)
+        );
+
+        // Schema info
+        println!("\n{}", "Configuration:".bright_white());
+        println!("  Schema version: {}", result.schema_version);
+        println!("  Journal mode: {}", result.journal_mode);
+        println!("  Page size: {} bytes", result.page_size);
+    }
+
+    if strict && !result.integrity_ok {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+fn history_backup(
+    db: &HistoryDb,
+    output: &str,
+    compress: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use colored::Colorize;
+    use std::path::Path;
+
+    let output_path = Path::new(output);
+
+    // Add .gz extension if compressing and not already present
+    let has_gz_ext = output_path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gz"));
+    let final_path = if compress && !has_gz_ext {
+        output_path.with_extension(format!(
+            "{}.gz",
+            output_path
+                .extension()
+                .map(|e| e.to_string_lossy())
+                .unwrap_or_default()
+        ))
+    } else {
+        output_path.to_path_buf()
+    };
+
+    println!("Creating backup...");
+    let result = db.backup(&final_path, compress)?;
+
+    println!("\n{}", "═══ Backup Complete ═══".bright_cyan().bold());
+    println!("Output: {}", result.backup_path.bright_white());
+    println!(
+        "Size: {} {}",
+        format_size(result.backup_size_bytes),
+        if result.compressed {
+            "(compressed)"
+        } else {
+            ""
+        }
+    );
+    println!("Duration: {} ms", result.duration_ms);
+    if result.verified {
+        println!("Verification: {}", "✓ PASSED".green());
+    } else {
+        println!("Verification: {}", "skipped (compressed backup)".dimmed());
+    }
+
+    Ok(())
+}
+
+/// Format a byte size in human-readable format.
+#[allow(clippy::cast_precision_loss)]
+fn format_size(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
+fn format_history_stats_pretty(stats: &HistoryStats) -> String {
+    use std::fmt::Write;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "History stats (last {} days)", stats.period_days);
+    let _ = writeln!(output, "Total commands: {}", stats.total_commands);
+    let _ = writeln!(
+        output,
+        "Outcomes: allow {} | deny {} | warn {} | bypass {}",
+        stats.outcomes.allowed,
+        stats.outcomes.denied,
+        stats.outcomes.warned,
+        stats.outcomes.bypassed
+    );
+    let _ = writeln!(output, "Block rate: {:.2}%", stats.block_rate * 100.0);
+    let _ = writeln!(
+        output,
+        "Performance (us): p50 {} | p95 {} | p99 {} | max {}",
+        stats.performance.p50_us,
+        stats.performance.p95_us,
+        stats.performance.p99_us,
+        stats.performance.max_us
+    );
+
+    if !stats.top_patterns.is_empty() {
+        let _ = writeln!(output, "Top patterns:");
+        for pattern in &stats.top_patterns {
+            let _ = writeln!(
+                output,
+                "  - {} ({}{})",
+                pattern.name,
+                pattern.count,
+                pattern
+                    .pack_id
+                    .as_ref()
+                    .map_or_else(String::new, |pack| format!(", {pack}"))
+            );
+        }
+    }
+
+    if !stats.top_projects.is_empty() {
+        let _ = writeln!(output, "Top projects:");
+        for project in &stats.top_projects {
+            let _ = writeln!(output, "  - {} ({})", project.path, project.command_count);
+        }
+    }
+
+    if !stats.agents.is_empty() {
+        let _ = writeln!(output, "Top agents:");
+        for agent in &stats.agents {
+            let _ = writeln!(output, "  - {} ({})", agent.name, agent.count);
+        }
+    }
+
+    if let Some(trends) = &stats.trends {
+        let _ = writeln!(
+            output,
+            "Trends: commands {:+.1}% | block rate {:+.2}pp",
+            trends.commands_change, trends.block_rate_change
+        );
+        if !trends.top_pattern_change.is_empty() {
+            let _ = writeln!(output, "Pattern shifts:");
+            for (name, delta) in &trends.top_pattern_change {
+                let _ = writeln!(output, "  - {name}: {delta:+}");
+            }
+        }
+    }
+
+    output
 }
 
 /// Compare two corpus outputs and return differences.
@@ -3475,11 +5240,45 @@ fn uninstall_hook(purge: bool) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Update dcg by re-running the platform installer.
 fn self_update(update: UpdateCommand) -> Result<(), Box<dyn std::error::Error>> {
+    // Handle --check flag: just check for updates without installing
+    if update.check {
+        return handle_version_check(update.refresh, update.format);
+    }
+
     if cfg!(windows) {
         return self_update_windows(update);
     }
 
     self_update_unix(update)
+}
+
+/// Check for updates and display the result.
+fn handle_version_check(
+    force_refresh: bool,
+    format: UpdateFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::update::{check_for_update, format_check_result, format_check_result_json};
+
+    if !matches!(format, UpdateFormat::Json) {
+        eprintln!("Checking for updates...");
+    }
+
+    match check_for_update(force_refresh) {
+        Ok(result) => match format {
+            UpdateFormat::Pretty => {
+                // Detect if stdout is a TTY for color output
+                let use_color = std::io::IsTerminal::is_terminal(&std::io::stdout());
+                print!("{}", format_check_result(&result, use_color));
+            }
+            UpdateFormat::Json => {
+                let json = format_check_result_json(&result)
+                    .map_err(|e| format!("Failed to format JSON: {e}"))?;
+                println!("{json}");
+            }
+        },
+        Err(e) => return Err(format!("Failed to check for updates: {e}").into()),
+    }
+    Ok(())
 }
 
 fn self_update_unix(update: UpdateCommand) -> Result<(), Box<dyn std::error::Error>> {
@@ -4313,6 +6112,12 @@ fn handle_allow_once_command(
     let allow_once_store = AllowOnceStore::new(allow_once_path.clone());
     let _maintenance = allow_once_store.add_entry(&entry, now)?;
 
+    // Mark the pending exception as consumed so it doesn't show up in lists anymore.
+    // This is best-effort (if it fails, the allowed command still works).
+    if let Err(e) = pending_store.mark_consumed(&selected.full_hash, now) {
+        eprintln!("Warning: Failed to mark pending code as consumed: {e}");
+    }
+
     if !cmd.json {
         println!("✓ Allow-once entry created");
         println!("  File: {}", allow_once_path.display());
@@ -4632,7 +6437,10 @@ fn resolve_allow_once_revoke_target(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut matches: Vec<String> = Vec::new();
 
-    if target.len() <= 4 {
+    // Short codes are 5-digit numeric strings; anything else is a hash prefix
+    let is_short_code = target.len() <= 5 && target.chars().all(|c| c.is_ascii_digit());
+
+    if is_short_code {
         matches.extend(
             pending
                 .iter()
@@ -5970,11 +7778,14 @@ mod tests {
 
     #[test]
     fn test_cli_parse_pack_info() {
-        let cli = Cli::parse_from(["dcg", "pack", "core.git"]);
-        if let Some(Command::PackInfo { pack_id, .. }) = cli.command {
+        let cli = Cli::parse_from(["dcg", "pack", "info", "core.git"]);
+        if let Some(Command::Pack {
+            action: PackAction::Info { pack_id, .. },
+        }) = cli.command
+        {
             assert_eq!(pack_id, "core.git");
         } else {
-            unreachable!("Expected PackInfo command");
+            unreachable!("Expected Pack Info command");
         }
     }
 
@@ -6702,6 +8513,25 @@ exclude = ["target/**"]
 
         let after = std::fs::read_to_string(&hook_path).expect("read hook after");
         assert_eq!(after, existing, "should not modify unknown hook");
+    }
+
+    #[test]
+    fn test_cli_parse_history_stats() {
+        let cli = Cli::try_parse_from([
+            "dcg", "history", "stats", "--days", "7", "--json", "--trends",
+        ])
+        .expect("parse");
+        if let Some(Command::History { action }) = cli.command {
+            if let HistoryAction::Stats { days, trends, json } = action {
+                assert_eq!(days, 7);
+                assert!(trends);
+                assert!(json);
+            } else {
+                unreachable!("Expected History stats action");
+            }
+        } else {
+            unreachable!("Expected History command");
+        }
     }
 
     #[test]

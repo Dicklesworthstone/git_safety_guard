@@ -17,6 +17,7 @@
 #   --from-source      Build from source instead of downloading binary
 #   --quiet            Suppress non-error output
 #   --no-gum           Disable gum formatting even if available
+#   --no-verify        Skip checksum verification (for testing only)
 #
 set -euo pipefail
 umask 022
@@ -37,6 +38,7 @@ ARTIFACT_URL="${ARTIFACT_URL:-}"
 LOCK_FILE="/tmp/dcg-install.lock"
 SYSTEM=0
 NO_GUM=0
+NO_CHECKSUM=0
 
 # Detect gum for fancy output (https://github.com/charmbracelet/gum)
 HAS_GUM=0
@@ -143,6 +145,149 @@ draw_box() {
   printf "\033[%sm╚%s╝\033[0m\n" "$color" "$border"
 }
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI Agent Detection
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Arrays to track detected agents
+DETECTED_AGENTS=()
+CLAUDE_VERSION=""
+CODEX_VERSION=""
+GEMINI_VERSION=""
+AIDER_VERSION=""
+CONTINUE_VERSION=""
+
+detect_agents() {
+  DETECTED_AGENTS=()
+
+  # Claude Code
+  if [[ -d "$HOME/.claude" ]] || command -v claude &>/dev/null; then
+    DETECTED_AGENTS+=("claude-code")
+    if command -v claude &>/dev/null; then
+      CLAUDE_VERSION=$(claude --version 2>/dev/null | head -1 || echo "")
+    fi
+  fi
+
+  # Codex CLI
+  if [[ -d "$HOME/.codex" ]] || command -v codex &>/dev/null; then
+    DETECTED_AGENTS+=("codex-cli")
+    if command -v codex &>/dev/null; then
+      CODEX_VERSION=$(codex --version 2>/dev/null | head -1 || echo "")
+    fi
+  fi
+
+  # Gemini CLI (check both ~/.gemini and ~/.gemini-cli for compatibility)
+  if [[ -d "$HOME/.gemini" ]] || [[ -d "$HOME/.gemini-cli" ]] || command -v gemini &>/dev/null; then
+    DETECTED_AGENTS+=("gemini-cli")
+    if command -v gemini &>/dev/null; then
+      GEMINI_VERSION=$(gemini --version 2>/dev/null | head -1 || echo "")
+    fi
+  fi
+
+  # Aider
+  if command -v aider &>/dev/null; then
+    DETECTED_AGENTS+=("aider")
+    AIDER_VERSION=$(aider --version 2>/dev/null | head -1 || echo "")
+  fi
+
+  # Continue
+  if [[ -d "$HOME/.continue" ]]; then
+    DETECTED_AGENTS+=("continue")
+    # Continue doesn't have a standard CLI version command
+    if [[ -f "$HOME/.continue/config.json" ]]; then
+      CONTINUE_VERSION="config present"
+    fi
+  fi
+}
+
+print_detected_agents() {
+  if [[ ${#DETECTED_AGENTS[@]} -eq 0 ]]; then
+    info "No AI coding agents detected"
+    return
+  fi
+
+  local count=${#DETECTED_AGENTS[@]}
+  local plural=""
+  [[ $count -gt 1 ]] && plural="s"
+
+  if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
+    echo ""
+    gum style --foreground 39 --bold "Detected AI Coding Agent${plural}:"
+    for agent in "${DETECTED_AGENTS[@]}"; do
+      case "$agent" in
+        claude-code)
+          local ver_info=""
+          [[ -n "$CLAUDE_VERSION" ]] && ver_info=" (${CLAUDE_VERSION})"
+          gum style --foreground 42 "  ✓ Claude Code${ver_info}"
+          ;;
+        codex-cli)
+          local ver_info=""
+          [[ -n "$CODEX_VERSION" ]] && ver_info=" (${CODEX_VERSION})"
+          gum style --foreground 42 "  ✓ Codex CLI${ver_info}"
+          ;;
+        gemini-cli)
+          local ver_info=""
+          [[ -n "$GEMINI_VERSION" ]] && ver_info=" (${GEMINI_VERSION})"
+          gum style --foreground 42 "  ✓ Gemini CLI${ver_info}"
+          ;;
+        aider)
+          local ver_info=""
+          [[ -n "$AIDER_VERSION" ]] && ver_info=" (${AIDER_VERSION})"
+          gum style --foreground 42 "  ✓ Aider${ver_info}"
+          ;;
+        continue)
+          local ver_info=""
+          [[ -n "$CONTINUE_VERSION" ]] && ver_info=" (${CONTINUE_VERSION})"
+          gum style --foreground 42 "  ✓ Continue${ver_info}"
+          ;;
+      esac
+    done
+    echo ""
+  else
+    echo ""
+    echo -e "\033[1;39mDetected AI Coding Agent${plural}:\033[0m"
+    for agent in "${DETECTED_AGENTS[@]}"; do
+      case "$agent" in
+        claude-code)
+          local ver_info=""
+          [[ -n "$CLAUDE_VERSION" ]] && ver_info=" (${CLAUDE_VERSION})"
+          echo -e "  \033[0;32m✓\033[0m Claude Code${ver_info}"
+          ;;
+        codex-cli)
+          local ver_info=""
+          [[ -n "$CODEX_VERSION" ]] && ver_info=" (${CODEX_VERSION})"
+          echo -e "  \033[0;32m✓\033[0m Codex CLI${ver_info}"
+          ;;
+        gemini-cli)
+          local ver_info=""
+          [[ -n "$GEMINI_VERSION" ]] && ver_info=" (${GEMINI_VERSION})"
+          echo -e "  \033[0;32m✓\033[0m Gemini CLI${ver_info}"
+          ;;
+        aider)
+          local ver_info=""
+          [[ -n "$AIDER_VERSION" ]] && ver_info=" (${AIDER_VERSION})"
+          echo -e "  \033[0;32m✓\033[0m Aider${ver_info}"
+          ;;
+        continue)
+          local ver_info=""
+          [[ -n "$CONTINUE_VERSION" ]] && ver_info=" (${CONTINUE_VERSION})"
+          echo -e "  \033[0;32m✓\033[0m Continue${ver_info}"
+          ;;
+      esac
+    done
+    echo ""
+  fi
+}
+
+# Check if a specific agent was detected
+is_agent_detected() {
+  local target="$1"
+  for agent in "${DETECTED_AGENTS[@]}"; do
+    [[ "$agent" == "$target" ]] && return 0
+  done
+  return 1
+}
+
 resolve_version() {
   if [ -n "$VERSION" ]; then return 0; fi
 
@@ -217,10 +362,49 @@ ensure_rust() {
   rustup component add rustfmt clippy || true
 }
 
+# Verify SHA256 checksum of a file
+# Usage: verify_checksum <file> <expected_checksum>
+# Returns 0 on success, 1 on failure
+verify_checksum() {
+  local file="$1"
+  local expected="$2"
+  local actual=""
+
+  if [ ! -f "$file" ]; then
+    err "File not found: $file"
+    return 1
+  fi
+
+  # Try sha256sum first (Linux), then shasum (macOS)
+  if command -v sha256sum &>/dev/null; then
+    actual=$(sha256sum "$file" | cut -d' ' -f1)
+  elif command -v shasum &>/dev/null; then
+    # macOS fallback
+    actual=$(shasum -a 256 "$file" | cut -d' ' -f1)
+  else
+    warn "No SHA256 tool found (sha256sum or shasum), skipping verification"
+    return 0
+  fi
+
+  if [ "$actual" != "$expected" ]; then
+    err "Checksum verification FAILED!"
+    err "Expected: $expected"
+    err "Got:      $actual"
+    err "The downloaded file may be corrupted or tampered with."
+    # Clean up the corrupted file
+    rm -f "$file"
+    return 1
+  fi
+
+  ok "Checksum verified: ${actual:0:16}..."
+  return 0
+}
+
 usage() {
   cat <<EOFU
 Usage: install.sh [--version vX.Y.Z] [--dest DIR] [--system] [--easy-mode] [--verify] \\
-                  [--artifact-url URL] [--checksum HEX] [--checksum-url URL] [--quiet] [--no-gum]
+                  [--artifact-url URL] [--checksum HEX] [--checksum-url URL] [--quiet] \\
+                  [--no-gum] [--no-verify]
 
 Options:
   --version vX.Y.Z   Install specific version (default: latest)
@@ -231,6 +415,7 @@ Options:
   --from-source      Build from source instead of downloading binary
   --quiet            Suppress non-error output
   --no-gum           Disable gum formatting even if available
+  --no-verify        Skip checksum verification (for testing only)
 EOFU
 }
 
@@ -247,6 +432,7 @@ while [ $# -gt 0 ]; do
     --from-source) FROM_SOURCE=1; shift;;
     --quiet|-q) QUIET=1; shift;;
     --no-gum) NO_GUM=1; shift;;
+    --no-verify) NO_CHECKSUM=1; shift;;
     -h|--help) usage; exit 0;;
     *) shift;;
   esac
@@ -268,6 +454,12 @@ if [ "$QUIET" -eq 0 ]; then
     echo -e "\033[0;90mBlocks destructive commands\033[0m"
     echo ""
   fi
+fi
+
+# Detect installed AI coding agents early (for informational display and smart configuration)
+detect_agents
+if [ "$QUIET" -eq 0 ]; then
+  print_detected_agents
 fi
 
 resolve_version
@@ -364,19 +556,31 @@ if [ "$FROM_SOURCE" -eq 1 ]; then
   exit 0
 fi
 
-if [ -z "$CHECKSUM" ]; then
-  [ -z "$CHECKSUM_URL" ] && CHECKSUM_URL="${URL}.sha256"
-  info "Fetching checksum from ${CHECKSUM_URL}"
-  CHECKSUM_FILE="$TMP/checksum.sha256"
-  if ! curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE"; then
-    err "Checksum required and could not be fetched"; exit 1;
+# Checksum verification (can be skipped with --no-verify for testing)
+if [ "$NO_CHECKSUM" -eq 1 ]; then
+  warn "Checksum verification skipped (--no-verify)"
+else
+  if [ -z "$CHECKSUM" ]; then
+    [ -z "$CHECKSUM_URL" ] && CHECKSUM_URL="${URL}.sha256"
+    info "Fetching checksum from ${CHECKSUM_URL}"
+    CHECKSUM_FILE="$TMP/checksum.sha256"
+    if ! curl -fsSL "$CHECKSUM_URL" -o "$CHECKSUM_FILE"; then
+      err "Checksum required and could not be fetched"
+      err "Use --no-verify to skip checksum verification (not recommended)"
+      exit 1
+    fi
+    CHECKSUM=$(awk '{print $1}' "$CHECKSUM_FILE")
+    if [ -z "$CHECKSUM" ]; then
+      err "Empty checksum file"
+      exit 1
+    fi
   fi
-  CHECKSUM=$(awk '{print $1}' "$CHECKSUM_FILE")
-  if [ -z "$CHECKSUM" ]; then err "Empty checksum file"; exit 1; fi
-fi
 
-echo "$CHECKSUM  $TMP/$TAR" | sha256sum -c - || { err "Checksum mismatch"; exit 1; }
-ok "Checksum verified"
+  if ! verify_checksum "$TMP/$TAR" "$CHECKSUM"; then
+    err "Installation aborted due to checksum failure"
+    exit 1
+  fi
+fi
 
 info "Extracting"
 tar -xf "$TMP/$TAR" -C "$TMP"
@@ -493,6 +697,12 @@ CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 GEMINI_SETTINGS="$HOME/.gemini/settings.json"
 AUTO_CONFIGURED=0
 
+# Detailed tracking for what was configured
+CLAUDE_STATUS=""  # "created"|"merged"|"already"|"failed"
+GEMINI_STATUS=""  # "created"|"merged"|"already"|"failed"|"skipped"
+CLAUDE_BACKUP=""
+GEMINI_BACKUP=""
+
 configure_claude_code() {
   local settings_file="$1"
   local cleanup_predecessor="$2"
@@ -500,8 +710,8 @@ configure_claude_code() {
   [ -z "$cleanup_predecessor" ] && cleanup_predecessor=1
   local settings_dir=$(dirname "$settings_file")
 
+  # Always create the config directory if it doesn't exist
   if [ ! -d "$settings_dir" ]; then
-    info "Creating Claude Code config directory: $settings_dir"
     mkdir -p "$settings_dir"
   fi
 
@@ -510,19 +720,17 @@ configure_claude_code() {
     if grep -q '"command".*dcg' "$settings_file" 2>/dev/null; then
       # Also check if predecessor is still present (needs cleanup)
       if grep -q 'git_safety_guard' "$settings_file" 2>/dev/null; then
-        info "Found both dcg and predecessor in settings; cleaning up..."
-        # Fall through to cleanup logic below
+        : # Fall through to cleanup logic below
       else
-        ok "Claude Code already configured with dcg"
+        CLAUDE_STATUS="already"
         AUTO_CONFIGURED=1
         return 0
       fi
     fi
 
     # Settings file exists, need to merge
-    info "Merging dcg hook into existing Claude Code settings..."
-    local backup="${settings_file}.bak.$(date +%Y%m%d%H%M%S)"
-    cp "$settings_file" "$backup"
+    CLAUDE_BACKUP="${settings_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$settings_file" "$CLAUDE_BACKUP"
 
     if command -v python3 >/dev/null 2>&1; then
       python3 - "$settings_file" "$DEST/dcg" "$cleanup_predecessor" <<'PYEOF'
@@ -536,7 +744,7 @@ cleanup_predecessor = sys.argv[3] == "1" if len(sys.argv) > 3 else True
 try:
     with open(settings_file, 'r') as f:
         settings = json.load(f)
-except:
+except (IOError, ValueError, json.JSONDecodeError):
     settings = {}
 
 # Ensure hooks structure exists
@@ -596,21 +804,22 @@ if predecessor_removed:
     print("PREDECESSOR_CLEANED", file=sys.stderr)
 PYEOF
       if [ $? -eq 0 ]; then
-        ok "Configured Claude Code (backup: $backup)"
+        CLAUDE_STATUS="merged"
         AUTO_CONFIGURED=1
       else
-        warn "Failed to configure Claude Code; restoring backup"
-        mv "$backup" "$settings_file" 2>/dev/null || true
+        mv "$CLAUDE_BACKUP" "$settings_file" 2>/dev/null || true
+        CLAUDE_STATUS="failed"
+        CLAUDE_BACKUP=""
       fi
     else
-      warn "Python3 not available for JSON merging"
-      warn "Add this to ~/.claude/settings.json manually:"
-      echo '  {"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"'"$DEST/dcg"'"}]}]}}'
+      # python3 not available - remove unnecessary backup
+      rm -f "$CLAUDE_BACKUP" 2>/dev/null || true
+      CLAUDE_BACKUP=""
+      CLAUDE_STATUS="failed"
       return 1
     fi
   else
     # Create new settings file
-    info "Creating Claude Code settings with dcg hook..."
     cat > "$settings_file" <<EOFSET
 {
   "hooks": {
@@ -628,7 +837,7 @@ PYEOF
   }
 }
 EOFSET
-    ok "Created $settings_file"
+    CLAUDE_STATUS="created"
     AUTO_CONFIGURED=1
   fi
 }
@@ -637,22 +846,27 @@ configure_gemini() {
   local settings_file="$1"
   local settings_dir=$(dirname "$settings_file")
 
-  # Check if Gemini CLI is installed
+  # Check if Gemini CLI appears to be installed (has config dir or gemini command exists)
+  if [ ! -d "$settings_dir" ] && ! command -v gemini >/dev/null 2>&1; then
+    # Gemini CLI not installed - skip without error
+    GEMINI_STATUS="skipped"
+    return 0
+  fi
+
+  # Create directory if needed (gemini command exists but no config dir yet)
   if [ ! -d "$settings_dir" ]; then
-    # Gemini CLI not installed
-    return 1
+    mkdir -p "$settings_dir"
   fi
 
   if [ -f "$settings_file" ]; then
     if grep -q '"command".*dcg' "$settings_file" 2>/dev/null; then
-      ok "Gemini CLI already configured with dcg"
+      GEMINI_STATUS="already"
       AUTO_CONFIGURED=1
       return 0
     fi
 
-    info "Configuring Gemini CLI with dcg hook..."
-    local backup="${settings_file}.bak.$(date +%Y%m%d%H%M%S)"
-    cp "$settings_file" "$backup"
+    GEMINI_BACKUP="${settings_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$settings_file" "$GEMINI_BACKUP"
 
     if command -v python3 >/dev/null 2>&1; then
       python3 - "$settings_file" "$DEST/dcg" <<'PYEOF'
@@ -665,7 +879,7 @@ dcg_path = sys.argv[2]
 try:
     with open(settings_file, 'r') as f:
         settings = json.load(f)
-except:
+except (IOError, ValueError, json.JSONDecodeError):
     settings = {}
 
 # Gemini CLI uses BeforeTool instead of PreToolUse
@@ -699,22 +913,22 @@ with open(settings_file, 'w') as f:
     json.dump(settings, f, indent=2)
 PYEOF
       if [ $? -eq 0 ]; then
-        ok "Configured Gemini CLI (backup: $backup)"
+        GEMINI_STATUS="merged"
         AUTO_CONFIGURED=1
       else
-        warn "Failed to configure Gemini CLI; restoring backup"
-        mv "$backup" "$settings_file" 2>/dev/null || true
+        mv "$GEMINI_BACKUP" "$settings_file" 2>/dev/null || true
+        GEMINI_STATUS="failed"
+        GEMINI_BACKUP=""
       fi
     else
-      warn "Python3 not available for JSON merging"
-      warn "Add this to ~/.gemini/settings.json manually:"
-      echo '  {"hooks":{"BeforeTool":[{"matcher":"run_shell_command","hooks":[{"name":"dcg","type":"command","command":"'"$DEST/dcg"'","timeout":5000}]}]}}'
+      # python3 not available - remove unnecessary backup
+      rm -f "$GEMINI_BACKUP" 2>/dev/null || true
+      GEMINI_BACKUP=""
+      GEMINI_STATUS="failed"
       return 1
     fi
   else
     # Create new settings file with dcg hook
-    # Note: directory must exist (we checked earlier), so just create the file
-    info "Creating Gemini CLI settings with dcg hook..."
     cat > "$settings_file" <<EOFSET
 {
   "hooks": {
@@ -734,7 +948,7 @@ PYEOF
   }
 }
 EOFSET
-    ok "Created $settings_file"
+    GEMINI_STATUS="created"
     AUTO_CONFIGURED=1
   fi
 }
@@ -746,11 +960,13 @@ EOFSET
 # Detect predecessor
 detect_predecessor
 
+# Default: don't remove predecessor (set before conditional block)
+REMOVE_PREDECESSOR=0
+
 if [ "$PREDECESSOR_FOUND" -eq 1 ]; then
   show_upgrade_banner
 
   # Decide whether to remove predecessor
-  REMOVE_PREDECESSOR=0
   if [ "$EASY" -eq 1 ]; then
     # Easy mode: always remove
     REMOVE_PREDECESSOR=1
@@ -786,55 +1002,94 @@ if [ "$PREDECESSOR_FOUND" -eq 1 ]; then
   fi
 fi
 
-# Configure Claude Code
-if [ -d "$HOME/.claude" ] || [ "$EASY" -eq 1 ]; then
-  info "Detecting Claude Code..."
-  configure_claude_code "$CLAUDE_SETTINGS" "$REMOVE_PREDECESSOR"
-fi
+# Always configure Claude Code (creates directory if needed)
+configure_claude_code "$CLAUDE_SETTINGS" "$REMOVE_PREDECESSOR"
 
 # Configure Gemini CLI (if installed)
-if [ -d "$HOME/.gemini" ]; then
-  info "Detecting Gemini CLI..."
-  configure_gemini "$GEMINI_SETTINGS"
-fi
+configure_gemini "$GEMINI_SETTINGS"
 
-# Show final status
+# ═══════════════════════════════════════════════════════════════════════════════
+# Final Summary
+# ═══════════════════════════════════════════════════════════════════════════════
+
 echo ""
-if [ "$AUTO_CONFIGURED" -eq 1 ]; then
+
+# Build summary of what was done
+summary_lines=()
+
+case "$CLAUDE_STATUS" in
+  created)
+    summary_lines+=("Claude Code: Created $CLAUDE_SETTINGS with dcg hook")
+    ;;
+  merged)
+    summary_lines+=("Claude Code: Added dcg hook to existing $CLAUDE_SETTINGS")
+    [ -n "$CLAUDE_BACKUP" ] && summary_lines+=("             Backup: $CLAUDE_BACKUP")
+    ;;
+  already)
+    summary_lines+=("Claude Code: Already configured (no changes)")
+    ;;
+  failed)
+    summary_lines+=("Claude Code: Configuration failed (python3 required)")
+    ;;
+  *)
+    summary_lines+=("Claude Code: Configured")
+    ;;
+esac
+
+case "$GEMINI_STATUS" in
+  created)
+    summary_lines+=("Gemini CLI:  Created $GEMINI_SETTINGS with dcg hook")
+    ;;
+  merged)
+    summary_lines+=("Gemini CLI:  Added dcg hook to existing $GEMINI_SETTINGS")
+    [ -n "$GEMINI_BACKUP" ] && summary_lines+=("             Backup: $GEMINI_BACKUP")
+    ;;
+  already)
+    summary_lines+=("Gemini CLI:  Already configured (no changes)")
+    ;;
+  skipped|"")
+    summary_lines+=("Gemini CLI:  Not installed (skipped)")
+    ;;
+  failed)
+    summary_lines+=("Gemini CLI:  Configuration failed")
+    ;;
+esac
+
+# Show summary
+if [ "$QUIET" -eq 0 ]; then
   if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
-    gum style \
-      --border normal \
-      --border-foreground 42 \
-      --padding "1 2" \
-      "$(gum style --foreground 42 --bold '🛡️  dcg is now active!')" \
-      "" \
-      "$(gum style --foreground 245 'All Bash commands will be scanned for destructive patterns.')" \
-      "$(gum style --foreground 245 'Use \"dcg explain <command>\" to see why a command was blocked.')"
+    {
+      gum style --foreground 42 --bold "dcg is now active!"
+      echo ""
+      for line in "${summary_lines[@]}"; do
+        gum style --foreground 245 "$line"
+      done
+      echo ""
+      gum style --foreground 245 "All Bash commands will be scanned for destructive patterns."
+      gum style --foreground 245 "Use \"dcg explain <command>\" to see why a command was blocked."
+    } | gum style --border normal --border-foreground 42 --padding "1 2"
   else
-    echo -e "\033[0;32m╔════════════════════════════════════════════════════════════════╗\033[0m"
-    echo -e "\033[0;32m║\033[0m  \033[1;32mdcg is now active!\033[0m                                              \033[0;32m║\033[0m"
-    echo -e "\033[0;32m╠════════════════════════════════════════════════════════════════╣\033[0m"
-    echo -e "\033[0;32m║\033[0m  All Bash commands will be scanned for destructive patterns.   \033[0;32m║\033[0m"
-    echo -e "\033[0;32m║\033[0m  Use \"dcg explain <cmd>\" to see why a command was blocked.     \033[0;32m║\033[0m"
-    echo -e "\033[0;32m╚════════════════════════════════════════════════════════════════╝\033[0m"
+    echo -e "\033[1;32mdcg is now active!\033[0m"
+    echo ""
+    for line in "${summary_lines[@]}"; do
+      echo -e "  \033[0;90m$line\033[0m"
+    done
+    echo ""
+    echo -e "  All Bash commands will be scanned for destructive patterns."
+    echo -e "  Use \"\033[0;36mdcg explain <command>\033[0m\" to see why a command was blocked."
   fi
-else
-  info "To manually configure Claude Code, add to ~/.claude/settings.json:"
-  cat <<EOF
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$DEST/dcg"
-          }
-        ]
-      }
-    ]
-  }
-}
-EOF
+
+  # Show reversal instructions
+  echo ""
+  if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
+    gum style --foreground 245 --italic "To uninstall: rm $DEST/dcg && remove dcg hooks from settings files"
+    if [ -n "$CLAUDE_BACKUP" ] || [ -n "$GEMINI_BACKUP" ]; then
+      gum style --foreground 245 --italic "To revert:   restore from backup files listed above"
+    fi
+  else
+    echo -e "\033[0;90mTo uninstall: rm $DEST/dcg && remove dcg hooks from settings files\033[0m"
+    if [ -n "$CLAUDE_BACKUP" ] || [ -n "$GEMINI_BACKUP" ]; then
+      echo -e "\033[0;90mTo revert:   restore from backup files listed above\033[0m"
+    fi
+  fi
 fi

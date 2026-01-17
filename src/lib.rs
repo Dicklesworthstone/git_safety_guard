@@ -68,7 +68,10 @@ pub mod config;
 pub mod context;
 pub mod evaluator;
 pub mod heredoc;
+pub mod highlight;
+pub mod history;
 pub mod hook;
+pub mod output;
 pub mod logging;
 pub mod normalize;
 pub mod packs;
@@ -77,9 +80,10 @@ pub mod perf;
 pub mod scan;
 pub mod simulate;
 pub mod stats;
+pub mod suggest;
 pub mod suggestions;
-pub mod telemetry;
 pub mod trace;
+pub mod update;
 
 // Re-export commonly used types
 pub use allowlist::{
@@ -93,8 +97,11 @@ pub use evaluator::{
     evaluate_command, evaluate_command_with_deadline, evaluate_command_with_pack_order,
     evaluate_command_with_pack_order_at_path, evaluate_command_with_pack_order_deadline,
     evaluate_command_with_pack_order_deadline_at_path,
+    evaluate_command_with_pack_order_deadline_at_path_with_external,
+    evaluate_command_with_pack_order_deadline_with_external,
 };
 pub use hook::{HookInput, HookOutput, HookResult, HookSpecificOutput};
+pub use packs::external::{ExternalPackLoader, LoadResult, LoadedPack};
 pub use packs::{Pack, PackId, PackRegistry};
 pub use pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
@@ -131,7 +138,15 @@ pub use trace::{
     truncate_utf8,
 };
 
+// Re-export highlight types for terminal span highlighting
+pub use highlight::{
+    HighlightSpan, HighlightedCommand, configure_colors as configure_highlight_colors,
+    format_highlighted_command, format_highlighted_command_auto, format_highlighted_command_multi,
+    should_use_color,
+};
+
 // Re-export suggestion types
+pub use suggest::{CommandCluster, cluster_denied_commands};
 pub use suggestions::{Suggestion, SuggestionKind, get_suggestion_by_kind, get_suggestions};
 
 // Re-export scan types for `dcg scan`
@@ -169,9 +184,22 @@ pub use confidence::{
     compute_match_confidence, should_downgrade_to_warn,
 };
 
-// Re-export telemetry types for command history tracking
-pub use telemetry::{
-    CURRENT_SCHEMA_VERSION, CommandEntry, DEFAULT_DB_FILENAME, ENV_TELEMETRY_DB_PATH,
-    ENV_TELEMETRY_DISABLED, Outcome as TelemetryOutcome, TelemetryDb, TelemetryError,
-    TelemetryWriter,
+// Re-export history types for command tracking
+pub use history::{
+    AgentStat, BackupResult, CURRENT_SCHEMA_VERSION, CheckResult, CommandEntry,
+    DEFAULT_DB_FILENAME, ENV_HISTORY_DB_PATH, ENV_HISTORY_DISABLED, HistoryDb, HistoryError,
+    HistoryStats, HistoryWriter, Outcome as HistoryOutcome, OutcomeStats, PatternStat,
+    PerformanceStats, ProjectStat, StatsTrends,
+};
+
+// Re-export output types for TUI/CLI visual formatting
+pub use output::{
+    BorderStyle, Severity as OutputSeverity, SeverityColors, Theme, auto_theme, init as init_output,
+    should_use_rich_output, supports_256_colors, terminal_height, terminal_width,
+};
+
+// Re-export update types for self-update version check
+pub use update::{
+    CACHE_DURATION, VersionCheckError, VersionCheckResult, check_for_update, clear_cache,
+    current_version, format_check_result, format_check_result_json,
 };
