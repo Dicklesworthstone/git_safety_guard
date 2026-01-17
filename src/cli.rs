@@ -3228,6 +3228,11 @@ fn handle_scan(
         crate::scan::ScanFormat::Markdown => {
             print_scan_markdown(&report, top, truncate);
         }
+        crate::scan::ScanFormat::Sarif => {
+            let sarif = crate::sarif::SarifReport::from_scan_report(&report);
+            let json = serde_json::to_string_pretty(&sarif)?;
+            println!("{json}");
+        }
     }
 
     // Exit with appropriate code based on fail-on policy
@@ -10193,6 +10198,26 @@ exclude = ["target/**"]
             .expect("parse");
         if let Some(Command::Scan(scan)) = cli.command {
             assert_eq!(scan.format, Some(crate::scan::ScanFormat::Markdown));
+        } else {
+            unreachable!("Expected Scan command");
+        }
+    }
+
+    #[test]
+    fn scan_format_sarif_variant_exists() {
+        // Verify the Sarif variant is available and can be compared
+        assert_eq!(
+            crate::scan::ScanFormat::Sarif,
+            crate::scan::ScanFormat::Sarif
+        );
+    }
+
+    #[test]
+    fn cli_parse_scan_format_sarif() {
+        let cli = Cli::try_parse_from(["dcg", "scan", "--staged", "--format", "sarif"])
+            .expect("parse");
+        if let Some(Command::Scan(scan)) = cli.command {
+            assert_eq!(scan.format, Some(crate::scan::ScanFormat::Sarif));
         } else {
             unreachable!("Expected Scan command");
         }

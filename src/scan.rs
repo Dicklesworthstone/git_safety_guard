@@ -134,6 +134,8 @@ pub enum ScanFormat {
     Json,
     /// GitHub-flavored Markdown for PR comments (uses `<details>` blocks)
     Markdown,
+    /// SARIF 2.1.0 format for GitHub Code Scanning and other security tools
+    Sarif,
 }
 
 /// Controls scan failure behavior (CI integration).
