@@ -5,6 +5,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::thread;
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -103,6 +104,28 @@ fn read_cache() -> Option<VersionCheckResult> {
     }
 }
 
+/// Read a cached version check result if it is still fresh.
+#[must_use]
+pub fn read_cached_check() -> Option<VersionCheckResult> {
+    read_cache()
+}
+
+/// Spawn a background update check to refresh the cache if needed.
+///
+/// This is best-effort and ignores failures. If a fresh cache already exists,
+/// no thread is spawned.
+pub fn spawn_update_check_if_needed() {
+    if read_cache().is_some() {
+        return;
+    }
+
+    let _ = thread::Builder::new()
+        .name("dcg-update-check".to_string())
+        .spawn(|| {
+            let _ = check_for_update(false);
+        });
+}
+
 /// Write version check result to cache.
 fn write_cache(result: &VersionCheckResult) -> Result<(), VersionCheckError> {
     let path = cache_path().ok_or_else(|| {
@@ -136,7 +159,8 @@ fn write_cache(result: &VersionCheckResult) -> Result<(), VersionCheckError> {
 }
 
 /// Get the current version of dcg from Cargo.toml.
-pub fn current_version() -> &'static str {
+#[must_use]
+pub const fn current_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
@@ -177,7 +201,9 @@ fn fetch_latest_version() -> Result<VersionCheckResult, VersionCheckError> {
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
         .build()
-        .map_err(|e| VersionCheckError::NetworkError(format!("Failed to configure release list: {e}")))?
+        .map_err(|e| {
+            VersionCheckError::NetworkError(format!("Failed to configure release list: {e}"))
+        })?
         .fetch()
         .map_err(|e| VersionCheckError::NetworkError(format!("Failed to fetch releases: {e}")))?;
 
@@ -247,8 +273,18 @@ pub fn format_check_result(result: &VersionCheckResult, use_color: bool) -> Stri
     let mut output = String::new();
 
     if use_color {
-        writeln!(output, "\x1b[1mCurrent version:\x1b[0m {}", result.current_version).ok();
-        writeln!(output, "\x1b[1mLatest version:\x1b[0m  {}", result.latest_version).ok();
+        writeln!(
+            output,
+            "\x1b[1mCurrent version:\x1b[0m {}",
+            result.current_version
+        )
+        .ok();
+        writeln!(
+            output,
+            "\x1b[1mLatest version:\x1b[0m  {}",
+            result.latest_version
+        )
+        .ok();
         writeln!(output).ok();
 
         if result.update_available {
@@ -283,6 +319,67 @@ pub fn format_check_result(result: &VersionCheckResult, use_color: bool) -> Stri
 pub fn format_check_result_json(result: &VersionCheckResult) -> Result<String, VersionCheckError> {
     serde_json::to_string_pretty(result)
         .map_err(|e| VersionCheckError::ParseError(format!("Failed to serialize result: {e}")))
+}
+
+/// Spawn a background thread to check for updates.
+///
+/// This function returns immediately. The check runs in the background and
+/// caches the result for future calls to [`get_update_notice`].
+///
+/// This is fire-and-forget: errors are silently ignored since this is
+/// a non-critical enhancement.
+pub fn spawn_background_check() {
+    std::thread::spawn(|| {
+        // Silent check - ignore all errors
+        let _ = check_for_update(false);
+    });
+}
+
+/// Get an update notice from the cache without blocking.
+///
+/// Returns `Some(notice_string)` if an update is available and cached,
+/// `None` if no update is available, the cache is expired, or any error occurs.
+///
+/// This function never blocks on network I/O - it only reads from the cache.
+#[must_use]
+pub fn get_update_notice(use_color: bool) -> Option<String> {
+    // Only read from cache - never fetch
+    let cached = read_cache()?;
+
+    if !cached.update_available {
+        return None;
+    }
+
+    // Format a subtle notice
+    let notice = if use_color {
+        format!(
+            "\x1b[33m!\x1b[0m A new version of dcg is available: {} -> {}\n  Run '\x1b[1mdcg update\x1b[0m' to upgrade",
+            cached.current_version, cached.latest_version
+        )
+    } else {
+        format!(
+            "! A new version of dcg is available: {} -> {}\n  Run 'dcg update' to upgrade",
+            cached.current_version, cached.latest_version
+        )
+    };
+
+    Some(notice)
+}
+
+/// Check if update checking is enabled via environment variable.
+///
+/// Returns `false` if DCG_NO_UPDATE_CHECK is set to any non-empty value
+/// (e.g., "1", "true", "yes").
+#[must_use]
+pub fn is_update_check_enabled() -> bool {
+    is_update_check_enabled_with(|key| std::env::var(key).ok())
+}
+
+fn is_update_check_enabled_with<F>(mut get_env: F) -> bool
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    get_env("DCG_NO_UPDATE_CHECK").map_or(true, |v| v.is_empty())
 }
 
 #[cfg(test)]
@@ -346,5 +443,33 @@ mod tests {
         let output = format_check_result(&result, false);
         assert!(output.contains("Update available"));
         assert!(output.contains("dcg update"));
+    }
+
+    #[test]
+    fn test_is_update_check_enabled_default() {
+        let env_map: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        assert!(is_update_check_enabled_with(|key| {
+            env_map.get(key).map(|v| (*v).to_string())
+        }));
+    }
+
+    #[test]
+    fn test_is_update_check_disabled_by_env() {
+        let env_map: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::from([("DCG_NO_UPDATE_CHECK", "1")]);
+        assert!(!is_update_check_enabled_with(|key| {
+            env_map.get(key).map(|v| (*v).to_string())
+        }));
+    }
+
+    #[test]
+    fn test_get_update_notice_no_cache() {
+        // With no cache file, should return None
+        // This is safe because get_update_notice only reads cache
+        // and doesn't create it
+        let notice = get_update_notice(false);
+        // May or may not be Some depending on actual cache state
+        // but should not panic
+        let _ = notice;
     }
 }
