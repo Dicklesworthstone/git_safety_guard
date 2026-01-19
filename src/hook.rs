@@ -4,8 +4,8 @@
 //! It parses incoming hook requests and formats denial responses.
 
 use crate::evaluator::{DEFAULT_WINDOW_WIDTH, MatchSpan};
-use crate::packs::PatternSuggestion;
 use crate::highlight::{HighlightSpan, format_highlighted_command, should_use_color};
+use crate::packs::PatternSuggestion;
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -1413,7 +1413,16 @@ mod tests {
             "Japanese test string must be >50 chars, got {}",
             long_japanese.chars().count()
         );
-        print_colorful_warning(long_japanese, "test reason", None, None, None, None, None, &[]);
+        print_colorful_warning(
+            long_japanese,
+            "test reason",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+        );
 
         // Mixed ASCII and emoji (emoji are 4 bytes) - >50 chars
         let long_emoji = "echo 🎉🎊🎈🎁🎀🎄🎃🎂🎆🎇🧨✨🎍🎎🎏🎐🎑🧧🎀🎁🎗🎟🎫🎖🏆🏅🥇🥈🥉⚽️🏀🏈⚾️🥎🎾🏐🏉🥏🎱🪀🏓🏸🥊🥋";
@@ -1532,7 +1541,16 @@ mod tests {
             None,
             &[],
         );
-        print_colorful_warning(r#"echo "quoted""#, "echo", None, None, None, None, None, &[]);
+        print_colorful_warning(
+            r#"echo "quoted""#,
+            "echo",
+            None,
+            None,
+            None,
+            None,
+            None,
+            &[],
+        );
     }
 
     #[test]

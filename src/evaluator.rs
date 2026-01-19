@@ -3865,11 +3865,20 @@ mod tests {
             };
 
             // Protected branch gets protected strictness
-            assert_eq!(config.strictness_for_branch(Some("main")), StrictnessLevel::All);
+            assert_eq!(
+                config.strictness_for_branch(Some("main")),
+                StrictnessLevel::All
+            );
             // Relaxed branch gets relaxed strictness
-            assert_eq!(config.strictness_for_branch(Some("feature/test")), StrictnessLevel::Critical);
+            assert_eq!(
+                config.strictness_for_branch(Some("feature/test")),
+                StrictnessLevel::Critical
+            );
             // Other branch gets default strictness
-            assert_eq!(config.strictness_for_branch(Some("develop")), StrictnessLevel::High);
+            assert_eq!(
+                config.strictness_for_branch(Some("develop")),
+                StrictnessLevel::High
+            );
             // No branch gets default strictness
             assert_eq!(config.strictness_for_branch(None), StrictnessLevel::High);
         }
