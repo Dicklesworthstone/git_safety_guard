@@ -144,3 +144,21 @@ CLI overrides:
 - `--heredoc-scan` / `--no-heredoc-scan`
 - `--heredoc-timeout <ms>`
 - `--heredoc-languages <lang1,lang2,...>`
+
+## Agent-Specific Profiles
+
+dcg can detect which AI coding agent is invoking it and apply agent-specific
+trust levels and configuration overrides.
+
+```toml
+[agents.claude-code]
+trust_level = "high"
+additional_allowlist = ["npm run build"]
+
+[agents.unknown]
+trust_level = "low"
+extra_packs = ["paranoid"]
+```
+
+See [agents.md](agents.md) for full documentation on agent detection, trust
+levels, and profile configuration.

@@ -78,6 +78,26 @@ enabled = [
 ]
 ```
 
+### Agent-Specific Profiles
+
+dcg automatically detects which AI coding agent is invoking it and can apply
+agent-specific trust levels:
+
+```toml
+# Trust Claude Code more
+[agents.claude-code]
+trust_level = "high"
+additional_allowlist = ["npm run build"]
+
+# Restrict unknown agents
+[agents.unknown]
+trust_level = "low"
+extra_packs = ["paranoid"]
+```
+
+See [docs/agents.md](docs/agents.md) for full documentation on supported agents
+and configuration options.
+
 ---
 
 ## Origins & Authors
