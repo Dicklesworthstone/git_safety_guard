@@ -68,6 +68,7 @@ pub mod config;
 pub mod context;
 pub mod error_codes;
 pub mod evaluator;
+pub mod git;
 pub mod heredoc;
 pub mod highlight;
 pub mod history;
@@ -196,6 +197,12 @@ pub use history::{
     DEFAULT_DB_FILENAME, ENV_HISTORY_DB_PATH, ENV_HISTORY_DISABLED, HistoryDb, HistoryError,
     HistoryStats, HistoryWriter, Outcome as HistoryOutcome, OutcomeStats, PatternStat,
     PerformanceStats, ProjectStat, StatsTrends,
+};
+
+// Re-export git branch detection types
+pub use git::{
+    BranchInfo, clear_cache as clear_git_cache, get_branch_info, get_branch_info_at_path,
+    get_current_branch, is_in_git_repo, is_in_git_repo_at_path,
 };
 
 // Re-export output types for TUI/CLI visual formatting
