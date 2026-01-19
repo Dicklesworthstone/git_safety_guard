@@ -1079,6 +1079,175 @@ fn register_database_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>)
             ),
         ],
     );
+
+    // MySQL suggestions
+    m.insert(
+        "database.mysql:drop-database",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "List databases with `SHOW DATABASES` to verify target",
+            )
+            .with_command("mysql -e 'SHOW DATABASES;'"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Back up with `mysqldump` before dropping",
+            )
+            .with_command("mysqldump -h host -u user -p <database> > backup.sql"),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:drop-table",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "List tables with `SHOW TABLES` to verify target",
+            )
+            .with_command("mysql -e 'SHOW TABLES FROM <database>;'"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Back up table with `mysqldump` before dropping",
+            )
+            .with_command("mysqldump -h host -u user -p <database> <table> > table_backup.sql"),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:truncate-table",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Check row count with `SELECT COUNT(*) FROM <table>`",
+            ),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Use `DELETE FROM` for transactional safety (can be rolled back)",
+            )
+            .with_command("DELETE FROM <table>;  -- Slower but transactional"),
+            Suggestion::new(
+                SuggestionKind::Documentation,
+                "MySQL's TRUNCATE is NOT transactional and cannot be rolled back",
+            ),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:delete-without-where",
+        vec![
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Add a WHERE clause to limit deletion scope",
+            )
+            .with_command("DELETE FROM <table> WHERE <condition>;"),
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Run `SELECT COUNT(*) FROM <table>` to see row count",
+            ),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:mysqladmin-drop",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "List databases with `mysql -e 'SHOW DATABASES;'` to verify target",
+            )
+            .with_command("mysql -e 'SHOW DATABASES;'"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Back up with `mysqldump` before dropping",
+            )
+            .with_command("mysqldump -h host -u user -p <database> > backup.sql"),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:mysqldump-add-drop-database",
+        vec![
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Remove --add-drop-database flag for safer restores",
+            )
+            .with_command("mysqldump <database> > backup.sql"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Restore to a new database first, verify, then swap",
+            ),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:mysqldump-add-drop-table",
+        vec![
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Use --skip-add-drop-table to disable table drops on restore",
+            )
+            .with_command("mysqldump --skip-add-drop-table <database> > backup.sql"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Restore to a new database first, then verify before swapping",
+            ),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:grant-all",
+        vec![
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Grant privileges on a specific database instead of all",
+            )
+            .with_command("GRANT ALL ON <database>.* TO 'user'@'host';"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Grant specific privileges instead of ALL",
+            )
+            .with_command("GRANT SELECT, INSERT, UPDATE ON <database>.* TO 'user'@'host';"),
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Review current grants with `SHOW GRANTS FOR 'user'@'host'`",
+            ),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:drop-user",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Review user's grants before dropping",
+            )
+            .with_command("SHOW GRANTS FOR 'user'@'host';"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Lock the account instead of dropping for temporary disablement",
+            )
+            .with_command("ALTER USER 'user'@'host' ACCOUNT LOCK;"),
+        ],
+    );
+
+    m.insert(
+        "database.mysql:reset-master",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Check replication status and connected replicas first",
+            )
+            .with_command("SHOW SLAVE HOSTS;"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Use PURGE BINARY LOGS for selective cleanup instead",
+            )
+            .with_command("PURGE BINARY LOGS BEFORE '<date>';"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Ensure all replicas are stopped and reconfigured after RESET MASTER",
+            ),
+        ],
+    );
 }
 
 /// Register suggestions for system.permissions pack rules.
@@ -1535,6 +1704,7 @@ mod tests {
     #[test]
     fn registry_has_database_rules() {
         let expected = [
+            // PostgreSQL
             "database.postgresql:drop-database",
             "database.postgresql:drop-table",
             "database.postgresql:drop-schema",
@@ -1542,21 +1712,35 @@ mod tests {
             "database.postgresql:delete-without-where",
             "database.postgresql:dropdb-cli",
             "database.postgresql:pg-dump-clean",
+            // MongoDB
             "database.mongodb:drop-database",
             "database.mongodb:drop-collection",
             "database.mongodb:delete-all",
             "database.mongodb:mongorestore-drop",
             "database.mongodb:collection-drop",
+            // Redis
             "database.redis:flushall",
             "database.redis:flushdb",
             "database.redis:debug-crash",
             "database.redis:debug-sleep",
             "database.redis:shutdown",
             "database.redis:config-dangerous",
+            // SQLite
             "database.sqlite:drop-table",
             "database.sqlite:delete-without-where",
             "database.sqlite:vacuum-into",
             "database.sqlite:sqlite3-stdin",
+            // MySQL
+            "database.mysql:drop-database",
+            "database.mysql:drop-table",
+            "database.mysql:truncate-table",
+            "database.mysql:delete-without-where",
+            "database.mysql:mysqladmin-drop",
+            "database.mysql:mysqldump-add-drop-database",
+            "database.mysql:mysqldump-add-drop-table",
+            "database.mysql:grant-all",
+            "database.mysql:drop-user",
+            "database.mysql:reset-master",
         ];
         for rule in expected {
             assert!(get_suggestions(rule).is_some(), "Missing: {rule}");
