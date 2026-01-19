@@ -221,6 +221,12 @@ fn main() {
         }
     };
 
+    // Initialize output system based on CLI flags.
+    // --legacy-output or --no-color forces plain output mode.
+    let force_plain_output = cli.legacy_output || cli.no_color;
+    destructive_command_guard::output::init(force_plain_output);
+    destructive_command_guard::output::init_console(force_plain_output);
+
     // If there's a subcommand, handle it and exit.
     if cli.command.is_some() {
         if let Err(e) = cli::run_command(cli) {

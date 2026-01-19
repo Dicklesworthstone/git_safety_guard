@@ -58,6 +58,14 @@ pub struct Cli {
     )]
     pub quiet: bool,
 
+    /// Use legacy output rendering (fallback if rich output causes issues)
+    #[arg(long, global = true, env = "DCG_LEGACY_OUTPUT")]
+    pub legacy_output: bool,
+
+    /// Disable colored output globally
+    #[arg(long, global = true, env = "DCG_NO_COLOR")]
+    pub no_color: bool,
+
     /// Subcommand to run (omit to run in hook mode)
     #[command(subcommand)]
     pub command: Option<Command>,
