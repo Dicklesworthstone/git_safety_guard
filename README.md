@@ -665,20 +665,33 @@ Easy mode automatically:
 
 **Other options:**
 
+Interactive mode (prompts for each step):
+
 ```bash
-# Interactive mode (prompts for each step)
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash
+```
 
-# Install specific version
+Install specific version:
+
+```bash
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash -s -- --version v0.1.0
+```
 
-# Install to /usr/local/bin (system-wide, requires sudo)
+Install to /usr/local/bin (system-wide, requires sudo):
+
+```bash
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | sudo bash -s -- --system
+```
 
-# Build from source instead of downloading binary
+Build from source instead of downloading binary:
+
+```bash
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash -s -- --from-source
+```
 
-# Download/install only (skip agent hook configuration)
+Download/install only (skip agent hook configuration):
+
+```bash
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash -s -- --no-configure
 ```
 
