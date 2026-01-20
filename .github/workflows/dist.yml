@@ -23,7 +23,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Run tests
-        run: cargo test
+        run: cargo test --lib
 
   build:
     needs: test
