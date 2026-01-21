@@ -4157,6 +4157,7 @@ fn parse_git_name_status_z(stdout: &[u8]) -> Vec<std::path::PathBuf> {
 }
 
 /// Print scan report in pretty format.
+#[cfg(not(feature = "rich-output"))]
 fn print_scan_pretty(report: &crate::scan::ScanReport, verbose: bool, top: usize) {
     use colored::Colorize;
 
@@ -4255,6 +4256,117 @@ fn print_scan_pretty(report: &crate::scan::ScanReport, verbose: bool, top: usize
             "{}",
             "Note: max findings limit reached, scan stopped early".yellow()
         );
+    }
+
+    if verbose {
+        // Additional verbose info could go here
+    }
+}
+
+/// Print scan report in pretty format with rich output.
+#[cfg(feature = "rich-output")]
+fn print_scan_pretty(report: &crate::scan::ScanReport, verbose: bool, top: usize) {
+    use crate::output::console::console;
+
+    let con = console();
+
+    if report.findings.is_empty() {
+        con.print("[green]No findings.[/]");
+    } else {
+        let total = report.findings.len();
+        let shown = if top == 0 { total } else { total.min(top) };
+
+        con.rule(Some("[bold] Scan Findings [/]"));
+        con.print(&format!("[yellow bold]{total}[/] finding(s)"));
+        con.print("");
+
+        let mut current_file: Option<&str> = None;
+        for finding in report.findings.iter().take(shown) {
+            if current_file != Some(finding.file.as_str()) {
+                if current_file.is_some() {
+                    con.print("");
+                }
+                current_file = Some(finding.file.as_str());
+                con.print(&format!("[bold]{file}[/]", file = finding.file));
+            }
+
+            let decision_icon = match finding.decision {
+                crate::scan::ScanDecision::Deny => "[red bold]DENY[/]",
+                crate::scan::ScanDecision::Warn => "[yellow bold]WARN[/]",
+                crate::scan::ScanDecision::Allow => "[green bold]ALLOW[/]",
+            };
+
+            let severity_icon = match finding.severity {
+                crate::scan::ScanSeverity::Error => "[red]error[/]",
+                crate::scan::ScanSeverity::Warning => "[yellow]warning[/]",
+                crate::scan::ScanSeverity::Info => "[blue]info[/]",
+            };
+
+            let location = finding.col.map_or_else(
+                || finding.line.to_string(),
+                |col| format!("{}:{col}", finding.line),
+            );
+
+            con.print(&format!(
+                "  [{decision_icon}] ({severity_icon}) {location}  [dim]extractor={}[/]",
+                finding.extractor_id
+            ));
+            con.print(&format!("    [dim]{}[/]", finding.extracted_command));
+
+            if let Some(ref rule_id) = finding.rule_id {
+                con.print(&format!("    [cyan]Rule:[/] {rule_id}"));
+            }
+
+            if let Some(ref reason) = finding.reason {
+                con.print(&format!("    [cyan]Reason:[/] {reason}"));
+            }
+
+            if let Some(ref suggestion) = finding.suggestion {
+                con.print(&format!("    [green]Suggestion:[/] {suggestion}"));
+            }
+        }
+
+        if shown < total {
+            con.print("");
+            con.print(&format!(
+                "[dim]… {} more finding(s) not shown (use --top 0 to show all)[/]",
+                total - shown
+            ));
+        }
+    }
+
+    // Summary
+    con.print("");
+    con.print("[dim]───[/]");
+    let considered = report.summary.files_scanned + report.summary.files_skipped;
+    con.print(&format!(
+        "[cyan]Files:[/] {considered} considered, {} scanned, {} skipped",
+        report.summary.files_scanned, report.summary.files_skipped
+    ));
+    con.print(&format!(
+        "[cyan]Commands extracted:[/] {}",
+        report.summary.commands_extracted
+    ));
+    con.print(&format!(
+        "[cyan]Findings:[/] {} ([green]allow={}[/], [yellow]warn={}[/], [red]deny={}[/])",
+        report.summary.findings_total,
+        report.summary.decisions.allow,
+        report.summary.decisions.warn,
+        report.summary.decisions.deny
+    ));
+    con.print(&format!(
+        "[cyan]Severities:[/] [red]error={}[/], [yellow]warning={}[/], [blue]info={}[/]",
+        report.summary.severities.error,
+        report.summary.severities.warning,
+        report.summary.severities.info
+    ));
+
+    if let Some(elapsed_ms) = report.summary.elapsed_ms {
+        con.print(&format!("[cyan]Elapsed:[/] {elapsed_ms} ms"));
+    }
+
+    if report.summary.max_findings_reached {
+        con.print("[yellow]Note: max findings limit reached, scan stopped early[/]");
     }
 
     if verbose {
