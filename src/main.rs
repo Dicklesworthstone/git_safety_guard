@@ -226,6 +226,7 @@ fn main() {
     let force_plain_output = cli.legacy_output || cli.no_color;
     destructive_command_guard::output::init(force_plain_output);
     destructive_command_guard::output::init_console(force_plain_output);
+    destructive_command_guard::output::init_suggestions(!cli.no_suggestions);
 
     // If there's a subcommand, handle it and exit.
     if cli.command.is_some() {

@@ -307,6 +307,8 @@ fn to_output_severity(s: crate::packs::Severity) -> ThemeSeverity {
     }
 }
 
+const MAX_SUGGESTIONS: usize = 4;
+
 /// Print a colorful warning to stderr for human visibility.
 #[allow(clippy::too_many_lines)]
 pub fn print_colorful_warning(
@@ -339,18 +341,25 @@ pub fn print_colorful_warning(
         .map(|s| HighlightSpan::new(s.start, s.end))
         .unwrap_or_else(|| HighlightSpan::new(0, 0)); // Fallback
 
-    // Convert suggestions to alternatives (platform-filtered)
-    let filtered_suggestions: Vec<&PatternSuggestion> = pattern_suggestions
-        .iter()
-        .filter(|s| s.platform.matches_current())
-        .collect();
+    let suggestions_enabled = crate::output::suggestions_enabled();
+
+    // Convert suggestions to alternatives (platform-filtered, capped)
+    let filtered_suggestions: Vec<&PatternSuggestion> = if suggestions_enabled {
+        pattern_suggestions
+            .iter()
+            .filter(|s| s.platform.matches_current())
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut alternatives: Vec<String> = filtered_suggestions
         .iter()
+        .take(MAX_SUGGESTIONS)
         .map(|s| format!("{}: {}", s.description, s.command))
         .collect();
 
     // Add contextual suggestion if available and no pattern suggestions
-    if alternatives.is_empty() {
+    if suggestions_enabled && alternatives.is_empty() {
         if let Some(sugg) = get_contextual_suggestion(command) {
             alternatives.push(sugg.to_string());
         }
@@ -412,9 +421,14 @@ fn render_suggestions_panel(suggestions: &[PatternSuggestion]) -> String {
 
     // Build content as a Vec of lines, then join
     let mut lines = Vec::new();
+    if !crate::output::suggestions_enabled() {
+        return String::new();
+    }
+
     let filtered: Vec<&PatternSuggestion> = suggestions
         .iter()
         .filter(|s| s.platform.matches_current())
+        .take(MAX_SUGGESTIONS)
         .collect();
 
     for (i, s) in filtered.iter().enumerate() {

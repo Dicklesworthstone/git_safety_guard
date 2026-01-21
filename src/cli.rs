@@ -66,6 +66,10 @@ pub struct Cli {
     #[arg(long, global = true, env = "DCG_NO_COLOR")]
     pub no_color: bool,
 
+    /// Disable suggestion output in warnings/denials
+    #[arg(long, global = true, env = "DCG_NO_SUGGESTIONS")]
+    pub no_suggestions: bool,
+
     /// Subcommand to run (omit to run in hook mode)
     #[command(subcommand)]
     pub command: Option<Command>,
