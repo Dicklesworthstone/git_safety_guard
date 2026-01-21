@@ -1,4 +1,4 @@
-//! Table rendering for dcg using comfy-table.
+//! Table rendering for dcg.
 //!
 //! Provides formatted table output for scan results, statistics, and pack listings.
 //! Automatically adapts to terminal width and supports multiple output styles.
@@ -15,13 +15,28 @@
 //! - ASCII - Portable ASCII characters
 //! - Markdown - GitHub-flavored markdown tables
 //! - Compact - Minimal spacing for dense output
+//!
+//! # Feature Flags
+//!
+//! When the `rich-output` feature is enabled, tables are rendered using `rich_rust`
+//! for premium terminal output. Markdown tables still use `comfy-table` for
+//! compatibility with documentation tools.
 
 use comfy_table::presets;
 use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Row, Table};
+#[cfg(not(feature = "rich-output"))]
 use ratatui::style::Color as RatColor;
+
+#[cfg(feature = "rich-output")]
+use super::rich_theme::RichThemeExt;
+#[cfg(feature = "rich-output")]
+use rich_rust::prelude::*;
 
 use super::theme::{BorderStyle, Severity, Theme};
 
+/// Convert ratatui color to comfy-table color.
+/// Only used when rich-output feature is disabled.
+#[cfg(not(feature = "rich-output"))]
 fn to_table_color(color: RatColor) -> Color {
     match color {
         RatColor::Reset => Color::Reset,
@@ -77,6 +92,23 @@ impl TableStyle {
                 table.load_preset(presets::UTF8_BORDERS_ONLY);
             }
         }
+    }
+
+    /// Returns the corresponding rich_rust box style.
+    #[cfg(feature = "rich-output")]
+    fn to_box_style(&self) -> rich_rust::renderables::BoxStyle {
+        match self {
+            Self::Unicode => rich_rust::renderables::BoxStyle::rounded(),
+            Self::Ascii => rich_rust::renderables::BoxStyle::ascii(),
+            Self::Markdown => rich_rust::renderables::BoxStyle::minimal(), // Markdown uses comfy-table
+            Self::Compact => rich_rust::renderables::BoxStyle::minimal(),
+        }
+    }
+
+    /// Returns true if this style should use Markdown output (comfy-table).
+    #[must_use]
+    pub const fn is_markdown(&self) -> bool {
+        matches!(self, Self::Markdown)
     }
 }
 
@@ -161,12 +193,26 @@ impl ScanResultsTable {
     }
 
     /// Renders the table to a string.
+    ///
+    /// When the `rich-output` feature is enabled, uses `rich_rust` for premium
+    /// terminal output (except for Markdown style which uses comfy-table).
     #[must_use]
     pub fn render(&self) -> String {
         if self.rows.is_empty() {
             return String::from("No findings.");
         }
 
+        // Use rich_rust for non-Markdown styles when feature is enabled
+        #[cfg(feature = "rich-output")]
+        if !self.style.is_markdown() {
+            return self.render_rich();
+        }
+
+        self.render_comfy()
+    }
+
+    /// Renders using comfy-table (default, or Markdown output).
+    fn render_comfy(&self) -> String {
         let mut table = Table::new();
         self.style.apply_preset(&mut table);
         table.set_content_arrangement(ContentArrangement::Dynamic);
@@ -184,7 +230,7 @@ impl ScanResultsTable {
 
         // Add rows
         for row in &self.rows {
-            let severity_cell = self.severity_cell(row.severity);
+            let severity_cell = self.severity_cell_comfy(row.severity);
             let mut cells = vec![
                 Cell::new(&row.file),
                 Cell::new(row.line).set_alignment(CellAlignment::Right),
@@ -204,8 +250,65 @@ impl ScanResultsTable {
         table.to_string()
     }
 
-    /// Creates a styled cell for severity.
-    fn severity_cell(&self, severity: Severity) -> Cell {
+    /// Renders using rich_rust for premium terminal output.
+    #[cfg(feature = "rich-output")]
+    fn render_rich(&self) -> String {
+        let mut table = rich_rust::renderables::Table::new()
+            .add_column(rich_rust::renderables::Column::new("File"))
+            .add_column(
+                rich_rust::renderables::Column::new("Line")
+                    .justify(rich_rust::renderables::JustifyMethod::Right),
+            )
+            .add_column(
+                rich_rust::renderables::Column::new("Severity")
+                    .justify(rich_rust::renderables::JustifyMethod::Center),
+            )
+            .add_column(rich_rust::renderables::Column::new("Pattern"));
+
+        if self.show_command {
+            table = table.add_column(rich_rust::renderables::Column::new("Command"));
+        }
+
+        table = table.box_style(self.style.to_box_style());
+
+        for row in &self.rows {
+            let severity_markup = self.severity_markup_rich(row.severity);
+            let mut rich_row = rich_rust::renderables::Row::new()
+                .cell(&row.file)
+                .cell(&row.line.to_string())
+                .cell(&severity_markup)
+                .cell(&row.pattern_id);
+
+            if self.show_command {
+                let cmd = row.command_preview.as_deref().unwrap_or("-");
+                let truncated = truncate_with_ellipsis(cmd, 40);
+                rich_row = rich_row.cell(&truncated);
+            }
+
+            table = table.add_row(rich_row);
+        }
+
+        table.to_string()
+    }
+
+    /// Returns rich_rust markup for severity label.
+    #[cfg(feature = "rich-output")]
+    fn severity_markup_rich(&self, severity: Severity) -> String {
+        if !self.colors_enabled {
+            return severity_label(severity).to_string();
+        }
+
+        let markup = self.theme.as_ref().map_or_else(
+            || default_severity_markup(severity),
+            |t| t.severity_markup(severity),
+        );
+
+        format!("[{markup}]{}[/]", severity_label(severity))
+    }
+
+    /// Creates a styled cell for severity (comfy-table version).
+    #[cfg(not(feature = "rich-output"))]
+    fn severity_cell_comfy(&self, severity: Severity) -> Cell {
         let (label, default_color, bold) = match severity {
             Severity::Critical => ("CRIT", Color::Red, true),
             Severity::High => ("HIGH", Color::DarkRed, false),
@@ -224,6 +327,47 @@ impl ScanResultsTable {
             }
         }
         cell
+    }
+
+    /// Creates a styled cell for severity (comfy-table version, rich-output build).
+    #[cfg(feature = "rich-output")]
+    fn severity_cell_comfy(&self, severity: Severity) -> Cell {
+        let (label, default_color, bold) = match severity {
+            Severity::Critical => ("CRIT", Color::Red, true),
+            Severity::High => ("HIGH", Color::DarkRed, false),
+            Severity::Medium => ("MED", Color::Yellow, false),
+            Severity::Low => ("LOW", Color::Blue, false),
+        };
+
+        let mut cell = Cell::new(label);
+        if self.colors_enabled {
+            cell = cell.fg(default_color);
+            if bold {
+                cell = cell.add_attribute(Attribute::Bold);
+            }
+        }
+        cell
+    }
+}
+
+/// Returns short severity label.
+fn severity_label(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "CRIT",
+        Severity::High => "HIGH",
+        Severity::Medium => "MED",
+        Severity::Low => "LOW",
+    }
+}
+
+/// Returns default rich_rust markup for severity (without theme).
+#[cfg(feature = "rich-output")]
+fn default_severity_markup(severity: Severity) -> String {
+    match severity {
+        Severity::Critical => "bold bright_red".to_string(),
+        Severity::High => "red".to_string(),
+        Severity::Medium => "yellow".to_string(),
+        Severity::Low => "blue".to_string(),
     }
 }
 
@@ -298,12 +442,26 @@ impl StatsTable {
     }
 
     /// Renders the table to a string.
+    ///
+    /// When the `rich-output` feature is enabled, uses `rich_rust` for premium
+    /// terminal output (except for Markdown style which uses comfy-table).
     #[must_use]
     pub fn render(&self) -> String {
         if self.rows.is_empty() {
             return String::from("No statistics available.");
         }
 
+        // Use rich_rust for non-Markdown styles when feature is enabled
+        #[cfg(feature = "rich-output")]
+        if !self.style.is_markdown() {
+            return self.render_rich();
+        }
+
+        self.render_comfy()
+    }
+
+    /// Renders using comfy-table (default, or Markdown output).
+    fn render_comfy(&self) -> String {
         let mut table = Table::new();
         self.style.apply_preset(&mut table);
         table.set_content_arrangement(ContentArrangement::Dynamic);
@@ -317,7 +475,7 @@ impl StatsTable {
 
         // Add rows
         for row in &self.rows {
-            let noise_cell = self.noise_cell(row.noise_pct);
+            let noise_cell = self.noise_cell_comfy(row.noise_pct);
 
             table.add_row(Row::from(vec![
                 Cell::new(&row.name),
@@ -337,8 +495,86 @@ impl StatsTable {
         }
     }
 
-    /// Creates a styled cell for noise percentage.
-    fn noise_cell(&self, noise_pct: Option<f64>) -> Cell {
+    /// Renders using rich_rust for premium terminal output.
+    #[cfg(feature = "rich-output")]
+    fn render_rich(&self) -> String {
+        let mut table = rich_rust::renderables::Table::new()
+            .add_column(rich_rust::renderables::Column::new("Rule"))
+            .add_column(
+                rich_rust::renderables::Column::new("Hits")
+                    .justify(rich_rust::renderables::JustifyMethod::Right),
+            )
+            .add_column(
+                rich_rust::renderables::Column::new("Allowed")
+                    .justify(rich_rust::renderables::JustifyMethod::Right),
+            )
+            .add_column(
+                rich_rust::renderables::Column::new("Denied")
+                    .justify(rich_rust::renderables::JustifyMethod::Right),
+            )
+            .add_column(
+                rich_rust::renderables::Column::new("Noise%")
+                    .justify(rich_rust::renderables::JustifyMethod::Right),
+            );
+
+        table = table.box_style(self.style.to_box_style());
+
+        for row in &self.rows {
+            let noise_markup = self.noise_markup_rich(row.noise_pct);
+
+            let rich_row = rich_rust::renderables::Row::new()
+                .cell(&row.name)
+                .cell(&row.hits.to_string())
+                .cell(&row.allowed.to_string())
+                .cell(&row.denied.to_string())
+                .cell(&noise_markup);
+
+            table = table.add_row(rich_row);
+        }
+
+        let table_str = table.to_string();
+
+        if let Some(title) = &self.title {
+            format!("{title}\n{table_str}")
+        } else {
+            table_str
+        }
+    }
+
+    /// Returns rich_rust markup for noise percentage.
+    #[cfg(feature = "rich-output")]
+    fn noise_markup_rich(&self, noise_pct: Option<f64>) -> String {
+        let Some(pct) = noise_pct else {
+            return "-".to_string();
+        };
+
+        let label = format!("{pct:.1}%");
+
+        if !self.colors_enabled {
+            return label;
+        }
+
+        // Color based on noise level: high noise = red, medium = yellow, low = green
+        let color = if pct > 50.0 {
+            self.theme
+                .as_ref()
+                .map_or("red".to_string(), |t| t.error_markup())
+        } else if pct > 25.0 {
+            self.theme
+                .as_ref()
+                .map_or("yellow".to_string(), |t| t.warning_markup())
+        } else {
+            self.theme
+                .as_ref()
+                .map_or("green".to_string(), |t| t.success_markup())
+        };
+
+        format!("[{color}]{label}[/]")
+    }
+
+    /// Creates a styled cell for noise percentage (comfy-table version).
+    #[cfg(not(feature = "rich-output"))]
+    fn noise_cell_comfy(&self, noise_pct: Option<f64>) -> Cell {
         let Some(pct) = noise_pct else {
             return Cell::new("-").set_alignment(CellAlignment::Right);
         };
@@ -348,14 +584,42 @@ impl StatsTable {
 
         if self.colors_enabled {
             let (error_color, warning_color, success_color) =
-                self.theme.as_ref().map_or((Color::Red, Color::Yellow, Color::Green), |theme| {
-                    (
-                        to_table_color(theme.error_color),
-                        to_table_color(theme.warning_color),
-                        to_table_color(theme.success_color),
-                    )
-                });
+                self.theme
+                    .as_ref()
+                    .map_or((Color::Red, Color::Yellow, Color::Green), |theme| {
+                        (
+                            to_table_color(theme.error_color),
+                            to_table_color(theme.warning_color),
+                            to_table_color(theme.success_color),
+                        )
+                    });
             // Color based on noise level: high noise = yellow/red warning
+            cell = if pct > 50.0 {
+                cell.fg(error_color)
+            } else if pct > 25.0 {
+                cell.fg(warning_color)
+            } else {
+                cell.fg(success_color)
+            };
+        }
+
+        cell
+    }
+
+    /// Creates a styled cell for noise percentage (comfy-table version, rich-output build).
+    #[cfg(feature = "rich-output")]
+    fn noise_cell_comfy(&self, noise_pct: Option<f64>) -> Cell {
+        let Some(pct) = noise_pct else {
+            return Cell::new("-").set_alignment(CellAlignment::Right);
+        };
+
+        let label = format!("{pct:.1}%");
+        let mut cell = Cell::new(label).set_alignment(CellAlignment::Right);
+
+        if self.colors_enabled {
+            // Use default colors for Markdown output (rich-output build)
+            let (error_color, warning_color, success_color) =
+                (Color::Red, Color::Yellow, Color::Green);
             cell = if pct > 50.0 {
                 cell.fg(error_color)
             } else if pct > 25.0 {
@@ -440,12 +704,26 @@ impl PackListTable {
     }
 
     /// Renders the table to a string.
+    ///
+    /// When the `rich-output` feature is enabled, uses `rich_rust` for premium
+    /// terminal output (except for Markdown style which uses comfy-table).
     #[must_use]
     pub fn render(&self) -> String {
         if self.rows.is_empty() {
             return String::from("No packs available.");
         }
 
+        // Use rich_rust for non-Markdown styles when feature is enabled
+        #[cfg(feature = "rich-output")]
+        if !self.style.is_markdown() {
+            return self.render_rich();
+        }
+
+        self.render_comfy()
+    }
+
+    /// Renders using comfy-table (default, or Markdown output).
+    fn render_comfy(&self) -> String {
         let mut table = Table::new();
         self.style.apply_preset(&mut table);
         table.set_content_arrangement(ContentArrangement::Dynamic);
@@ -471,7 +749,7 @@ impl PackListTable {
             ];
 
             if self.show_status {
-                cells.push(self.status_cell(row.enabled));
+                cells.push(self.status_cell_comfy(row.enabled));
             }
 
             table.add_row(Row::from(cells));
@@ -480,8 +758,73 @@ impl PackListTable {
         table.to_string()
     }
 
-    /// Creates a styled cell for enabled/disabled status.
-    fn status_cell(&self, enabled: bool) -> Cell {
+    /// Renders using rich_rust for premium terminal output.
+    #[cfg(feature = "rich-output")]
+    fn render_rich(&self) -> String {
+        let mut table = rich_rust::renderables::Table::new()
+            .add_column(rich_rust::renderables::Column::new("Pack ID"))
+            .add_column(rich_rust::renderables::Column::new("Name"))
+            .add_column(
+                rich_rust::renderables::Column::new("Destructive")
+                    .justify(rich_rust::renderables::JustifyMethod::Right),
+            )
+            .add_column(
+                rich_rust::renderables::Column::new("Safe")
+                    .justify(rich_rust::renderables::JustifyMethod::Right),
+            );
+
+        if self.show_status {
+            table = table.add_column(
+                rich_rust::renderables::Column::new("Status")
+                    .justify(rich_rust::renderables::JustifyMethod::Center),
+            );
+        }
+
+        table = table.box_style(self.style.to_box_style());
+
+        for row in &self.rows {
+            let mut rich_row = rich_rust::renderables::Row::new()
+                .cell(&row.id)
+                .cell(&row.name)
+                .cell(&row.destructive_count.to_string())
+                .cell(&row.safe_count.to_string());
+
+            if self.show_status {
+                let status_markup = self.status_markup_rich(row.enabled);
+                rich_row = rich_row.cell(&status_markup);
+            }
+
+            table = table.add_row(rich_row);
+        }
+
+        table.to_string()
+    }
+
+    /// Returns rich_rust markup for enabled/disabled status.
+    #[cfg(feature = "rich-output")]
+    fn status_markup_rich(&self, enabled: bool) -> String {
+        if !self.colors_enabled {
+            return if enabled { "enabled" } else { "disabled" }.to_string();
+        }
+
+        if enabled {
+            let color = self
+                .theme
+                .as_ref()
+                .map_or("green".to_string(), |t| t.success_markup());
+            format!("[{color}]● enabled[/]")
+        } else {
+            let color = self
+                .theme
+                .as_ref()
+                .map_or("dim".to_string(), |t| t.muted_markup());
+            format!("[{color}]○ disabled[/]")
+        }
+    }
+
+    /// Creates a styled cell for enabled/disabled status (comfy-table version).
+    #[cfg(not(feature = "rich-output"))]
+    fn status_cell_comfy(&self, enabled: bool) -> Cell {
         let (label, default_color) = if enabled {
             ("enabled", Color::Green)
         } else {
@@ -498,6 +841,22 @@ impl PackListTable {
         let mut cell = Cell::new(label);
         if self.colors_enabled {
             cell = cell.fg(color);
+        }
+        cell
+    }
+
+    /// Creates a styled cell for enabled/disabled status (comfy-table version, rich-output build).
+    #[cfg(feature = "rich-output")]
+    fn status_cell_comfy(&self, enabled: bool) -> Cell {
+        let (label, default_color) = if enabled {
+            ("enabled", Color::Green)
+        } else {
+            ("disabled", Color::DarkGrey)
+        };
+
+        let mut cell = Cell::new(label);
+        if self.colors_enabled {
+            cell = cell.fg(default_color);
         }
         cell
     }
@@ -563,8 +922,7 @@ mod tests {
             },
         ];
 
-        let table = ScanResultsTable::new(rows)
-            .with_style(TableStyle::Ascii);
+        let table = ScanResultsTable::new(rows).with_style(TableStyle::Ascii);
         let output = table.render();
 
         assert!(output.contains("src/main.rs"));
@@ -655,8 +1013,7 @@ mod tests {
             },
         ];
 
-        let table = PackListTable::new(rows)
-            .with_style(TableStyle::Ascii);
+        let table = PackListTable::new(rows).with_style(TableStyle::Ascii);
         let output = table.render();
 
         assert!(output.contains("core.git"));
@@ -714,8 +1071,7 @@ mod tests {
             command_preview: None,
         }];
 
-        let table = ScanResultsTable::new(rows)
-            .with_style(TableStyle::Markdown);
+        let table = ScanResultsTable::new(rows).with_style(TableStyle::Markdown);
         let output = table.render();
 
         // Markdown tables use | as separators
@@ -725,7 +1081,8 @@ mod tests {
 
     #[test]
     fn test_long_command_truncation() {
-        let long_cmd = "git reset --hard HEAD~100 && rm -rf /very/long/path/that/should/be/truncated";
+        let long_cmd =
+            "git reset --hard HEAD~100 && rm -rf /very/long/path/that/should/be/truncated";
         let rows = vec![ScanResultRow {
             file: "test.sh".to_string(),
             line: 1,
