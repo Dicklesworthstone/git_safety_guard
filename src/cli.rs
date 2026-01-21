@@ -3940,7 +3940,8 @@ fn handle_scan(
     trace: bool,
     top: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::scan::{ScanEvalContext, ScanOptions, scan_paths, should_fail};
+    use crate::output::progress::MaybeProgress;
+    use crate::scan::{ScanEvalContext, ScanOptions, scan_paths_with_progress, should_fail};
 
     // Validate file selection mode - at least one must be specified
     let file_sources = [staged, paths.is_some(), git_diff.is_some()]

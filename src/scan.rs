@@ -589,6 +589,12 @@ fn redact_segment(segment: &str) -> String {
     segment.to_string()
 }
 
+/// Progress callback for scan operations.
+///
+/// Called with (current_index, total_files, file_path) for each file being scanned.
+/// The first call has current_index=0 and signals the start of scanning.
+pub type ScanProgressCallback<'a> = &'a mut dyn FnMut(usize, usize, &str);
+
 /// Scan file paths (directories are expanded recursively).
 ///
 /// This is a small, conservative implementation intended to support the `scan`
@@ -615,6 +621,47 @@ pub fn scan_paths(
     exclude: &[String],
     repo_root: Option<&Path>,
 ) -> Result<ScanReport, String> {
+    scan_paths_with_progress(paths, options, config, ctx, include, exclude, repo_root, None)
+}
+
+/// Scan file paths with optional progress reporting.
+///
+/// Same as [`scan_paths`], but accepts a progress callback that is called
+/// for each file being scanned. This enables progress bar display in CLI contexts.
+///
+/// # Progress Callback
+///
+/// The callback receives `(current_index, total_files, file_path)`:
+/// - First call: `(0, total, "")` signals scan is starting with total file count
+/// - Subsequent calls: `(i, total, path)` for each file being processed
+///
+/// # Example
+///
+/// ```ignore
+/// use destructive_command_guard::scan::scan_paths_with_progress;
+///
+/// let mut progress = |current: usize, total: usize, file: &str| {
+///     eprintln!("[{}/{}] {}", current, total, file);
+/// };
+///
+/// let report = scan_paths_with_progress(
+///     &paths, &options, &config, &ctx,
+///     &[], &[], None,
+///     Some(&mut progress),
+/// )?;
+/// ```
+#[allow(clippy::missing_errors_doc)]
+#[allow(clippy::too_many_lines)]
+pub fn scan_paths_with_progress(
+    paths: &[PathBuf],
+    options: &ScanOptions,
+    config: &Config,
+    ctx: &ScanEvalContext,
+    include: &[String],
+    exclude: &[String],
+    repo_root: Option<&Path>,
+    progress: Option<ScanProgressCallback<'_>>,
+) -> Result<ScanReport, String> {
     let started = std::time::Instant::now();
 
     let mut files: Vec<PathBuf> = Vec::new();
@@ -630,13 +677,25 @@ pub fn scan_paths(
         files = filter_paths(&files, include, exclude, repo_root);
     }
 
+    let total_files = files.len();
+    let mut progress = progress;
+
+    // Signal scan start with total file count
+    if let Some(ref mut cb) = progress {
+        cb(0, total_files, "");
+    }
+
     let mut files_scanned = 0usize;
     let mut files_skipped = 0usize;
     let mut commands_extracted = 0usize;
     let mut findings: Vec<ScanFinding> = Vec::new();
     let mut max_findings_reached = false;
 
-    for file in &files {
+    for (file_idx, file) in files.iter().enumerate() {
+        // Report progress
+        if let Some(ref mut cb) = progress {
+            cb(file_idx + 1, total_files, &file.to_string_lossy());
+        }
         if findings.len() >= options.max_findings {
             max_findings_reached = true;
             break;
