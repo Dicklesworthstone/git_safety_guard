@@ -6465,12 +6465,22 @@ fn format_corpus_pretty(output: &CorpusOutput) -> String {
 /// Check installation, configuration, and hook registration
 fn doctor(fix: bool, format: DoctorFormat) {
     match format {
-        DoctorFormat::Pretty => doctor_pretty(fix),
+        DoctorFormat::Pretty => {
+            #[cfg(feature = "rich-output")]
+            {
+                doctor_rich(fix);
+            }
+            #[cfg(not(feature = "rich-output"))]
+            {
+                doctor_pretty(fix);
+            }
+        }
         DoctorFormat::Json => doctor_json(fix),
     }
 }
 
-/// Human-readable doctor output.
+/// Human-readable doctor output (colored crate, non-rich fallback).
+#[cfg(not(feature = "rich-output"))]
 #[allow(clippy::too_many_lines, clippy::unnecessary_unwrap)]
 fn doctor_pretty(fix: bool) {
     use colored::Colorize;
@@ -6768,6 +6778,64 @@ fn doctor_json(fix: bool) {
     let report = collect_doctor_report(fix);
     let json = serde_json::to_string_pretty(&report).expect("serialize doctor report");
     println!("{json}");
+}
+
+/// Rich terminal doctor output using DcgConsole and markup.
+#[cfg(feature = "rich-output")]
+fn doctor_rich(fix: bool) {
+    use crate::output::console::console;
+
+    let report = collect_doctor_report(fix);
+    let con = console();
+
+    // Header
+    con.rule(Some("[bold green] dcg doctor [/]"));
+    con.print("");
+
+    // Render each check
+    for check in &report.checks {
+        let (icon, color) = match check.status {
+            DoctorCheckStatus::Ok => ("✓", "green"),
+            DoctorCheckStatus::Warning => ("⚠", "yellow"),
+            DoctorCheckStatus::Error => ("✗", "red"),
+            DoctorCheckStatus::Skipped => ("○", "dim"),
+        };
+
+        // Status line with icon
+        con.print(&format!(
+            "[{color}]{icon}[/] [bold]{name}[/]: [{color}]{msg}[/]",
+            name = check.name,
+            msg = check.message
+        ));
+
+        // Remediation hint (indented)
+        if let Some(ref rem) = check.remediation {
+            con.print(&format!("  [dim]→ {rem}[/]"));
+        }
+
+        // Fixed indicator
+        if check.fixed {
+            con.print("  [green bold]Fixed![/]");
+        }
+    }
+
+    // Summary
+    con.print("");
+    if report.ok {
+        con.print("[green bold]All checks passed![/]");
+    } else if report.fixed > 0 && report.fixed == report.issues {
+        con.print("[green bold]All issues fixed![/]");
+    } else {
+        con.print(&format!(
+            "[red bold]{issues}[/] issue(s) found{fixed}",
+            issues = report.issues,
+            fixed = if report.fixed > 0 {
+                format!(", [green]{} fixed[/]", report.fixed)
+            } else {
+                String::new()
+            }
+        ));
+    }
 }
 
 #[allow(clippy::too_many_lines, clippy::option_if_let_else)]
