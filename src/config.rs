@@ -2197,7 +2197,23 @@ impl Config {
     }
 
     /// Load user configuration.
+    ///
+    /// Checks both XDG-style (`~/.config/dcg/`) and platform-native paths.
+    /// This ensures users can use `~/.config/dcg/config.toml` on all platforms,
+    /// including macOS where `dirs::config_dir()` returns `~/Library/Application Support`.
     fn load_user_config_layer() -> Option<ConfigLayer> {
+        // First try XDG-style path (~/.config/dcg/config.toml)
+        // This is what users expect and works consistently across platforms
+        if let Some(home) = dirs::home_dir() {
+            let xdg_path = home.join(".config").join("dcg").join(CONFIG_FILE_NAME);
+            if xdg_path.exists() {
+                if let Some(layer) = Self::load_layer_from_file(&xdg_path) {
+                    return Some(layer);
+                }
+            }
+        }
+
+        // Fall back to platform-native path (e.g., ~/Library/Application Support/dcg/ on macOS)
         let config_dir = dirs::config_dir()?;
         let path = config_dir.join("dcg").join(CONFIG_FILE_NAME);
         Self::load_layer_from_file(&path)

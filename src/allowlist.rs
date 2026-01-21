@@ -892,7 +892,11 @@ pub fn load_default_allowlists() -> LayeredAllowlist {
         .and_then(|cwd| find_repo_root(&cwd))
         .map(|root| root.join(".dcg").join("allowlist.toml"));
 
-    let user = dirs::config_dir().map(|d| d.join("dcg").join("allowlist.toml"));
+    // Check XDG-style path first (~/.config/dcg/), then platform-native
+    let user = dirs::home_dir()
+        .map(|h| h.join(".config").join("dcg").join("allowlist.toml"))
+        .filter(|p| p.exists())
+        .or_else(|| dirs::config_dir().map(|d| d.join("dcg").join("allowlist.toml")));
 
     // System allowlist is optional; keep the fixed path but treat missing as empty.
     // Allow tests to override via env for hermetic E2E (no reliance on real /etc).

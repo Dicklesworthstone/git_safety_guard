@@ -205,6 +205,16 @@ impl PendingExceptionStore {
             }
         }
 
+        // Check XDG-style path first (~/.config/dcg/), then platform-native
+        let xdg_base = dirs::home_dir().map(|h| h.join(".config"));
+        let xdg_path = xdg_base.as_ref().map(|b| b.join("dcg").join(PENDING_EXCEPTIONS_FILE));
+        if let Some(ref path) = xdg_path {
+            if path.exists() || xdg_base.as_ref().map(|b| b.join("dcg").exists()).unwrap_or(false) {
+                return path.clone();
+            }
+        }
+
+        // Fall back to platform-native
         let base = dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"));
         base.join("dcg").join(PENDING_EXCEPTIONS_FILE)
@@ -366,6 +376,16 @@ impl AllowOnceStore {
             }
         }
 
+        // Check XDG-style path first (~/.config/dcg/), then platform-native
+        let xdg_base = dirs::home_dir().map(|h| h.join(".config"));
+        let xdg_path = xdg_base.as_ref().map(|b| b.join("dcg").join(ALLOW_ONCE_FILE));
+        if let Some(ref path) = xdg_path {
+            if path.exists() || xdg_base.as_ref().map(|b| b.join("dcg").exists()).unwrap_or(false) {
+                return path.clone();
+            }
+        }
+
+        // Fall back to platform-native
         let base = dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"));
         base.join("dcg").join(ALLOW_ONCE_FILE)

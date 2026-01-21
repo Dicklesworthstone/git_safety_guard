@@ -7626,8 +7626,22 @@ fn claude_settings_path() -> std::path::PathBuf {
         .join("settings.json")
 }
 
-/// Get the path to dcg config directory
+/// Get the path to dcg config directory.
+///
+/// Prefers XDG-style `~/.config/dcg/` if it exists, otherwise falls back to
+/// platform-native location. This ensures users can use `~/.config/dcg/` on
+/// all platforms, including macOS where `dirs::config_dir()` returns
+/// `~/Library/Application Support`.
 fn config_dir() -> std::path::PathBuf {
+    // Check XDG-style path first (~/.config/dcg/)
+    if let Some(home) = dirs::home_dir() {
+        let xdg_dir = home.join(".config").join("dcg");
+        if xdg_dir.exists() {
+            return xdg_dir;
+        }
+    }
+
+    // Fall back to platform-native or default to ~/.config/dcg
     dirs::config_dir()
         .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".config"))
         .join("dcg")
