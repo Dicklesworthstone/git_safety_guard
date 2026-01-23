@@ -846,6 +846,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vergen-gix",
+ "walkdir",
  "which",
 ]
 
