@@ -6,6 +6,7 @@
 # Stray compiler output
 a.out
 *.o
+rustc-ice-*.txt
 
 # Editor/IDE artifacts
 .DS_Store
