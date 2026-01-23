@@ -21,12 +21,12 @@ use clap::Parser;
 use colored::Colorize;
 use destructive_command_guard::cli::{self, Cli};
 // Exit codes are used by cli.rs for robot mode; main.rs uses them for hook mode errors
-#[allow(unused_imports)]
-use destructive_command_guard::exit_codes::{EXIT_DENIED, EXIT_PARSE_ERROR, EXIT_SUCCESS};
 use destructive_command_guard::config::Config;
 use destructive_command_guard::evaluator::{
     EvaluationDecision, MatchSource, evaluate_command_with_pack_order_deadline_at_path,
 };
+#[allow(unused_imports)]
+use destructive_command_guard::exit_codes::{EXIT_DENIED, EXIT_PARSE_ERROR, EXIT_SUCCESS};
 use destructive_command_guard::history::{
     CommandEntry, ENV_HISTORY_DB_PATH, HistoryDb, HistoryWriter, Outcome as HistoryOutcome,
 };

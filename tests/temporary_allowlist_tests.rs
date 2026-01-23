@@ -115,7 +115,7 @@ mod duration_parsing {
         match (lower, upper) {
             (Ok(l), Ok(u)) => assert_eq!(l, u, "Should be case-insensitive"),
             (Err(_), Err(_)) => (), // Both fail is acceptable too
-            _ => (), // One works, one doesn't - also acceptable
+            _ => (),                // One works, one doesn't - also acceptable
         }
     }
 }
@@ -125,8 +125,8 @@ mod duration_parsing {
 // ============================================================================
 
 mod timestamp_parsing {
-    use destructive_command_guard::allowlist::is_expired;
     use destructive_command_guard::allowlist::AllowEntry;
+    use destructive_command_guard::allowlist::is_expired;
 
     fn make_test_entry() -> AllowEntry {
         AllowEntry {
@@ -152,42 +152,60 @@ mod timestamp_parsing {
     fn rfc3339_with_z_suffix() {
         let mut entry = make_test_entry();
         entry.expires_at = Some("2099-12-31T23:59:59Z".to_string());
-        assert!(!is_expired(&entry), "Future Z-suffix timestamp should not be expired");
+        assert!(
+            !is_expired(&entry),
+            "Future Z-suffix timestamp should not be expired"
+        );
     }
 
     #[test]
     fn rfc3339_with_offset() {
         let mut entry = make_test_entry();
         entry.expires_at = Some("2099-12-31T23:59:59+00:00".to_string());
-        assert!(!is_expired(&entry), "Future +00:00 offset should not be expired");
+        assert!(
+            !is_expired(&entry),
+            "Future +00:00 offset should not be expired"
+        );
     }
 
     #[test]
     fn rfc3339_with_positive_offset() {
         let mut entry = make_test_entry();
         entry.expires_at = Some("2099-12-31T23:59:59+05:30".to_string());
-        assert!(!is_expired(&entry), "Future positive offset should not be expired");
+        assert!(
+            !is_expired(&entry),
+            "Future positive offset should not be expired"
+        );
     }
 
     #[test]
     fn rfc3339_with_negative_offset() {
         let mut entry = make_test_entry();
         entry.expires_at = Some("2099-12-31T23:59:59-08:00".to_string());
-        assert!(!is_expired(&entry), "Future negative offset should not be expired");
+        assert!(
+            !is_expired(&entry),
+            "Future negative offset should not be expired"
+        );
     }
 
     #[test]
     fn iso8601_without_timezone() {
         let mut entry = make_test_entry();
         entry.expires_at = Some("2099-12-31T23:59:59".to_string());
-        assert!(!is_expired(&entry), "Future ISO8601 without TZ should not be expired");
+        assert!(
+            !is_expired(&entry),
+            "Future ISO8601 without TZ should not be expired"
+        );
     }
 
     #[test]
     fn date_only_format() {
         let mut entry = make_test_entry();
         entry.expires_at = Some("2099-12-31".to_string());
-        assert!(!is_expired(&entry), "Future date-only should not be expired");
+        assert!(
+            !is_expired(&entry),
+            "Future date-only should not be expired"
+        );
     }
 
     #[test]
@@ -201,7 +219,10 @@ mod timestamp_parsing {
     fn invalid_format_fails_closed() {
         let mut entry = make_test_entry();
         entry.expires_at = Some("not-a-date".to_string());
-        assert!(is_expired(&entry), "Invalid format should fail closed (expired)");
+        assert!(
+            is_expired(&entry),
+            "Invalid format should fail closed (expired)"
+        );
     }
 
     #[test]
@@ -225,7 +246,7 @@ mod timestamp_parsing {
 
 mod ttl_expiration {
     use chrono::{Duration, Utc};
-    use destructive_command_guard::allowlist::{is_expired, AllowEntry};
+    use destructive_command_guard::allowlist::{AllowEntry, is_expired};
 
     fn make_test_entry() -> AllowEntry {
         AllowEntry {
@@ -253,7 +274,10 @@ mod ttl_expiration {
         entry.ttl = Some("4h".to_string());
         let added = Utc::now() - Duration::hours(1);
         entry.added_at = Some(added.to_rfc3339());
-        assert!(!is_expired(&entry), "Entry added 1h ago with 4h TTL should not be expired");
+        assert!(
+            !is_expired(&entry),
+            "Entry added 1h ago with 4h TTL should not be expired"
+        );
     }
 
     #[test]
@@ -274,7 +298,10 @@ mod ttl_expiration {
         entry.ttl = Some("1h".to_string());
         let added = Utc::now() - Duration::hours(2);
         entry.added_at = Some(added.to_rfc3339());
-        assert!(is_expired(&entry), "Entry added 2h ago with 1h TTL should be expired");
+        assert!(
+            is_expired(&entry),
+            "Entry added 2h ago with 1h TTL should be expired"
+        );
     }
 
     #[test]
@@ -282,7 +309,10 @@ mod ttl_expiration {
         let mut entry = make_test_entry();
         entry.ttl = Some("4h".to_string());
         entry.added_at = None;
-        assert!(is_expired(&entry), "TTL without added_at should fail closed");
+        assert!(
+            is_expired(&entry),
+            "TTL without added_at should fail closed"
+        );
     }
 
     #[test]
@@ -290,7 +320,10 @@ mod ttl_expiration {
         let mut entry = make_test_entry();
         entry.ttl = Some("4h".to_string());
         entry.added_at = Some("not-a-timestamp".to_string());
-        assert!(is_expired(&entry), "TTL with invalid added_at should fail closed");
+        assert!(
+            is_expired(&entry),
+            "TTL with invalid added_at should fail closed"
+        );
     }
 
     #[test]
@@ -307,7 +340,7 @@ mod ttl_expiration {
 // ============================================================================
 
 mod session_entries {
-    use destructive_command_guard::allowlist::{is_expired, AllowEntry};
+    use destructive_command_guard::allowlist::{AllowEntry, is_expired};
 
     fn make_test_entry() -> AllowEntry {
         AllowEntry {
@@ -487,7 +520,9 @@ fn e2e_temporary_and_expires_conflict() {
 
     // Should fail - conflicting arguments
     assert!(
-        output.exit_code != 0 || output.stderr.contains("conflict") || output.stderr.contains("cannot"),
+        output.exit_code != 0
+            || output.stderr.contains("conflict")
+            || output.stderr.contains("cannot"),
         "Should reject conflicting --temporary and --expires flags.\nstderr: {}",
         output.stderr
     );
@@ -571,7 +606,7 @@ fn e2e_validate_checks_expired_entries() {
 
 #[test]
 fn integration_entry_validity_check() {
-    use destructive_command_guard::allowlist::{is_entry_valid, AllowEntry};
+    use destructive_command_guard::allowlist::{AllowEntry, is_entry_valid};
 
     // Valid entry (no expiration)
     let valid = AllowEntry {
@@ -591,7 +626,10 @@ fn integration_entry_validity_check() {
         session: None,
         context: None,
     };
-    assert!(is_entry_valid(&valid), "Entry without expiration should be valid");
+    assert!(
+        is_entry_valid(&valid),
+        "Entry without expiration should be valid"
+    );
 
     // Expired entry
     let expired = AllowEntry {
@@ -611,7 +649,10 @@ fn integration_entry_validity_check() {
         session: None,
         context: None,
     };
-    assert!(!is_entry_valid(&expired), "Expired entry should not be valid");
+    assert!(
+        !is_entry_valid(&expired),
+        "Expired entry should not be valid"
+    );
 }
 
 // ============================================================================
@@ -620,7 +661,7 @@ fn integration_entry_validity_check() {
 
 #[test]
 fn regression_permanent_entries_never_expire() {
-    use destructive_command_guard::allowlist::{is_expired, AllowEntry};
+    use destructive_command_guard::allowlist::{AllowEntry, is_expired};
 
     let permanent = AllowEntry {
         rule: Some("core.git:*".to_string()),
@@ -640,12 +681,15 @@ fn regression_permanent_entries_never_expire() {
         context: None,
     };
 
-    assert!(!is_expired(&permanent), "Permanent entries should never expire");
+    assert!(
+        !is_expired(&permanent),
+        "Permanent entries should never expire"
+    );
 }
 
 #[test]
 fn regression_far_future_dates_not_expired() {
-    use destructive_command_guard::allowlist::{is_expired, AllowEntry};
+    use destructive_command_guard::allowlist::{AllowEntry, is_expired};
 
     let far_future = AllowEntry {
         rule: Some("core.git:*".to_string()),
@@ -665,5 +709,8 @@ fn regression_far_future_dates_not_expired() {
         context: None,
     };
 
-    assert!(!is_expired(&far_future), "Far future dates should not be expired");
+    assert!(
+        !is_expired(&far_future),
+        "Far future dates should not be expired"
+    );
 }

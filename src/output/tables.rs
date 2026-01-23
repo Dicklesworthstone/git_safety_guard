@@ -322,7 +322,9 @@ impl ScanResultsTable {
             table.add_row(RichRow::new(cells));
         }
 
-        let width = self.max_width.map_or_else(|| terminal_width() as usize, |w| w as usize);
+        let width = self
+            .max_width
+            .map_or_else(|| terminal_width() as usize, |w| w as usize);
         segments_to_string(table.render(width))
     }
 
@@ -562,7 +564,9 @@ impl StatsTable {
             table.add_row(RichRow::new(cells));
         }
 
-        let width = self.max_width.map_or_else(|| terminal_width() as usize, |w| w as usize);
+        let width = self
+            .max_width
+            .map_or_else(|| terminal_width() as usize, |w| w as usize);
         let table_str = segments_to_string(table.render(width));
 
         if let Some(title) = &self.title {
@@ -826,7 +830,9 @@ impl PackListTable {
             table.add_row(RichRow::new(cells));
         }
 
-        let width = self.max_width.map_or_else(|| terminal_width() as usize, |w| w as usize);
+        let width = self
+            .max_width
+            .map_or_else(|| terminal_width() as usize, |w| w as usize);
         segments_to_string(table.render(width))
     }
 
@@ -1129,9 +1135,15 @@ mod tests {
         let output = table.render();
 
         // Should be truncated with ...
-        assert!(output.contains("..."), "Output should contain ellipsis: {output}");
+        assert!(
+            output.contains("..."),
+            "Output should contain ellipsis: {output}"
+        );
         // Should not contain the full long command
-        assert!(!output.contains("truncated"), "Output should not contain 'truncated': {output}");
+        assert!(
+            !output.contains("truncated"),
+            "Output should not contain 'truncated': {output}"
+        );
     }
 
     #[test]
@@ -1322,10 +1334,22 @@ mod tests {
         let output = table.render();
 
         // Should contain severity labels (with or without color markup)
-        assert!(output.contains("CRIT"), "Output should contain CRIT: {output}");
-        assert!(output.contains("HIGH"), "Output should contain HIGH: {output}");
-        assert!(output.contains("MED"), "Output should contain MED: {output}");
-        assert!(output.contains("LOW"), "Output should contain LOW: {output}");
+        assert!(
+            output.contains("CRIT"),
+            "Output should contain CRIT: {output}"
+        );
+        assert!(
+            output.contains("HIGH"),
+            "Output should contain HIGH: {output}"
+        );
+        assert!(
+            output.contains("MED"),
+            "Output should contain MED: {output}"
+        );
+        assert!(
+            output.contains("LOW"),
+            "Output should contain LOW: {output}"
+        );
     }
 
     #[test]
@@ -1404,7 +1428,10 @@ mod tests {
         let wide_output = wide_table.render();
 
         // Both should render without panicking
-        assert!(!narrow_output.is_empty(), "Narrow output should not be empty");
+        assert!(
+            !narrow_output.is_empty(),
+            "Narrow output should not be empty"
+        );
         assert!(!wide_output.is_empty(), "Wide output should not be empty");
     }
 

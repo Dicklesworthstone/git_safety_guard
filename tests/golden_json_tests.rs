@@ -76,8 +76,7 @@ fn compare_json_to_golden(actual_json: &Value, golden_path: &str) -> Result<(), 
                 if let Some(parent) = golden_full_path.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
-                std::fs::write(&golden_full_path, &pretty)
-                    .expect("Failed to write golden file");
+                std::fs::write(&golden_full_path, &pretty).expect("Failed to write golden file");
                 println!("Created golden file: {golden_path}");
                 return Ok(());
             }
@@ -142,7 +141,12 @@ fn diff_values(path: &str, expected: &Value, actual: &Value, diffs: &mut Vec<Str
             }
             // Recurse on shared keys
             for key in exp_map.keys().filter(|k| act_map.contains_key(*k)) {
-                diff_values(&format!("{path}.{key}"), &exp_map[key], &act_map[key], diffs);
+                diff_values(
+                    &format!("{path}.{key}"),
+                    &exp_map[key],
+                    &act_map[key],
+                    diffs,
+                );
             }
         }
         (Value::Array(exp_arr), Value::Array(act_arr)) => {
@@ -331,7 +335,10 @@ fn golden_json_permission_decision_values() {
         .and_then(|h: &Value| h.get("permissionDecision"))
         .and_then(Value::as_str)
         .expect("Missing permissionDecision");
-    assert_eq!(decision, "deny", "Denied commands must have permissionDecision='deny'");
+    assert_eq!(
+        decision, "deny",
+        "Denied commands must have permissionDecision='deny'"
+    );
 
     // Allowed commands produce no JSON output (empty stdout)
     let allowed = ctx.run_dcg_hook("echo hello");
@@ -390,8 +397,14 @@ fn golden_robot_deny_filesystem() {
 
     // Verify critical fields for robot mode
     assert_eq!(json.get("decision").and_then(Value::as_str), Some("deny"));
-    assert_eq!(json.get("pack_id").and_then(Value::as_str), Some("core.filesystem"));
-    assert_eq!(json.get("severity").and_then(Value::as_str), Some("critical"));
+    assert_eq!(
+        json.get("pack_id").and_then(Value::as_str),
+        Some("core.filesystem")
+    );
+    assert_eq!(
+        json.get("severity").and_then(Value::as_str),
+        Some("critical")
+    );
 }
 
 #[test]
@@ -403,20 +416,30 @@ fn golden_robot_deny_git_reset() {
     }
 
     assert_eq!(json.get("decision").and_then(Value::as_str), Some("deny"));
-    assert_eq!(json.get("pack_id").and_then(Value::as_str), Some("core.git"));
-    assert_eq!(json.get("rule_id").and_then(Value::as_str), Some("core.git:reset-hard"));
+    assert_eq!(
+        json.get("pack_id").and_then(Value::as_str),
+        Some("core.git")
+    );
+    assert_eq!(
+        json.get("rule_id").and_then(Value::as_str),
+        Some("core.git:reset-hard")
+    );
 }
 
 #[test]
 fn golden_robot_deny_git_force_push() {
-    let json = run_robot_mode("git push --force origin main").expect("Expected JSON output from robot mode");
+    let json = run_robot_mode("git push --force origin main")
+        .expect("Expected JSON output from robot mode");
 
     if let Err(diff) = compare_json_to_golden(&json, "robot/deny_git_force_push.json") {
         panic!("Golden file mismatch:\n{diff}");
     }
 
     assert_eq!(json.get("decision").and_then(Value::as_str), Some("deny"));
-    assert_eq!(json.get("pack_id").and_then(Value::as_str), Some("core.git"));
+    assert_eq!(
+        json.get("pack_id").and_then(Value::as_str),
+        Some("core.git")
+    );
 }
 
 #[test]
@@ -468,7 +491,10 @@ fn golden_robot_json_structure_deny() {
     // Verify agent object exists
     let agent = json.get("agent").expect("Missing agent object");
     assert!(agent.get("detected").is_some(), "Missing agent.detected");
-    assert!(agent.get("trust_level").is_some(), "Missing agent.trust_level");
+    assert!(
+        agent.get("trust_level").is_some(),
+        "Missing agent.trust_level"
+    );
 }
 
 #[test]
@@ -476,10 +502,7 @@ fn golden_robot_json_structure_allow() {
     let json = run_robot_mode("ls -la").expect("Expected JSON output");
 
     // Required fields for robot mode allow response
-    let required_fields = [
-        "command",
-        "decision",
-    ];
+    let required_fields = ["command", "decision"];
 
     for field in required_fields {
         assert!(
@@ -509,11 +532,7 @@ fn golden_all_files_valid_json() {
     for entry in walkdir::WalkDir::new(golden_dir)
         .into_iter()
         .filter_map(Result::ok)
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "json")
-        })
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
     {
         let path = entry.path();
         let content = match std::fs::read_to_string(path) {

@@ -32,14 +32,14 @@ pub mod tree;
 pub use console::{DcgConsole, console, init_console};
 pub use denial::DenialBox;
 pub use progress::{
-    MaybeProgress, NoopProgress, ScanProgress, ScanProgressStyle, SCAN_PROGRESS_THRESHOLD,
-    spinner, spinner_if_tty,
+    MaybeProgress, NoopProgress, SCAN_PROGRESS_THRESHOLD, ScanProgress, ScanProgressStyle, spinner,
+    spinner_if_tty,
 };
 #[cfg(feature = "rich-output")]
 pub use progress::{RichProgressStyle, render_progress_bar_rich};
 pub use rich_theme::{RichThemeExt, color_to_markup, severity_badge_markup, severity_panel_title};
-pub use test::{AllowedReason, TestOutcome, TestResultBox};
 pub use tables::{ScanResultRow, ScanResultsTable, TableStyle};
+pub use test::{AllowedReason, TestOutcome, TestResultBox};
 pub use theme::{BorderStyle, Severity, SeverityColors, Theme, ThemePalette};
 pub use tree::{DcgTree, DcgTreeGuides, ExplainTreeBuilder, TreeNode};
 

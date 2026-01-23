@@ -78,10 +78,7 @@ fn test_robot_flag_denied_command_exit_code() {
     let (stdout, _stderr, exit_code) = run_dcg(&["--robot", "test", "git reset --hard"]);
 
     // In robot mode with test subcommand, denied commands exit 1
-    assert_eq!(
-        exit_code, 1,
-        "robot mode should exit 1 for denied command"
-    );
+    assert_eq!(exit_code, 1, "robot mode should exit 1 for denied command");
 
     // Should still have JSON output
     let json: serde_json::Value =
@@ -123,8 +120,7 @@ fn test_robot_flag_silent_stderr() {
 
 #[test]
 fn test_dcg_robot_env_enables_json_output() {
-    let (stdout, _stderr, exit_code) =
-        run_dcg_with_env(&["test", "git status"], "DCG_ROBOT", "1");
+    let (stdout, _stderr, exit_code) = run_dcg_with_env(&["test", "git status"], "DCG_ROBOT", "1");
 
     assert_eq!(
         exit_code, 0,
@@ -143,16 +139,12 @@ fn test_dcg_robot_env_denied_exit_code() {
     let (_stdout, _stderr, exit_code) =
         run_dcg_with_env(&["test", "git reset --hard"], "DCG_ROBOT", "1");
 
-    assert_eq!(
-        exit_code, 1,
-        "DCG_ROBOT=1 should exit 1 for denied command"
-    );
+    assert_eq!(exit_code, 1, "DCG_ROBOT=1 should exit 1 for denied command");
 }
 
 #[test]
 fn test_dcg_robot_env_no_ansi_codes() {
-    let (stdout, stderr, _) =
-        run_dcg_with_env(&["test", "git reset --hard"], "DCG_ROBOT", "1");
+    let (stdout, stderr, _) = run_dcg_with_env(&["test", "git reset --hard"], "DCG_ROBOT", "1");
 
     assert!(
         !stdout.contains("\x1b["),
@@ -172,8 +164,7 @@ fn test_dcg_robot_env_no_ansi_codes() {
 fn test_robot_mode_json_has_agent_info() {
     let (stdout, _stderr, _) = run_dcg(&["--robot", "test", "git reset --hard"]);
 
-    let json: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should produce valid JSON");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("should produce valid JSON");
 
     // Robot mode should include agent detection info
     if let Some(agent) = json.get("agent") {
@@ -185,8 +176,7 @@ fn test_robot_mode_json_has_agent_info() {
 fn test_robot_mode_json_has_severity() {
     let (stdout, _stderr, _) = run_dcg(&["--robot", "test", "git reset --hard"]);
 
-    let json: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should produce valid JSON");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("should produce valid JSON");
 
     if json["decision"] == "deny" {
         assert!(
@@ -200,8 +190,7 @@ fn test_robot_mode_json_has_severity() {
 fn test_robot_mode_json_has_rule_id() {
     let (stdout, _stderr, _) = run_dcg(&["--robot", "test", "git reset --hard"]);
 
-    let json: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should produce valid JSON");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("should produce valid JSON");
 
     if json["decision"] == "deny" {
         assert!(
@@ -338,7 +327,11 @@ fn test_robot_mode_whitespace_command() {
 #[test]
 fn test_robot_mode_complex_command() {
     // Complex commands with pipes, redirects, etc.
-    let (stdout, _stderr, exit_code) = run_dcg(&["--robot", "test", "cat file.txt | grep pattern > output.txt"]);
+    let (stdout, _stderr, exit_code) = run_dcg(&[
+        "--robot",
+        "test",
+        "cat file.txt | grep pattern > output.txt",
+    ]);
 
     // Should handle complex commands without crashing
     assert!(
@@ -346,8 +339,7 @@ fn test_robot_mode_complex_command() {
         "complex command should exit 0 or 1, got: {exit_code}"
     );
 
-    let json: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should produce valid JSON");
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("should produce valid JSON");
     assert!(json.is_object(), "should be JSON object");
 }
 

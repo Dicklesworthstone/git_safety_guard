@@ -107,10 +107,7 @@ impl std::fmt::Display for NotAvailableReason {
             Self::NotTty => write!(f, "stdin is not a terminal (TTY)"),
             Self::CiEnvironment => write!(f, "running in CI environment"),
             Self::Disabled => write!(f, "interactive mode is disabled in configuration"),
-            Self::MissingEnv(var) => write!(
-                f,
-                "required environment variable '{var}' is not set"
-            ),
+            Self::MissingEnv(var) => write!(f, "required environment variable '{var}' is not set"),
             Self::UnsuitableTerminal => write!(f, "terminal environment is not suitable"),
         }
     }
@@ -279,15 +276,9 @@ pub fn check_interactive_available(config: &InteractiveConfig) -> Result<(), Not
 }
 
 fn is_ci_environment() -> bool {
-    [
-        "CI",
-        "GITHUB_ACTIONS",
-        "GITLAB_CI",
-        "JENKINS",
-        "TRAVIS",
-    ]
-    .iter()
-    .any(|var| std::env::var(var).is_ok())
+    ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "JENKINS", "TRAVIS"]
+        .iter()
+        .any(|var| std::env::var(var).is_ok())
 }
 
 /// Display the interactive prompt and wait for user input.

@@ -9,12 +9,12 @@ use clap_complete::generate;
 use inquire::{Select, Text};
 
 use crate::agent::{DetectionMethod, detect_agent_with_details};
-use crate::exit_codes::EXIT_DENIED;
 use crate::config::Config;
 use crate::evaluator::{
     DEFAULT_WINDOW_WIDTH, EvaluationDecision, EvaluationResult, MatchSource,
     evaluate_command_with_pack_order, evaluate_command_with_pack_order_deadline_at_path,
 };
+use crate::exit_codes::EXIT_DENIED;
 use crate::highlight::{HighlightSpan, format_highlighted_command, should_use_color};
 use crate::history::{
     ExportOptions, HistoryDb, HistoryStats, Outcome, SuggestionAction, SuggestionAuditEntry,
@@ -1734,11 +1734,7 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }) => {
             // Robot mode forces JSON output
             let robot_mode = cli.robot || std::env::var("DCG_ROBOT").is_ok();
-            let effective_format = if robot_mode {
-                TestFormat::Json
-            } else {
-                format
-            };
+            let effective_format = if robot_mode { TestFormat::Json } else { format };
 
             // Load specific config file if provided, otherwise use default
             let effective_config = if let Some(ref path) = config_path {
@@ -2291,11 +2287,7 @@ fn list_packs(
 
 /// Rich terminal packs output using DcgConsole and markup.
 #[cfg(feature = "rich-output")]
-fn list_packs_rich(
-    config: &Config,
-    enabled_only: bool,
-    verbose: bool,
-) {
+fn list_packs_rich(config: &Config, enabled_only: bool, verbose: bool) {
     use crate::output::console::console;
 
     let con = console();
@@ -3178,37 +3170,46 @@ fn test_command(
                 }
             }
             EvaluationDecision::Deny => {
-                let (pack_id, pattern_name, reason, explanation, source_str, matched_span, rule_id, severity) =
-                    result.pattern_info.as_ref().map_or(
-                        (None, None, None, None, None, None, None, None),
-                        |info| {
-                            let source_str = match info.source {
-                                MatchSource::ConfigOverride => "config_override",
-                                MatchSource::LegacyPattern => "legacy_pattern",
-                                MatchSource::Pack => "pack",
-                                MatchSource::HeredocAst => "heredoc_ast",
-                            };
-                            let rule_id = info.pack_id.as_ref().and_then(|p| {
-                                info.pattern_name.as_ref().map(|n| format!("{p}:{n}"))
-                            });
-                            let severity_str = info.severity.map(|s| match s {
-                                PackSeverity::Critical => "critical",
-                                PackSeverity::High => "high",
-                                PackSeverity::Medium => "medium",
-                                PackSeverity::Low => "low",
-                            });
-                            (
-                                info.pack_id.clone(),
-                                info.pattern_name.clone(),
-                                Some(info.reason.clone()),
-                                info.explanation.clone(),
-                                Some(source_str.to_string()),
-                                info.matched_span.as_ref().map(|s| (s.start, s.end)),
-                                rule_id,
-                                severity_str.map(|s| s.to_string()),
-                            )
-                        },
-                    );
+                let (
+                    pack_id,
+                    pattern_name,
+                    reason,
+                    explanation,
+                    source_str,
+                    matched_span,
+                    rule_id,
+                    severity,
+                ) = result.pattern_info.as_ref().map_or(
+                    (None, None, None, None, None, None, None, None),
+                    |info| {
+                        let source_str = match info.source {
+                            MatchSource::ConfigOverride => "config_override",
+                            MatchSource::LegacyPattern => "legacy_pattern",
+                            MatchSource::Pack => "pack",
+                            MatchSource::HeredocAst => "heredoc_ast",
+                        };
+                        let rule_id = info
+                            .pack_id
+                            .as_ref()
+                            .and_then(|p| info.pattern_name.as_ref().map(|n| format!("{p}:{n}")));
+                        let severity_str = info.severity.map(|s| match s {
+                            PackSeverity::Critical => "critical",
+                            PackSeverity::High => "high",
+                            PackSeverity::Medium => "medium",
+                            PackSeverity::Low => "low",
+                        });
+                        (
+                            info.pack_id.clone(),
+                            info.pattern_name.clone(),
+                            Some(info.reason.clone()),
+                            info.explanation.clone(),
+                            Some(source_str.to_string()),
+                            info.matched_span.as_ref().map(|s| (s.start, s.end)),
+                            rule_id,
+                            severity_str.map(|s| s.to_string()),
+                        )
+                    },
+                );
                 TestOutput {
                     schema_version: TEST_OUTPUT_SCHEMA_VERSION,
                     dcg_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -4169,7 +4170,11 @@ fn handle_scan(
         include,
         exclude,
         repo_root.as_deref(),
-        if quiet { None } else { Some(&mut progress_callback) },
+        if quiet {
+            None
+        } else {
+            Some(&mut progress_callback)
+        },
     )?;
 
     // Finish progress bar if it was created
@@ -4820,8 +4825,8 @@ fn handle_explain(
 /// Rich output for explain command with tree visualization.
 #[cfg(feature = "rich-output")]
 fn explain_rich(trace: &crate::trace::ExplainTrace) {
-    use crate::output::console::console;
     use crate::evaluator::EvaluationDecision;
+    use crate::output::console::console;
     use crate::trace::TraceDetails;
 
     let con = console();
@@ -4846,10 +4851,14 @@ fn explain_rich(trace: &crate::trace::ExplainTrace) {
 
     // Command tree
     con.print("[bold cyan]Command[/]");
-    let has_normalized = trace.normalized_command.as_ref().is_some_and(|n| n != &trace.command);
-    let has_sanitized = trace.sanitized_command.as_ref().is_some_and(|s| {
-        s != &trace.command && Some(s) != trace.normalized_command.as_ref()
-    });
+    let has_normalized = trace
+        .normalized_command
+        .as_ref()
+        .is_some_and(|n| n != &trace.command);
+    let has_sanitized = trace
+        .sanitized_command
+        .as_ref()
+        .is_some_and(|s| s != &trace.command && Some(s) != trace.normalized_command.as_ref());
 
     if has_normalized || has_sanitized {
         con.print(&format!("├─ [cyan]Input:[/]      {}", trace.command));
@@ -4921,7 +4930,11 @@ fn explain_rich(trace: &crate::trace::ExplainTrace) {
         con.print(&format!("├─ [cyan]Reason:[/] {}", al_info.entry_reason));
         con.print(&format!(
             "└─ [dim]Overrode: {} - {}[/]",
-            al_info.original_match.rule_id.as_deref().unwrap_or("unknown"),
+            al_info
+                .original_match
+                .rule_id
+                .as_deref()
+                .unwrap_or("unknown"),
             al_info.original_match.reason
         ));
         con.print("");
@@ -4936,7 +4949,11 @@ fn explain_rich(trace: &crate::trace::ExplainTrace) {
         ));
 
         if !summary.evaluated.is_empty() {
-            let branch = if summary.skipped.is_empty() { "└─" } else { "├─" };
+            let branch = if summary.skipped.is_empty() {
+                "└─"
+            } else {
+                "├─"
+            };
             con.print(&format!(
                 "{branch} [cyan]Evaluated:[/] {}",
                 summary.evaluated.join(", ")
@@ -4958,12 +4975,20 @@ fn explain_rich(trace: &crate::trace::ExplainTrace) {
         let step_count = trace.steps.len();
 
         for (i, step) in trace.steps.iter().enumerate() {
-            let branch = if i == step_count - 1 { "└─" } else { "├─" };
+            let branch = if i == step_count - 1 {
+                "└─"
+            } else {
+                "├─"
+            };
             let duration_ms = step.duration_us as f64 / 1000.0;
 
             // Format details summary
             let details_summary = match &step.details {
-                TraceDetails::KeywordGating { quick_rejected, first_match, .. } => {
+                TraceDetails::KeywordGating {
+                    quick_rejected,
+                    first_match,
+                    ..
+                } => {
                     if *quick_rejected {
                         "[green]quick pass[/]".to_string()
                     } else if let Some(kw) = first_match {
@@ -4972,43 +4997,60 @@ fn explain_rich(trace: &crate::trace::ExplainTrace) {
                         "no match".to_string()
                     }
                 }
-                TraceDetails::Normalization { was_modified, .. } => {
-                    if *was_modified { "modified" } else { "unchanged" }.to_string()
+                TraceDetails::Normalization { was_modified, .. } => if *was_modified {
+                    "modified"
+                } else {
+                    "unchanged"
                 }
-                TraceDetails::Sanitization { was_modified, spans_masked, .. } => {
+                .to_string(),
+                TraceDetails::Sanitization {
+                    was_modified,
+                    spans_masked,
+                    ..
+                } => {
                     if *was_modified {
                         format!("{spans_masked} spans masked")
                     } else {
                         "unchanged".to_string()
                     }
                 }
-                TraceDetails::HeredocDetection { triggered, scripts_extracted, .. } => {
+                TraceDetails::HeredocDetection {
+                    triggered,
+                    scripts_extracted,
+                    ..
+                } => {
                     if *triggered {
                         format!("{scripts_extracted} scripts")
                     } else {
                         "none".to_string()
                     }
                 }
-                TraceDetails::AllowlistCheck { matched, matched_layer, .. } => {
+                TraceDetails::AllowlistCheck {
+                    matched,
+                    matched_layer,
+                    ..
+                } => {
                     if *matched {
                         format!("matched: {:?}", matched_layer.as_ref().unwrap())
                     } else {
                         "no match".to_string()
                     }
                 }
-                TraceDetails::PackEvaluation { matched_pack, packs_evaluated, .. } => {
+                TraceDetails::PackEvaluation {
+                    matched_pack,
+                    packs_evaluated,
+                    ..
+                } => {
                     if let Some(pack) = matched_pack {
                         format!("matched in {pack}")
                     } else {
                         format!("{} packs checked", packs_evaluated.len())
                     }
                 }
-                TraceDetails::PolicyDecision { decision, .. } => {
-                    match decision {
-                        EvaluationDecision::Allow => "[green]allow[/]".to_string(),
-                        EvaluationDecision::Deny => "[red]deny[/]".to_string(),
-                    }
-                }
+                TraceDetails::PolicyDecision { decision, .. } => match decision {
+                    EvaluationDecision::Allow => "[green]allow[/]".to_string(),
+                    EvaluationDecision::Deny => "[red]deny[/]".to_string(),
+                },
                 _ => String::new(),
             };
 
@@ -5029,7 +5071,11 @@ fn explain_rich(trace: &crate::trace::ExplainTrace) {
                     let suggestion_count = suggestions.len();
 
                     for (i, s) in suggestions.iter().enumerate() {
-                        let branch = if i == suggestion_count - 1 { "└─" } else { "├─" };
+                        let branch = if i == suggestion_count - 1 {
+                            "└─"
+                        } else {
+                            "├─"
+                        };
                         con.print(&format!(
                             "{branch} [yellow]{}[/]: {}",
                             s.kind.label(),
@@ -5782,7 +5828,9 @@ fn format_stats_pack_rich(stats: &crate::stats::AggregatedStats, period_days: u6
 
     let con = console();
 
-    con.rule(Some(&format!("[bold] Pack Statistics ({period_days} days) [/]")));
+    con.rule(Some(&format!(
+        "[bold] Pack Statistics ({period_days} days) [/]"
+    )));
     con.print("");
 
     if stats.by_pack.is_empty() {
@@ -5822,7 +5870,9 @@ fn format_rule_metrics_rich(metrics: &[crate::history::RuleMetrics], period_days
 
     let con = console();
 
-    con.rule(Some(&format!("[bold] Rule Metrics ({period_days} days) [/]")));
+    con.rule(Some(&format!(
+        "[bold] Rule Metrics ({period_days} days) [/]"
+    )));
     con.print("");
 
     // Header
@@ -5895,7 +5945,10 @@ fn format_rule_metrics_rich(metrics: &[crate::history::RuleMetrics], period_days
         "Total", total_hits, total_overrides, avg_rate
     ));
     con.print("");
-    con.print(&format!("[dim]{} rules shown (use -n to change limit)[/]", metrics.len()));
+    con.print(&format!(
+        "[dim]{} rules shown (use -n to change limit)[/]",
+        metrics.len()
+    ));
 }
 
 /// JSON output structure for rule metrics.

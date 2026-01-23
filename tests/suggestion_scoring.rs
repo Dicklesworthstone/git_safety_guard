@@ -350,10 +350,7 @@ fn suggestion_score_high_confidence_low_risk_best() {
 fn suggestion_score_low_confidence_high_risk_worst() {
     let score = calculate_suggestion_score(ConfidenceTier::Low, RiskLevel::High);
     // This should be the worst score
-    assert!(
-        score < 0.3,
-        "Low confidence + high risk should score < 0.3"
-    );
+    assert!(score < 0.3, "Low confidence + high risk should score < 0.3");
 }
 
 #[test]
@@ -492,7 +489,9 @@ fn analyze_path_patterns_common_prefix() {
     let (patterns, _) = analyze_path_patterns(&dirs);
     // Should find common prefix
     assert!(
-        patterns.iter().any(|p| p.pattern.contains("/data/projects")),
+        patterns
+            .iter()
+            .any(|p| p.pattern.contains("/data/projects")),
         "Should find /data/projects prefix"
     );
 }
@@ -514,9 +513,7 @@ fn analyze_path_patterns_project_dir_detection() {
 #[test]
 fn analyze_path_patterns_max_three_patterns() {
     // Create many different directories
-    let dirs: Vec<String> = (0..20)
-        .map(|i| format!("/path{}/subdir/app", i))
-        .collect();
+    let dirs: Vec<String> = (0..20).map(|i| format!("/path{}/subdir/app", i)).collect();
     let (patterns, _) = analyze_path_patterns(&dirs);
     assert!(patterns.len() <= 3, "Should return at most 3 patterns");
 }
@@ -583,14 +580,15 @@ fn allowlist_suggestion_with_path_analysis() {
         "/data/projects/myapp".to_string(),
     ];
 
-    let suggestion =
-        AllowlistSuggestion::from_cluster(cluster).with_path_analysis(&working_dirs);
+    let suggestion = AllowlistSuggestion::from_cluster(cluster).with_path_analysis(&working_dirs);
 
     assert!(!suggestion.path_patterns.is_empty());
     assert!(suggestion.suggest_path_specific);
-    assert!(suggestion
-        .contributing_factors
-        .contains(&SuggestionReason::PathClustered));
+    assert!(
+        suggestion
+            .contributing_factors
+            .contains(&SuggestionReason::PathClustered)
+    );
 }
 
 #[test]
@@ -609,9 +607,11 @@ fn allowlist_suggestion_with_bypass_count() {
     assert_eq!(suggestion.confidence, ConfidenceTier::High);
     // Reason should be ManuallyBypassed
     assert_eq!(suggestion.reason, SuggestionReason::ManuallyBypassed);
-    assert!(suggestion
-        .contributing_factors
-        .contains(&SuggestionReason::ManuallyBypassed));
+    assert!(
+        suggestion
+            .contributing_factors
+            .contains(&SuggestionReason::ManuallyBypassed)
+    );
     assert_eq!(suggestion.bypass_count, 5);
 }
 

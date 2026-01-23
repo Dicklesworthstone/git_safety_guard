@@ -99,10 +99,6 @@ pub use allowlist::{
 };
 pub use config::Config;
 pub use error_codes::{DcgError, ErrorCategory, ErrorCode, ErrorResponse};
-pub use exit_codes::{
-    EXIT_CONFIG_ERROR, EXIT_DENIED, EXIT_IO_ERROR, EXIT_PARSE_ERROR, EXIT_SUCCESS, EXIT_WARNING,
-    ToExitCode, exit_with, to_exit_code,
-};
 pub use evaluator::{
     ConfidenceResult, DetailedEvaluationResult, EvaluationDecision, EvaluationResult,
     LegacyDestructivePattern, LegacySafePattern, MatchSource, MatchSpan, PatternMatch,
@@ -110,6 +106,10 @@ pub use evaluator::{
     evaluate_command_with_pack_order, evaluate_command_with_pack_order_at_path,
     evaluate_command_with_pack_order_deadline, evaluate_command_with_pack_order_deadline_at_path,
     evaluate_detailed, evaluate_detailed_with_allowlists,
+};
+pub use exit_codes::{
+    EXIT_CONFIG_ERROR, EXIT_DENIED, EXIT_IO_ERROR, EXIT_PARSE_ERROR, EXIT_SUCCESS, EXIT_WARNING,
+    ToExitCode, exit_with, to_exit_code,
 };
 pub use hook::{HookInput, HookOutput, HookResult, HookSpecificOutput};
 pub use packs::external::{ExternalPack, parse_pack_file, parse_pack_string};

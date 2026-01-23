@@ -17,7 +17,10 @@ use destructive_command_guard::suggest::{
 // Enhanced Suggestions Generation Tests
 // ============================================================================
 
-fn create_test_entries(commands: &[(&str, &str, bool)], count_per_cmd: usize) -> Vec<CommandEntryInfo> {
+fn create_test_entries(
+    commands: &[(&str, &str, bool)],
+    count_per_cmd: usize,
+) -> Vec<CommandEntryInfo> {
     let mut entries = Vec::new();
     for (cmd, dir, bypassed) in commands {
         for _ in 0..count_per_cmd {
@@ -47,7 +50,10 @@ fn generate_enhanced_suggestions_single_command_high_frequency() {
 
     let suggestions = generate_enhanced_suggestions(&entries, 3);
 
-    assert!(!suggestions.is_empty(), "Should generate suggestion for high-frequency command");
+    assert!(
+        !suggestions.is_empty(),
+        "Should generate suggestion for high-frequency command"
+    );
     let suggestion = &suggestions[0];
     // High frequency (15) with single variant = High confidence
     assert_eq!(suggestion.confidence, ConfidenceTier::High);
@@ -66,7 +72,10 @@ fn generate_enhanced_suggestions_filters_by_min_frequency() {
     );
 
     let suggestions = generate_enhanced_suggestions(&entries, 3);
-    assert!(suggestions.is_empty(), "Commands below min_frequency should not generate suggestions");
+    assert!(
+        suggestions.is_empty(),
+        "Commands below min_frequency should not generate suggestions"
+    );
 }
 
 #[test]
@@ -103,10 +112,7 @@ fn generate_enhanced_suggestions_with_bypasses() {
 #[test]
 fn generate_enhanced_suggestions_clustered_paths() {
     // All commands in the same directory
-    let entries = create_test_entries(
-        &[("git status", "/data/projects/myapp", false)],
-        10,
-    );
+    let entries = create_test_entries(&[("git status", "/data/projects/myapp", false)], 10);
 
     let suggestions = generate_enhanced_suggestions(&entries, 3);
 
@@ -174,7 +180,10 @@ fn generate_enhanced_suggestions_multiple_commands_sorted_by_score() {
 
     let suggestions = generate_enhanced_suggestions(&entries, 3);
 
-    assert!(suggestions.len() >= 2, "Should generate suggestions for both commands");
+    assert!(
+        suggestions.len() >= 2,
+        "Should generate suggestions for both commands"
+    );
     // Suggestions should be sorted by score (higher first)
     // High-confidence, low-risk "npm run build" should rank higher
     // than medium-confidence, high-risk "rm -rf"
@@ -256,7 +265,11 @@ fn filter_by_confidence_medium_exact_match() {
     let filtered = filter_by_confidence(suggestions.clone(), ConfidenceTier::Medium);
 
     assert_eq!(filtered.len(), 1);
-    assert!(filtered.iter().all(|s| s.confidence == ConfidenceTier::Medium));
+    assert!(
+        filtered
+            .iter()
+            .all(|s| s.confidence == ConfidenceTier::Medium)
+    );
 }
 
 #[test]
@@ -422,7 +435,12 @@ fn generate_enhanced_suggestions_preserves_command_order_in_cluster() {
 
     assert!(!suggestions.is_empty());
     // Cluster should contain the command
-    assert!(suggestions[0].cluster.commands.contains(&"git reset --hard HEAD".to_string()));
+    assert!(
+        suggestions[0]
+            .cluster
+            .commands
+            .contains(&"git reset --hard HEAD".to_string())
+    );
 }
 
 // ============================================================================
@@ -456,7 +474,11 @@ fn scenario_ci_build_commands() {
 
     // Should get high confidence suggestions for both
     assert!(suggestions.len() >= 1);
-    assert!(suggestions.iter().all(|s| s.confidence == ConfidenceTier::High));
+    assert!(
+        suggestions
+            .iter()
+            .all(|s| s.confidence == ConfidenceTier::High)
+    );
     assert!(suggestions.iter().all(|s| s.risk == RiskLevel::Low));
 }
 

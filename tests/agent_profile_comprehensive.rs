@@ -65,10 +65,7 @@ fn run_hook_mode_with_env(command: &str, env_vars: &[(&str, &str)]) -> (String, 
 }
 
 /// Run DCG in robot mode for cleaner JSON output.
-fn run_robot_mode_with_env(
-    args: &[&str],
-    env_vars: &[(&str, &str)],
-) -> (String, String, i32) {
+fn run_robot_mode_with_env(args: &[&str], env_vars: &[(&str, &str)]) -> (String, String, i32) {
     let mut cmd = Command::new(dcg_binary());
     cmd.args(["--robot"])
         .args(args)
@@ -137,8 +134,10 @@ mod agent_detection_tests {
 
     #[test]
     fn test_detects_continue_via_env() {
-        let (stdout, _stderr, exit_code) =
-            run_robot_mode_with_env(&["--version"], &[("CONTINUE_SESSION_ID", "test-session-123")]);
+        let (stdout, _stderr, exit_code) = run_robot_mode_with_env(
+            &["--version"],
+            &[("CONTINUE_SESSION_ID", "test-session-123")],
+        );
 
         assert_eq!(exit_code, 0, "version command should succeed");
         assert!(
@@ -176,7 +175,10 @@ mod agent_detection_tests {
         // Clear all agent env vars by not setting any
         let (stdout, _stderr, exit_code) = run_robot_mode_with_env(&["--version"], &[]);
 
-        assert_eq!(exit_code, 0, "version command should succeed without agent env");
+        assert_eq!(
+            exit_code, 0,
+            "version command should succeed without agent env"
+        );
         assert!(
             stdout.contains("dcg") || !stdout.is_empty(),
             "should produce output"
@@ -319,10 +321,7 @@ mod trust_level_tests {
                 let (stdout, _stderr, exit_code) =
                     run_hook_mode_with_env(cmd, &[(agent_var, agent_val)]);
 
-                assert_eq!(
-                    exit_code, 0,
-                    "hook mode should exit 0 for safe cmd: {cmd}"
-                );
+                assert_eq!(exit_code, 0, "hook mode should exit 0 for safe cmd: {cmd}");
 
                 // Safe commands should produce empty output (allowed)
                 assert!(
@@ -436,8 +435,10 @@ mod unknown_agent_tests {
     #[test]
     fn test_custom_agent_name_handled() {
         // A custom/unknown agent name should be handled gracefully
-        let (stdout, _stderr, exit_code) =
-            run_robot_mode_with_env(&["test", "git status"], &[("DCG_AGENT_TYPE", "my-custom-agent")]);
+        let (stdout, _stderr, exit_code) = run_robot_mode_with_env(
+            &["test", "git status"],
+            &[("DCG_AGENT_TYPE", "my-custom-agent")],
+        );
 
         // Should not crash or error
         assert!(
@@ -463,10 +464,8 @@ mod integration_tests {
     #[test]
     fn test_agent_type_in_verbose_output() {
         // When verbose mode is enabled, the detected agent should be shown
-        let (stdout, stderr, exit_code) = run_robot_mode_with_env(
-            &["-v", "test", "git status"],
-            &[("CLAUDE_CODE", "1")],
-        );
+        let (stdout, stderr, exit_code) =
+            run_robot_mode_with_env(&["-v", "test", "git status"], &[("CLAUDE_CODE", "1")]);
 
         // Should succeed
         assert!(
@@ -487,10 +486,8 @@ mod integration_tests {
     #[test]
     fn test_explain_shows_evaluation_context() {
         // The explain command should show how the command was evaluated
-        let (stdout, stderr, exit_code) = run_robot_mode_with_env(
-            &["explain", "git reset --hard"],
-            &[("CLAUDE_CODE", "1")],
-        );
+        let (stdout, stderr, exit_code) =
+            run_robot_mode_with_env(&["explain", "git reset --hard"], &[("CLAUDE_CODE", "1")]);
 
         // Should succeed
         assert!(
@@ -539,44 +536,35 @@ mod edge_cases {
         // When multiple agent env vars are set, first one should win
         let (stdout, _stderr, exit_code) = run_hook_mode_with_env(
             "git status",
-            &[
-                ("CLAUDE_CODE", "1"),
-                ("AIDER_SESSION", "1"),
-            ],
+            &[("CLAUDE_CODE", "1"), ("AIDER_SESSION", "1")],
         );
 
         // Should not crash
         assert_eq!(exit_code, 0, "should handle multiple agent env vars");
         // Safe command should be allowed
-        assert!(
-            stdout.trim().is_empty(),
-            "safe command should be allowed"
-        );
+        assert!(stdout.trim().is_empty(), "safe command should be allowed");
     }
 
     #[test]
     fn test_empty_agent_env_var_value() {
         // An empty env var value should be treated as unset
-        let (stdout, _stderr, exit_code) = run_hook_mode_with_env("git status", &[("CLAUDE_CODE", "")]);
+        let (stdout, _stderr, exit_code) =
+            run_hook_mode_with_env("git status", &[("CLAUDE_CODE", "")]);
 
         assert_eq!(exit_code, 0, "should handle empty agent env var");
-        assert!(
-            stdout.trim().is_empty(),
-            "safe command should be allowed"
-        );
+        assert!(stdout.trim().is_empty(), "safe command should be allowed");
     }
 
     #[test]
     fn test_agent_env_var_with_special_characters() {
         // Env var values with special characters should be handled
-        let (stdout, _stderr, exit_code) =
-            run_hook_mode_with_env("git status", &[("CLAUDE_SESSION_ID", "session-123-test_value.abc")]);
+        let (stdout, _stderr, exit_code) = run_hook_mode_with_env(
+            "git status",
+            &[("CLAUDE_SESSION_ID", "session-123-test_value.abc")],
+        );
 
         assert_eq!(exit_code, 0, "should handle special chars in env var");
-        assert!(
-            stdout.trim().is_empty(),
-            "safe command should be allowed"
-        );
+        assert!(stdout.trim().is_empty(), "safe command should be allowed");
     }
 }
 

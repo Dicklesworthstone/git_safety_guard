@@ -7,8 +7,8 @@
 //! 4. System config (/etc/dcg/config.toml)
 //! 5. Compiled defaults (lowest priority)
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use crate::interactive::{InteractiveConfig, VerificationMethod};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::env;

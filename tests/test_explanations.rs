@@ -48,18 +48,48 @@ const JARGON_BLOCKLIST: &[&str] = &[
 
 /// Commands that should have human-readable explanations when blocked.
 const DANGEROUS_COMMANDS: &[(&str, &str)] = &[
-    ("git reset --hard", "git reset --hard destroys uncommitted changes"),
-    ("git reset --hard HEAD~5", "git reset --hard destroys uncommitted changes"),
-    ("git checkout -- .", "git checkout -- discards uncommitted changes"),
-    ("git checkout -- src/main.rs", "git checkout -- discards uncommitted changes"),
+    (
+        "git reset --hard",
+        "git reset --hard destroys uncommitted changes",
+    ),
+    (
+        "git reset --hard HEAD~5",
+        "git reset --hard destroys uncommitted changes",
+    ),
+    (
+        "git checkout -- .",
+        "git checkout -- discards uncommitted changes",
+    ),
+    (
+        "git checkout -- src/main.rs",
+        "git checkout -- discards uncommitted changes",
+    ),
     ("git restore .", "git restore discards uncommitted changes"),
-    ("git restore src/main.rs", "git restore discards uncommitted changes"),
-    ("git clean -fd", "git clean removes files that git doesn't track"),
-    ("git clean -fdx", "git clean removes files that git doesn't track"),
-    ("git push --force", "git push --force rewrites remote history"),
-    ("git push -f origin main", "git push --force rewrites remote history"),
+    (
+        "git restore src/main.rs",
+        "git restore discards uncommitted changes",
+    ),
+    (
+        "git clean -fd",
+        "git clean removes files that git doesn't track",
+    ),
+    (
+        "git clean -fdx",
+        "git clean removes files that git doesn't track",
+    ),
+    (
+        "git push --force",
+        "git push --force rewrites remote history",
+    ),
+    (
+        "git push -f origin main",
+        "git push --force rewrites remote history",
+    ),
     ("git push --force-with-lease", "git push with force options"),
-    ("git branch -D feature", "git branch -D force deletes a branch"),
+    (
+        "git branch -D feature",
+        "git branch -D force deletes a branch",
+    ),
     ("git stash drop", "git stash drop permanently removes"),
     ("git stash clear", "git stash clear removes all stashes"),
     ("rm -rf /", "rm -rf with root path"),
@@ -182,7 +212,10 @@ fn test_explanations_are_human_readable() {
         let combined_output = format!("{}{}", output.stdout, output.stderr);
 
         // Should contain part of expected human-readable content
-        if !combined_output.to_lowercase().contains(&expected_content.to_lowercase()) {
+        if !combined_output
+            .to_lowercase()
+            .contains(&expected_content.to_lowercase())
+        {
             // Log but don't fail - some patterns may have different wording
             logger.log_step(
                 "warning",
@@ -217,7 +250,9 @@ fn test_hook_output_includes_explanation() {
     let decision_reason = output.decision_reason().unwrap_or("");
 
     assert!(
-        decision_reason.contains("Explanation") || decision_reason.contains("destroy") || decision_reason.contains("uncommitted"),
+        decision_reason.contains("Explanation")
+            || decision_reason.contains("destroy")
+            || decision_reason.contains("uncommitted"),
         "Hook output should include explanation.\nDecision reason: {}",
         decision_reason
     );
@@ -302,10 +337,7 @@ fn test_json_output_outcome_blocked() {
     });
 
     // Check decision is deny (blocked)
-    let decision = json
-        .get("decision")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let decision = json.get("decision").and_then(|v| v.as_str()).unwrap_or("");
 
     assert!(
         decision == "deny" || decision == "blocked",
@@ -331,10 +363,7 @@ fn test_json_output_outcome_allowed() {
     });
 
     // Check decision is allow
-    let decision = json
-        .get("decision")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let decision = json.get("decision").and_then(|v| v.as_str()).unwrap_or("");
 
     assert!(
         decision == "allow" || decision == "allowed",
@@ -883,7 +912,12 @@ fn test_database_drop_command_explanation() {
         .build();
 
     // Test DROP TABLE command with database pack
-    let output = ctx.run_dcg(&["test", "--with-packs", "database.postgresql", "DROP TABLE users;"]);
+    let output = ctx.run_dcg(&[
+        "test",
+        "--with-packs",
+        "database.postgresql",
+        "DROP TABLE users;",
+    ]);
     let combined = format!("{}{}", output.stdout, output.stderr).to_lowercase();
 
     // Should explain database risks
@@ -1000,9 +1034,8 @@ fn test_explanation_json_contains_all_fields() {
 
     let output = ctx.run_dcg(&["test", "--format", "json", "git reset --hard"]);
 
-    let json: serde_json::Value = serde_json::from_str(&output.stdout).unwrap_or_else(|_| {
-        panic!("Failed to parse JSON output")
-    });
+    let json: serde_json::Value = serde_json::from_str(&output.stdout)
+        .unwrap_or_else(|_| panic!("Failed to parse JSON output"));
 
     // Required fields for blocked commands
     let required_fields = ["command", "decision", "reason"];

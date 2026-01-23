@@ -189,7 +189,11 @@ impl ScanProgress {
             .width(40)
             .bar_style(RichBarStyle::Block)
             .completed_style(RichStyle::new().color_str("cyan").unwrap_or_default())
-            .remaining_style(RichStyle::new().color_str("bright_black").unwrap_or_default())
+            .remaining_style(
+                RichStyle::new()
+                    .color_str("bright_black")
+                    .unwrap_or_default(),
+            )
             .show_percentage(true)
             .show_eta(false);
 
@@ -364,7 +368,11 @@ pub fn render_progress_bar_rich(
         .width(width)
         .bar_style(RichBarStyle::Block)
         .completed_style(RichStyle::new().color_str("cyan").unwrap_or_default())
-        .remaining_style(RichStyle::new().color_str("bright_black").unwrap_or_default())
+        .remaining_style(
+            RichStyle::new()
+                .color_str("bright_black")
+                .unwrap_or_default(),
+        )
         .show_percentage(true);
 
     pb.update(current);

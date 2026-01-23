@@ -621,7 +621,9 @@ pub fn scan_paths(
     exclude: &[String],
     repo_root: Option<&Path>,
 ) -> Result<ScanReport, String> {
-    scan_paths_with_progress(paths, options, config, ctx, include, exclude, repo_root, None)
+    scan_paths_with_progress(
+        paths, options, config, ctx, include, exclude, repo_root, None,
+    )
 }
 
 /// Scan file paths with optional progress reporting.
