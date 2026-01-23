@@ -145,6 +145,125 @@ The `--format json` output includes agent information:
 }
 ```
 
+## Robot Mode
+
+Robot mode provides a unified, machine-friendly interface for AI agents. When
+enabled, dcg optimizes its output for programmatic consumption.
+
+### Enabling Robot Mode
+
+```bash
+# Via flag
+dcg --robot test "rm -rf /"
+
+# Via environment variable
+DCG_ROBOT=1 dcg test "rm -rf /"
+```
+
+### Robot Mode Behavior
+
+| Aspect | Normal Mode | Robot Mode |
+|--------|-------------|------------|
+| stdout | JSON or pretty | Always JSON |
+| stderr | Rich colored output | Silent |
+| Exit codes | Varies | Standardized |
+| ANSI codes | If TTY | Never |
+| Progress | Shown | Hidden |
+| Suggestions | Shown | In JSON only |
+
+### Standardized Exit Codes
+
+In robot mode, dcg uses consistent exit codes across all commands:
+
+| Code | Constant | Meaning |
+|------|----------|---------|
+| 0 | `EXIT_SUCCESS` | Success / Allow |
+| 1 | `EXIT_DENIED` | Command denied/blocked |
+| 2 | `EXIT_WARNING` | Warning (with --fail-on warn) |
+| 3 | `EXIT_CONFIG_ERROR` | Configuration error |
+| 4 | `EXIT_PARSE_ERROR` | Parse/input error |
+| 5 | `EXIT_IO_ERROR` | IO error |
+
+### Robot Mode JSON Output
+
+All robot-mode responses are pure JSON on stdout:
+
+```json
+{
+  "command": "rm -rf /",
+  "decision": "deny",
+  "rule_id": "core.filesystem:rm-rf-root",
+  "pack_id": "core.filesystem",
+  "severity": "critical",
+  "reason": "rm -rf / would delete the entire filesystem",
+  "agent": {
+    "detected": "claude-code",
+    "trust_level": "medium",
+    "detection_method": "environment_variable"
+  }
+}
+```
+
+### Hook Mode vs Robot Mode
+
+**Hook mode** (default when no subcommand) follows the Claude Code protocol:
+- Always exits 0 (hook protocol requirement)
+- JSON on stdout for denials, empty for allows
+- Rich output on stderr for human visibility
+
+**Robot mode** with subcommands uses standardized exit codes:
+- Exit 1 for denials (allows scripting with `$?`)
+- Pure JSON on stdout
+- Silent stderr
+
+### Example: Agent Integration
+
+```bash
+#!/bin/bash
+# Script for AI agent to check commands before execution
+
+check_command() {
+    local cmd="$1"
+    local result
+
+    # Use robot mode for predictable output
+    result=$(dcg --robot test "$cmd" 2>/dev/null)
+    local exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+        echo "Command allowed: $cmd"
+        return 0
+    elif [ $exit_code -eq 1 ]; then
+        echo "Command BLOCKED: $cmd"
+        echo "Reason: $(echo "$result" | jq -r '.reason')"
+        return 1
+    else
+        echo "Error checking command (exit code: $exit_code)"
+        return $exit_code
+    fi
+}
+
+# Usage
+check_command "git status"      # Allowed
+check_command "rm -rf /"        # Blocked
+```
+
+### Unified Output Format
+
+Robot mode uses the unified `OutputFormat` enum:
+
+```bash
+# These are equivalent in robot mode
+dcg --robot test "cmd"
+dcg --robot --format json test "cmd"
+```
+
+Available formats:
+- `pretty` / `text` / `human` - Human-readable (default without --robot)
+- `json` / `sarif` / `structured` - JSON output (default with --robot)
+- `jsonl` - JSON Lines (one object per line, for streaming)
+- `compact` - Compact single-line output
+
 ## Best Practices
 
 1. **Start with defaults**: The default `medium` trust level is safe for most
@@ -161,3 +280,9 @@ The `--format json` output includes agent information:
 
 5. **Review the JSON output**: Use `--format json` in CI to audit which agents
    are accessing your codebase.
+
+6. **Use robot mode for scripting**: When integrating dcg into automated
+   workflows, use `--robot` for consistent, parseable output.
+
+7. **Check exit codes**: In robot mode, use exit codes to make decisions
+   without parsing JSON for simple allow/deny checks.
