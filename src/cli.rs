@@ -641,9 +641,18 @@ pub enum PacksFormat {
     Json,
 }
 
+/// Schema version for TestOutput JSON format
+const TEST_OUTPUT_SCHEMA_VERSION: u32 = 1;
+
 /// JSON output structure for `dcg test` command
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct TestOutput {
+    /// Schema version for forward compatibility (currently 1)
+    pub schema_version: u32,
+    /// DCG version (e.g., "0.3.0")
+    pub dcg_version: String,
+    /// Whether robot mode was enabled for this output
+    pub robot_mode: bool,
     /// The command that was tested
     pub command: String,
     /// The decision: "allow" or "deny"
@@ -1757,6 +1766,7 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     effective_format,
                     verbosity,
                     no_color || robot_mode, // Robot mode also implies no color
+                    robot_mode,
                     heredoc_scan,
                     no_heredoc_scan,
                     heredoc_timeout_ms,
@@ -3049,6 +3059,7 @@ fn test_command(
     format: TestFormat,
     verbosity: Verbosity,
     no_color: bool,
+    robot_mode: bool,
     heredoc_scan: bool,
     no_heredoc_scan: bool,
     heredoc_timeout_ms: Option<u64>,
@@ -3149,6 +3160,9 @@ fn test_command(
                             reason: info.reason.clone(),
                         });
                 TestOutput {
+                    schema_version: TEST_OUTPUT_SCHEMA_VERSION,
+                    dcg_version: env!("CARGO_PKG_VERSION").to_string(),
+                    robot_mode,
                     command: command.to_string(),
                     decision: "allow".to_string(),
                     rule_id: None,
@@ -3196,6 +3210,9 @@ fn test_command(
                         },
                     );
                 TestOutput {
+                    schema_version: TEST_OUTPUT_SCHEMA_VERSION,
+                    dcg_version: env!("CARGO_PKG_VERSION").to_string(),
+                    robot_mode,
                     command: command.to_string(),
                     decision: "deny".to_string(),
                     rule_id,
