@@ -14,7 +14,7 @@
 
 A high-performance hook for AI coding agents that blocks destructive commands before they execute, protecting your work from accidental deletion.
 
-**Supported:** [Claude Code](https://claude.ai/code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Aider](https://aider.chat/) (limited—git hooks only), [Continue](https://continue.dev) (detection only), [Codex CLI](https://github.com/openai/codex) (detection only)
+**Supported:** [Claude Code](https://claude.ai/code), [Augment Code CLI (`auggie`)](https://www.augmentcode.com/), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Aider](https://aider.chat/) (limited—git hooks only), [Continue](https://continue.dev) (detection only), [Codex CLI](https://github.com/openai/codex) (detection only)
 
 <div align="center">
 <h3>Quick Install</h3>
@@ -813,6 +813,25 @@ Add to `~/.claude/settings.json`:
 ```
 
 **Important:** Restart Claude Code after adding the hook configuration.
+
+## Augment Code CLI (`auggie`) Configuration
+
+Add to `~/.augment/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "launch-process",
+      "hooks": [{"type": "command", "command": "dcg"}]
+    }]
+  }
+}
+```
+
+**Important:** Restart the `auggie` CLI after adding the hook configuration.
+
+**Note:** This integration is for the Augment Code CLI (`auggie`) only. The interactive Augment Code IDE extension does not have hook support.
 
 ## Gemini CLI Configuration
 
