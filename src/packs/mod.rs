@@ -1186,7 +1186,25 @@ static PACK_ENTRIES: [PackEntry; 82] = [
     ),
     PackEntry::new(
         "system.disk",
-        &["dd", "mkfs", "fdisk", "parted", "wipefs"],
+        &[
+            "dd",
+            "mkfs",
+            "fdisk",
+            "parted",
+            "wipefs",
+            "mdadm",
+            "btrfs",
+            "dmsetup",
+            "nbd-client",
+            "pvremove",
+            "vgremove",
+            "lvremove",
+            "vgreduce",
+            "lvreduce",
+            "lvresize",
+            "pvmove",
+            "lvconvert",
+        ],
         system::disk::create_pack,
     ),
     PackEntry::new(
@@ -1596,6 +1614,233 @@ pub struct PackInfo {
 
 /// Global pack registry (lazily initialized).
 pub static REGISTRY: LazyLock<PackRegistry> = LazyLock::new(PackRegistry::new);
+
+// =============================================================================
+// External Pack Runtime Storage
+// =============================================================================
+
+/// Runtime storage for external packs loaded from YAML files.
+///
+/// External packs are loaded once at startup based on config.packs.custom_paths
+/// and stored here for evaluation alongside built-in packs.
+pub struct ExternalPackStore {
+    /// Loaded packs keyed by pack ID.
+    packs: HashMap<String, Pack>,
+    /// Keywords from all external packs (for quick rejection).
+    keywords: Vec<&'static str>,
+    /// Warnings from pack loading (for diagnostics).
+    warnings: Vec<String>,
+}
+
+impl ExternalPackStore {
+    /// Create an empty store.
+    fn new() -> Self {
+        Self {
+            packs: HashMap::new(),
+            keywords: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Get a pack by ID.
+    #[must_use]
+    pub fn get(&self, id: &str) -> Option<&Pack> {
+        self.packs.get(id)
+    }
+
+    /// Get all pack IDs.
+    #[must_use]
+    pub fn pack_ids(&self) -> impl Iterator<Item = &String> {
+        self.packs.keys()
+    }
+
+    /// Get all keywords from external packs.
+    #[must_use]
+    pub fn keywords(&self) -> &[&'static str] {
+        &self.keywords
+    }
+
+    /// Get warnings from pack loading.
+    #[must_use]
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    /// Check if any external packs are loaded.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.packs.is_empty()
+    }
+
+    /// Get the number of loaded packs.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.packs.len()
+    }
+
+    /// Check a command against all external packs.
+    ///
+    /// Returns the first match found, or None if no patterns match.
+    #[must_use]
+    pub fn check_command(&self, cmd: &str, enabled_ids: &HashSet<String>) -> Option<CheckResult> {
+        // Check safe patterns first (across all enabled external packs)
+        for (id, pack) in &self.packs {
+            if !enabled_ids.contains(id) {
+                continue;
+            }
+            if pack.matches_safe(cmd) {
+                return Some(CheckResult::allowed());
+            }
+        }
+
+        // Check destructive patterns
+        for (id, pack) in &self.packs {
+            if !enabled_ids.contains(id) {
+                continue;
+            }
+            if let Some(matched) = pack.matches_destructive(cmd) {
+                return Some(CheckResult {
+                    blocked: true,
+                    reason: Some(matched.reason.to_string()),
+                    pack_id: Some(id.clone()),
+                    pattern_name: matched.name.map(ToString::to_string),
+                    severity: Some(matched.severity),
+                    decision_mode: Some(matched.severity.default_mode()),
+                });
+            }
+        }
+
+        None
+    }
+
+    /// Check a command against all external packs, returning full match info.
+    ///
+    /// This is like `check_command` but returns additional details (explanation)
+    /// needed for building `PatternMatch` in main.rs.
+    #[must_use]
+    pub fn check_command_with_details(
+        &self,
+        cmd: &str,
+        enabled_ids: &HashSet<String>,
+    ) -> Option<ExternalCheckResult> {
+        // Check safe patterns first (across all enabled external packs)
+        for (id, pack) in &self.packs {
+            if !enabled_ids.contains(id) {
+                continue;
+            }
+            if pack.matches_safe(cmd) {
+                return Some(ExternalCheckResult {
+                    blocked: false,
+                    reason: None,
+                    pack_id: None,
+                    pattern_name: None,
+                    severity: None,
+                    decision_mode: None,
+                    explanation: None,
+                });
+            }
+        }
+
+        // Check destructive patterns
+        for (id, pack) in &self.packs {
+            if !enabled_ids.contains(id) {
+                continue;
+            }
+            if let Some(matched) = pack.matches_destructive(cmd) {
+                return Some(ExternalCheckResult {
+                    blocked: true,
+                    reason: Some(matched.reason.to_string()),
+                    pack_id: Some(id.clone()),
+                    pattern_name: matched.name.map(ToString::to_string),
+                    severity: Some(matched.severity),
+                    decision_mode: Some(matched.severity.default_mode()),
+                    explanation: matched.explanation.map(ToString::to_string),
+                });
+            }
+        }
+
+        None
+    }
+}
+
+/// Extended result from external pack checking (includes explanation).
+#[derive(Debug)]
+pub struct ExternalCheckResult {
+    /// Whether the command should be blocked.
+    pub blocked: bool,
+    /// The reason for blocking (if matched).
+    pub reason: Option<String>,
+    /// Which pack matched (if matched).
+    pub pack_id: Option<PackId>,
+    /// The name of the pattern that matched (if available).
+    pub pattern_name: Option<String>,
+    /// Severity of the matched pattern (if matched).
+    pub severity: Option<Severity>,
+    /// Decision mode applied (if matched).
+    pub decision_mode: Option<DecisionMode>,
+    /// Detailed explanation (if matched and available).
+    pub explanation: Option<String>,
+}
+
+/// Global storage for external packs (initialized once at startup).
+static EXTERNAL_PACKS: OnceLock<ExternalPackStore> = OnceLock::new();
+
+/// Load external packs from the given file paths.
+///
+/// This should be called once at startup after config is loaded.
+/// Subsequent calls are no-ops (returns the already-loaded store).
+///
+/// # Arguments
+///
+/// * `paths` - Expanded file paths (after glob/tilde expansion)
+///
+/// # Returns
+///
+/// Reference to the external pack store.
+pub fn load_external_packs(paths: &[String]) -> &'static ExternalPackStore {
+    EXTERNAL_PACKS.get_or_init(|| {
+        let mut store = ExternalPackStore::new();
+
+        if paths.is_empty() {
+            return store;
+        }
+
+        let loader = external::ExternalPackLoader::from_paths(paths);
+        let result = loader.load_all_deduped();
+
+        // Collect warnings
+        for warning in result.warnings {
+            store.warnings.push(format!(
+                "Failed to load external pack from {}: {}",
+                warning.path.display(),
+                warning.error
+            ));
+        }
+
+        // Convert and store loaded packs
+        for loaded in result.packs {
+            let id = loaded.id.clone();
+            let pack = loaded.pack.into_pack();
+
+            // Collect keywords
+            for kw in pack.keywords {
+                if !store.keywords.contains(kw) {
+                    store.keywords.push(kw);
+                }
+            }
+
+            store.packs.insert(id, pack);
+        }
+
+        store
+    })
+}
+
+/// Get the external pack store (returns None if not yet initialized).
+#[must_use]
+pub fn get_external_packs() -> Option<&'static ExternalPackStore> {
+    EXTERNAL_PACKS.get()
+}
 
 /// Pre-compiled finders for core quick rejection (git/rm).
 #[allow(dead_code)]

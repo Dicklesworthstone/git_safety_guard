@@ -205,6 +205,7 @@ struct GitAwarenessConfigLayer {
     relaxed_branches: Option<Vec<String>>,
     relaxed_strictness: Option<StrictnessLevel>,
     default_strictness: Option<StrictnessLevel>,
+    warn_if_not_git: Option<bool>,
 }
 
 fn expand_tilde_path(value: &str) -> (PathBuf, bool) {
@@ -945,6 +946,52 @@ impl PacksConfig {
         enabled.insert("core".to_string());
 
         enabled
+    }
+
+    /// Expand custom_paths, resolving tilde and glob patterns.
+    ///
+    /// Returns a list of concrete file paths that exist on disk.
+    /// Invalid globs or non-existent files are silently skipped (fail-open).
+    #[must_use]
+    pub fn expand_custom_paths(&self) -> Vec<String> {
+        let mut result = Vec::new();
+
+        for pattern in &self.custom_paths {
+            // Expand tilde first
+            let expanded = if pattern.starts_with("~/") || pattern == "~" {
+                if let Some(home) = dirs::home_dir() {
+                    if pattern == "~" {
+                        home.to_string_lossy().into_owned()
+                    } else {
+                        home.join(&pattern[2..]).to_string_lossy().into_owned()
+                    }
+                } else {
+                    pattern.clone()
+                }
+            } else {
+                pattern.clone()
+            };
+
+            // Expand glob pattern
+            match glob::glob(&expanded) {
+                Ok(paths) => {
+                    for entry in paths.flatten() {
+                        if entry.is_file() {
+                            result.push(entry.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Invalid glob pattern - treat as literal path
+                    let path = std::path::Path::new(&expanded);
+                    if path.is_file() {
+                        result.push(expanded);
+                    }
+                }
+            }
+        }
+
+        result
     }
 }
 
@@ -1731,6 +1778,13 @@ pub struct GitAwarenessConfig {
     /// When enabled, blocked command output will include the branch context.
     /// Default: `true`
     pub show_branch_in_output: bool,
+
+    /// Show a warning when not in a git repository.
+    /// When enabled and git_awareness is enabled, a warning will be logged
+    /// if dcg cannot detect a git repository. The command will still be
+    /// evaluated using default strictness (graceful degradation).
+    /// Default: `false`
+    pub warn_if_not_git: bool,
 }
 
 impl Default for GitAwarenessConfig {
@@ -1753,6 +1807,7 @@ impl Default for GitAwarenessConfig {
             default_strictness: StrictnessLevel::High,
             relaxed_disabled_packs: Vec::new(),
             show_branch_in_output: true,
+            warn_if_not_git: false,
         }
     }
 }
@@ -2738,6 +2793,9 @@ impl Config {
         if let Some(default_strictness) = git_awareness.default_strictness {
             self.git_awareness.default_strictness = default_strictness;
         }
+        if let Some(warn_if_not_git) = git_awareness.warn_if_not_git {
+            self.git_awareness.warn_if_not_git = warn_if_not_git;
+        }
     }
 
     fn merge_agents_layer(&mut self, agents: AgentsConfig) {
@@ -2928,6 +2986,13 @@ impl Config {
         if let Some(strictness) = get_env(&format!("{ENV_PREFIX}_GIT_DEFAULT_STRICTNESS")) {
             if let Some(parsed) = StrictnessLevel::from_str_case_insensitive(&strictness) {
                 self.git_awareness.default_strictness = parsed;
+            }
+        }
+
+        // DCG_GIT_AWARENESS_WARN_IF_NOT_GIT=true|false|1|0
+        if let Some(warn) = get_env(&format!("{ENV_PREFIX}_GIT_AWARENESS_WARN_IF_NOT_GIT")) {
+            if let Some(parsed) = parse_env_bool(&warn) {
+                self.git_awareness.warn_if_not_git = parsed;
             }
         }
     }

@@ -33,8 +33,7 @@ use destructive_command_guard::history::{
 use destructive_command_guard::hook;
 use destructive_command_guard::load_default_allowlists;
 use destructive_command_guard::normalize::normalize_command;
-// TODO: Implement ExternalPackLoader when external pack loading is needed
-// use destructive_command_guard::packs::external::ExternalPack;
+use destructive_command_guard::packs::load_external_packs;
 #[cfg(test)]
 use destructive_command_guard::packs::pack_aware_quick_reject;
 use destructive_command_guard::packs::{DecisionMode, REGISTRY};
@@ -268,13 +267,25 @@ fn main() {
     // Get enabled pack IDs early for pack-aware quick reject.
     // This is done before stdin read to minimize latency on the critical path.
     let enabled_packs: HashSet<String> = config.enabled_pack_ids();
-    let enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
+    let mut enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
     let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
     let keyword_index = REGISTRY.build_enabled_keyword_index(&ordered_packs);
 
-    // TODO: External pack loading is not yet implemented.
-    // When ExternalPackLoader is implemented, load custom YAML packs here.
-    // For now, external packs are not loaded.
+    // Load external packs from custom_paths (glob + tilde expansion).
+    // External packs are loaded once and cached for the process lifetime.
+    let external_paths = config.packs.expand_custom_paths();
+    let external_store = load_external_packs(&external_paths);
+
+    // Log warnings from external pack loading (fail-open: don't block on warnings).
+    if config.general.verbose {
+        for warning in external_store.warnings() {
+            eprintln!("[dcg] Warning: {warning}");
+        }
+    }
+
+    // Merge external pack keywords into enabled keywords for quick rejection.
+    // This ensures commands with external pack keywords are not prematurely rejected.
+    enabled_keywords.extend(external_store.keywords().iter().copied());
 
     // Read and parse input
     let max_input_bytes = config.general.max_hook_input_bytes();
@@ -363,7 +374,7 @@ fn main() {
 
     // Use the shared evaluator for hook mode parity with `dcg test`.
     let eval_start = Instant::now();
-    let result = evaluate_command_with_pack_order_deadline_at_path(
+    let mut result = evaluate_command_with_pack_order_deadline_at_path(
         &command,
         &enabled_keywords,
         &ordered_packs,
@@ -375,6 +386,36 @@ fn main() {
         None, // project_path
         Some(&deadline),
     );
+
+    // Check external packs if built-in evaluation allowed the command.
+    // External packs are evaluated after built-in packs (lower priority).
+    if result.decision != EvaluationDecision::Deny && !external_store.is_empty() {
+        // Normalize command for external pack matching (same as built-in packs).
+        let normalized = normalize_command(&command);
+        let cmd_for_match = sanitize_for_pattern_matching(&normalized);
+
+        if let Some(external_result) =
+            external_store.check_command_with_details(&cmd_for_match, &enabled_packs)
+        {
+            if external_result.blocked {
+                // Convert external pack result to evaluation result.
+                result.decision = EvaluationDecision::Deny;
+                result.pattern_info = Some(destructive_command_guard::evaluator::PatternMatch {
+                    pack_id: external_result.pack_id,
+                    pattern_name: external_result.pattern_name,
+                    severity: external_result.severity,
+                    reason: external_result.reason.unwrap_or_default(),
+                    source: MatchSource::Pack,
+                    matched_span: None, // External packs don't provide span info
+                    matched_text_preview: None,
+                    explanation: external_result.explanation,
+                    suggestions: &[], // External pack suggestions not yet supported
+                });
+                result.effective_mode = external_result.decision_mode;
+            }
+        }
+    }
+
     let eval_duration = eval_start.elapsed();
 
     if result.skipped_due_to_budget {
