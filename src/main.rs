@@ -266,7 +266,7 @@ fn main() {
 
     // Get enabled pack IDs early for pack-aware quick reject.
     // This is done before stdin read to minimize latency on the critical path.
-    let enabled_packs: HashSet<String> = config.enabled_pack_ids();
+    let mut enabled_packs: HashSet<String> = config.enabled_pack_ids();
     let mut enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
     let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
     let keyword_index = REGISTRY.build_enabled_keyword_index(&ordered_packs);
@@ -281,6 +281,12 @@ fn main() {
         for warning in external_store.warnings() {
             eprintln!("[dcg] Warning: {warning}");
         }
+    }
+
+    // Auto-enable external packs: packs loaded via custom_paths are implicitly enabled.
+    // This avoids requiring users to both add a path AND explicitly enable the pack ID.
+    for id in external_store.pack_ids() {
+        enabled_packs.insert(id.clone());
     }
 
     // Merge external pack keywords into enabled keywords for quick rejection.

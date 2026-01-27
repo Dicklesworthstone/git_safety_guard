@@ -2824,6 +2824,11 @@ impl Config {
             self.packs.disabled = disable.split(',').map(|s| s.trim().to_string()).collect();
         }
 
+        // DCG_CUSTOM_PATHS="/path/to/pack.yaml,~/.config/dcg/packs/*.yaml"
+        if let Some(paths) = get_env(&format!("{ENV_PREFIX}_CUSTOM_PATHS")) {
+            self.packs.custom_paths = paths.split(',').map(|s| s.trim().to_string()).collect();
+        }
+
         // DCG_VERBOSE=0-3
         if let Some(verbose) = get_env(&format!("{ENV_PREFIX}_VERBOSE")) {
             if let Ok(level) = verbose.trim().parse::<u8>() {

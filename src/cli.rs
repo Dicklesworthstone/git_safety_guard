@@ -24,7 +24,7 @@ use crate::interactive::{
     print_not_available_message, run_interactive_prompt,
 };
 use crate::load_default_allowlists;
-use crate::packs::{DecisionMode, REGISTRY, Severity as PackSeverity};
+use crate::packs::{DecisionMode, REGISTRY, Severity as PackSeverity, load_external_packs};
 use crate::pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
     PendingExceptionStore,
@@ -3094,8 +3094,8 @@ fn test_command(
     }
 
     // Get enabled packs and collect keywords for quick rejection
-    let enabled_packs = effective_config.enabled_pack_ids();
-    let enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
+    let mut enabled_packs = effective_config.enabled_pack_ids();
+    let mut enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
     let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
     let keyword_index = REGISTRY.build_enabled_keyword_index(&ordered_packs);
     let heredoc_settings = effective_config.heredoc_settings();
@@ -3106,6 +3106,16 @@ fn test_command(
     // Load allowlists (project/user/system) for parity with hook mode.
     // This is a small file read and only affects decisions when a rule matches.
     let allowlists = load_default_allowlists();
+
+    // Load external packs from custom_paths (glob + tilde expansion).
+    let external_paths = effective_config.packs.expand_custom_paths();
+    let external_store = load_external_packs(&external_paths);
+
+    // Auto-enable external packs and merge their keywords.
+    for id in external_store.pack_ids() {
+        enabled_packs.insert(id.clone());
+    }
+    enabled_keywords.extend(external_store.keywords().iter().copied());
 
     // Detect the current AI coding agent for agent-specific profiles
     let detection = detect_agent_with_details();
@@ -3121,12 +3131,9 @@ fn test_command(
         },
     };
 
-    // TODO: External pack loading is not yet implemented.
-    // When ExternalPackLoader is implemented, load custom YAML packs here.
-
     // Use shared evaluator for consistent behavior with hook mode
     let start = Instant::now();
-    let result = evaluate_command_with_pack_order_deadline_at_path(
+    let mut result = evaluate_command_with_pack_order_deadline_at_path(
         command,
         &enabled_keywords,
         &ordered_packs,
@@ -3138,6 +3145,33 @@ fn test_command(
         None, // project_path
         None, // deadline
     );
+
+    // Check external packs if built-in evaluation allowed the command.
+    if result.decision != EvaluationDecision::Deny && !external_store.is_empty() {
+        let normalized = crate::normalize::normalize_command(command);
+        let cmd_for_match = crate::sanitize_for_pattern_matching(&normalized);
+
+        if let Some(external_result) =
+            external_store.check_command_with_details(&cmd_for_match, &enabled_packs)
+        {
+            if external_result.blocked {
+                result.decision = EvaluationDecision::Deny;
+                result.pattern_info = Some(crate::evaluator::PatternMatch {
+                    pack_id: external_result.pack_id,
+                    pattern_name: external_result.pattern_name,
+                    severity: external_result.severity,
+                    reason: external_result.reason.unwrap_or_default(),
+                    source: MatchSource::Pack,
+                    matched_span: None,
+                    matched_text_preview: None,
+                    explanation: external_result.explanation,
+                    suggestions: &[],
+                });
+                result.effective_mode = external_result.decision_mode;
+            }
+        }
+    }
+
     let elapsed = start.elapsed();
 
     // Handle JSON output
