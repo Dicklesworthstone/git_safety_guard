@@ -314,8 +314,9 @@ fn main() {
             .map_or(HOOK_EVALUATION_BUDGET, Duration::from_millis),
     );
 
-    // Only process Bash tool invocations
-    if hook_input.tool_name.as_deref() != Some("Bash") {
+    // Only process Bash (Claude Code) or launch-process (Augment Code) tool invocations
+    let tool_name = hook_input.tool_name.as_deref();
+    if tool_name != Some("Bash") && tool_name != Some("launch-process") {
         return;
     }
 

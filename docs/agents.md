@@ -9,6 +9,7 @@ trust to well-behaved agents while maintaining strict controls for unknown ones.
 | Agent | Detection Method | Environment Variable |
 |-------|------------------|---------------------|
 | Claude Code | Environment | `CLAUDE_CODE=1` or `CLAUDE_SESSION_ID` |
+| Augment Code CLI (`auggie`) | Environment | `AUGMENT_AGENT=1` or `AUGMENT_CONVERSATION_ID` |
 | Aider | Environment | `AIDER_SESSION=1` |
 | Continue | Environment | `CONTINUE_SESSION_ID` |
 | Codex CLI | Environment | `CODEX_CLI=1` |

@@ -181,8 +181,9 @@ pub fn read_hook_input(max_bytes: usize) -> Result<HookInput, HookReadError> {
 /// Extract the command string from hook input.
 #[must_use]
 pub fn extract_command(input: &HookInput) -> Option<String> {
-    // Only process Bash tool invocations
-    if input.tool_name.as_deref() != Some("Bash") {
+    // Accept both Claude Code ("Bash") and Augment Code ("launch-process")
+    let tool_name = input.tool_name.as_deref()?;
+    if tool_name != "Bash" && tool_name != "launch-process" {
         return None;
     }
 
@@ -750,6 +751,13 @@ mod tests {
     #[test]
     fn test_parse_valid_bash_input() {
         let json = r#"{"tool_name":"Bash","tool_input":{"command":"git status"}}"#;
+        let input: HookInput = serde_json::from_str(json).unwrap();
+        assert_eq!(extract_command(&input), Some("git status".to_string()));
+    }
+
+    #[test]
+    fn test_parse_valid_launch_process_input() {
+        let json = r#"{"tool_name":"launch-process","tool_input":{"command":"git status"}}"#;
         let input: HookInput = serde_json::from_str(json).unwrap();
         assert_eq!(extract_command(&input), Some("git status".to_string()));
     }

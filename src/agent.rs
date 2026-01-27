@@ -12,6 +12,7 @@
 //! # Supported Agents
 //!
 //! - Claude Code: `CLAUDE_CODE=1` or `CLAUDE_SESSION_ID` env var
+//! - Augment Code: `AUGMENT_AGENT=1` or `AUGMENT_CONVERSATION_ID` env var (auggie CLI only)
 //! - Aider: `AIDER_SESSION=1` env var
 //! - Continue: `CONTINUE_SESSION_ID` env var
 //! - Codex CLI: `CODEX_CLI=1` env var
@@ -42,6 +43,8 @@ const CACHE_TTL: Duration = Duration::from_secs(300);
 pub enum Agent {
     /// Claude Code from Anthropic.
     ClaudeCode,
+    /// Augment Code AI coding assistant.
+    AugmentCode,
     /// Aider AI coding assistant.
     Aider,
     /// Continue.dev IDE extension.
@@ -65,6 +68,7 @@ impl Agent {
     pub fn config_key(&self) -> &str {
         match self {
             Self::ClaudeCode => "claude-code",
+            Self::AugmentCode => "augment-code",
             Self::Aider => "aider",
             Self::Continue => "continue",
             Self::CodexCli => "codex-cli",
@@ -79,7 +83,12 @@ impl Agent {
     pub const fn is_known(&self) -> bool {
         matches!(
             self,
-            Self::ClaudeCode | Self::Aider | Self::Continue | Self::CodexCli | Self::GeminiCli
+            Self::ClaudeCode
+                | Self::AugmentCode
+                | Self::Aider
+                | Self::Continue
+                | Self::CodexCli
+                | Self::GeminiCli
         )
     }
 
@@ -93,6 +102,7 @@ impl Agent {
     ///
     /// Accepts various formats:
     /// - `"claude-code"`, `"claude_code"`, `"claudecode"` -> `ClaudeCode`
+    /// - `"augment-code"`, `"augment_code"`, `"augmentcode"`, `"augment"` -> `AugmentCode`
     /// - `"aider"` -> `Aider`
     /// - `"continue"` -> `Continue`
     /// - `"codex"`, `"codex-cli"`, `"codex_cli"` -> `CodexCli`
@@ -104,6 +114,7 @@ impl Agent {
         let normalized = name.to_lowercase().replace(['-', '_'], "");
         match normalized.as_str() {
             "claudecode" => Self::ClaudeCode,
+            "augmentcode" | "augment" => Self::AugmentCode,
             "aider" => Self::Aider,
             "continue" => Self::Continue,
             "codexcli" | "codex" => Self::CodexCli,
@@ -118,6 +129,7 @@ impl fmt::Display for Agent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ClaudeCode => write!(f, "Claude Code"),
+            Self::AugmentCode => write!(f, "Augment Code"),
             Self::Aider => write!(f, "Aider"),
             Self::Continue => write!(f, "Continue"),
             Self::CodexCli => write!(f, "Codex CLI"),
@@ -296,6 +308,22 @@ fn detect_from_environment() -> Option<DetectionResult> {
             Agent::ClaudeCode,
             DetectionMethod::Environment,
             Some("CLAUDE_SESSION_ID".to_string()),
+        ));
+    }
+
+    // Augment Code detection (only for auggie CLI mode)
+    if std::env::var("AUGMENT_AGENT").is_ok() {
+        return Some(DetectionResult::new(
+            Agent::AugmentCode,
+            DetectionMethod::Environment,
+            Some("AUGMENT_AGENT".to_string()),
+        ));
+    }
+    if std::env::var("AUGMENT_CONVERSATION_ID").is_ok() {
+        return Some(DetectionResult::new(
+            Agent::AugmentCode,
+            DetectionMethod::Environment,
+            Some("AUGMENT_CONVERSATION_ID".to_string()),
         ));
     }
 
@@ -634,6 +662,29 @@ mod env_tests {
     }
 
     #[test]
+    fn test_detect_augment_agent_env() {
+        with_env_var("AUGMENT_AGENT", "1", || {
+            let result = detect_agent_with_details();
+            assert_eq!(result.agent, Agent::AugmentCode);
+            assert_eq!(result.method, DetectionMethod::Environment);
+            assert_eq!(result.matched_value, Some("AUGMENT_AGENT".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_detect_augment_conversation_id_env() {
+        with_env_var("AUGMENT_CONVERSATION_ID", "conv-xyz789", || {
+            let result = detect_agent_with_details();
+            assert_eq!(result.agent, Agent::AugmentCode);
+            assert_eq!(result.method, DetectionMethod::Environment);
+            assert_eq!(
+                result.matched_value,
+                Some("AUGMENT_CONVERSATION_ID".to_string())
+            );
+        });
+    }
+
+    #[test]
     fn test_detect_unknown_no_env() {
         // Acquire lock to prevent race conditions with parallel tests
         let _lock = ENV_LOCK.lock().unwrap();
@@ -645,6 +696,8 @@ mod env_tests {
         unsafe {
             std::env::remove_var("CLAUDE_CODE");
             std::env::remove_var("CLAUDE_SESSION_ID");
+            std::env::remove_var("AUGMENT_AGENT");
+            std::env::remove_var("AUGMENT_CONVERSATION_ID");
             std::env::remove_var("AIDER_SESSION");
             std::env::remove_var("CONTINUE_SESSION_ID");
             std::env::remove_var("CODEX_CLI");
