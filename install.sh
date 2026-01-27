@@ -47,6 +47,7 @@ NO_CONFIGURE=0
 NO_CHECKSUM=0
 FORCE_INSTALL=0
 OFFLINE="${DCG_OFFLINE:-0}"
+IS_WINDOWS=0
 
 # Detect gum for fancy output (https://github.com/charmbracelet/gum)
 HAS_GUM=0
@@ -382,12 +383,23 @@ resolve_version() {
 }
 
 detect_platform() {
-  OS=$(uname -s | tr 'A-Z' 'a-z')
+  local raw_os
+  raw_os=$(uname -s)
+  OS=$(echo "$raw_os" | tr 'A-Z' 'a-z')
   ARCH=$(uname -m)
   case "$ARCH" in
     x86_64|amd64) ARCH="x86_64" ;;
     arm64|aarch64) ARCH="aarch64" ;;
     *) warn "Unknown arch $ARCH, using as-is" ;;
+  esac
+
+  # Detect Windows environments (Git Bash, MSYS2, Cygwin)
+  IS_WINDOWS=0
+  case "$OS" in
+    mingw*|msys*|cygwin*)
+      IS_WINDOWS=1
+      OS="windows"
+      ;;
   esac
 
   TARGET=""
@@ -396,6 +408,8 @@ detect_platform() {
     linux-aarch64) TARGET="aarch64-unknown-linux-gnu" ;;
     darwin-x86_64) TARGET="x86_64-apple-darwin" ;;
     darwin-aarch64) TARGET="aarch64-apple-darwin" ;;
+    windows-x86_64) TARGET="x86_64-pc-windows-msvc" ;;
+    windows-aarch64) TARGET="aarch64-pc-windows-msvc" ;;
     *) :;;
   esac
 
@@ -406,15 +420,20 @@ detect_platform() {
 }
 
 set_artifact_url() {
-  TAR=""
+  ARTIFACT=""
   URL=""
   if [ "$FROM_SOURCE" -eq 0 ]; then
     if [ -n "$ARTIFACT_URL" ]; then
-      TAR=$(basename "$ARTIFACT_URL")
+      ARTIFACT=$(basename "$ARTIFACT_URL")
       URL="$ARTIFACT_URL"
     elif [ -n "$TARGET" ]; then
-      TAR="dcg-${TARGET}.tar.xz"
-      URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/${TAR}"
+      # Windows uses .zip, others use .tar.xz
+      if [ "$IS_WINDOWS" -eq 1 ]; then
+        ARTIFACT="dcg-${TARGET}.zip"
+      else
+        ARTIFACT="dcg-${TARGET}.tar.xz"
+      fi
+      URL="https://github.com/${OWNER}/${REPO}/releases/download/${VERSION}/${ARTIFACT}"
     else
       warn "No prebuilt artifact for ${OS}/${ARCH}; falling back to build-from-source"
       FROM_SOURCE=1
@@ -826,7 +845,7 @@ trap cleanup EXIT
 
 if [ "$FROM_SOURCE" -eq 0 ]; then
   info "Downloading $URL"
-  if ! curl -fsSL "$URL" -o "$TMP/$TAR"; then
+  if ! curl -fsSL "$URL" -o "$TMP/$ARTIFACT"; then
     warn "Artifact download failed; falling back to build-from-source"
     FROM_SOURCE=1
   fi
@@ -871,12 +890,12 @@ else
     fi
   fi
 
-  if ! verify_checksum "$TMP/$TAR" "$CHECKSUM"; then
+  if ! verify_checksum "$TMP/$ARTIFACT" "$CHECKSUM"; then
     err "Installation aborted due to checksum failure"
     exit 1
   fi
 
-  if ! verify_sigstore_bundle "$TMP/$TAR" "$URL"; then
+  if ! verify_sigstore_bundle "$TMP/$ARTIFACT" "$URL"; then
     err "Signature verification failed"
     err "The downloaded file may be corrupted or tampered with."
     exit 1
@@ -884,18 +903,52 @@ else
 fi
 
 info "Extracting"
-tar -xf "$TMP/$TAR" -C "$TMP"
-BIN="$TMP/dcg"
-if [ ! -x "$BIN" ] && [ -n "$TARGET" ]; then
-  BIN="$TMP/dcg-${TARGET}/dcg"
-fi
-if [ ! -x "$BIN" ]; then
-  BIN=$(find "$TMP" -maxdepth 3 -type f -name "dcg" -perm -111 | head -n 1)
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  # Windows: use unzip for .zip files
+  if ! command -v unzip >/dev/null 2>&1; then
+    err "unzip is required to extract Windows binaries"
+    err "Install it with: pacman -S unzip (MSYS2) or apt-get install unzip (WSL)"
+    exit 1
+  fi
+  unzip -q "$TMP/$ARTIFACT" -d "$TMP"
+else
+  tar -xf "$TMP/$ARTIFACT" -C "$TMP"
 fi
 
-[ -x "$BIN" ] || { err "Binary not found in tar"; exit 1; }
-install -m 0755 "$BIN" "$DEST/dcg"
-ok "Installed to $DEST/dcg"
+# Find the binary (dcg.exe on Windows, dcg elsewhere)
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  BIN="$TMP/dcg.exe"
+  if [ ! -f "$BIN" ]; then
+    BIN="$TMP/dcg-${TARGET}/dcg.exe"
+  fi
+  if [ ! -f "$BIN" ]; then
+    BIN=$(find "$TMP" -maxdepth 3 -type f -name "dcg.exe" | head -n 1)
+  fi
+  [ -f "$BIN" ] || { err "Binary not found in archive"; exit 1; }
+  cp "$BIN" "$DEST/dcg.exe"
+  # Also create a shell wrapper so 'dcg' works in Git Bash
+  cat > "$DEST/dcg" <<'EOFWRAPPER'
+#!/bin/bash
+# Wrapper script for dcg.exe in Git Bash/MSYS2/Cygwin
+exec "$(dirname "$0")/dcg.exe" "$@"
+EOFWRAPPER
+  chmod +x "$DEST/dcg" 2>/dev/null || true
+else
+  BIN="$TMP/dcg"
+  if [ ! -x "$BIN" ] && [ -n "$TARGET" ]; then
+    BIN="$TMP/dcg-${TARGET}/dcg"
+  fi
+  if [ ! -x "$BIN" ]; then
+    BIN=$(find "$TMP" -maxdepth 3 -type f -name "dcg" -perm -111 | head -n 1)
+  fi
+  [ -x "$BIN" ] || { err "Binary not found in archive"; exit 1; }
+  install -m 0755 "$BIN" "$DEST/dcg"
+fi
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  ok "Installed to $DEST/dcg.exe (with dcg wrapper)"
+else
+  ok "Installed to $DEST/dcg"
+fi
 maybe_add_path
 
 if [ "$VERIFY" -eq 1 ]; then
@@ -903,7 +956,11 @@ if [ "$VERIFY" -eq 1 ]; then
   ok "Self-test complete"
 fi
 
-ok "Done. Binary at: $DEST/dcg"
+if [ "$IS_WINDOWS" -eq 1 ]; then
+  ok "Done. Binary at: $DEST/dcg.exe"
+else
+  ok "Done. Binary at: $DEST/dcg"
+fi
 maybe_install_completions
 echo ""
 

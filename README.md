@@ -23,7 +23,7 @@ A high-performance hook for AI coding agents that blocks destructive commands be
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash -s -- --easy-mode
 ```
 
-<p><em>Works on Linux, macOS, and Windows (WSL). Auto-detects your platform and downloads the right binary.</em></p>
+<p><em>Works on Linux, macOS, and Windows (WSL, Git Bash, MSYS2). Auto-detects your platform and downloads the right binary.</em></p>
 </div>
 
 ---
